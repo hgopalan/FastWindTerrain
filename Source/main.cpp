@@ -5,13 +5,15 @@
 #include <AMReX_Version.H>
 
 #include "Grid.H"
+#include "Terrain.H"
+#include "Output.H"
 #include "Debug.H"
 
 int main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
     {
-        amrex::Print() << "FastWindTerrain -- Phase 1: grid & data layout scaffolding\n";
+        amrex::Print() << "FastWindTerrain -- Phase 2: terrain & immersed-boundary mask\n";
 
         // fwt.debug = 1 turns on verbose diagnostics everywhere.
         fwt::Debug::Init();
@@ -26,9 +28,17 @@ int main (int argc, char* argv[])
         fwt::Grid grid;
         grid.Build();   // aborts on undershoot (see Grid::BuildVerticalStretching)
 
+        fwt::Terrain terrain;
+        terrain.Build(grid);
+
         amrex::Print() << "Grid built: n_cell = ("
                         << grid.nx() << ", " << grid.ny() << ", " << grid.nz()
                         << "), n_boxes = " << grid.ba().size() << "\n";
+
+        amrex::Print() << "Terrain: z in [" << terrain.z_min() << ", "
+                       << terrain.z_max() << "] m, solid cells = "
+                       << terrain.n_solid() << " of " << terrain.n_total()
+                       << "\n";
 
         // Output is user-selectable: ascii (plain-text grid report),
         // plt (AMReX native plotfile), or both. ascii is the default
@@ -53,10 +63,11 @@ int main (int argc, char* argv[])
 
         if (fwt::Grid::WantsAscii(fmt)) {
             grid.WriteReport(report_file);
+            terrain.AppendReport(report_file);
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {
-            grid.WritePlotfile(plot_file);
+            fwt::WritePlotfile(plot_file, grid, terrain);
             amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
         }
     }

@@ -65,9 +65,10 @@ public:
     //            z_face/z_cc arrays). Used directly by the Phase 1
     //            regtest checker, so it stays the default.
     //   plt   -- AMReX native plotfile carrying the true stretched
-    //            vertical coordinate as cell-centered fields.
+    //            vertical coordinate and the terrain fields.
+    // The plotfile is written by fwt::WritePlotfile (Output.H), which
+    // combines the grid fields with the terrain fields into one file.
     void WriteReport (const std::string& filename) const;
-    void WritePlotfile (const std::string& plotfilename) const;
 
     // Parses grid.output_format; aborts on an unrecognized value.
     enum class OutputFormat { ascii, plt, both };

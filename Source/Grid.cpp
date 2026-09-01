@@ -3,9 +3,6 @@
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
-#include <AMReX_MultiFab.H>
-#include <AMReX_PlotFileUtil.H>
-#include <AMReX_GpuContainers.H>
 
 #include <fstream>
 #include <iomanip>
@@ -275,40 +272,6 @@ Grid::OutputFormat Grid::ParseOutputFormat (const std::string& s)
     amrex::Abort("grid.output_format = '" + s +
                  "' is not recognized (expected ascii, plt, or both)");
     return OutputFormat::ascii;   // unreachable; silences the compiler
-}
-
-void Grid::WritePlotfile (const std::string& plotfilename) const
-{
-    // AMReX's Geometry is uniform in z, so the plotfile's own vertical
-    // coordinate is only nominal. z_cc/dz are written as cell-centered
-    // fields so a visualization tool can see where the stretched cells
-    // actually sit.
-    amrex::MultiFab mf(m_ba, m_dm, 2, 0);
-
-    // The z arrays live on the host; copy them to device memory so this
-    // stays correct in a GPU build.
-    amrex::Gpu::DeviceVector<amrex::Real> d_z_face(m_z_face.size());
-    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, m_z_face.begin(),
-                          m_z_face.end(), d_z_face.begin());
-    amrex::Gpu::streamSynchronize();
-    const amrex::Real* zf = d_z_face.data();
-
-    for (amrex::MFIter mfi(mf); mfi.isValid(); ++mfi) {
-        const amrex::Box& bx = mfi.tilebox();
-        auto const& a = mf.array(mfi);
-        amrex::ParallelFor(bx,
-        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-        {
-            a(i,j,k,0) = amrex::Real(0.5) * (zf[k] + zf[k+1]);   // z_cc
-            a(i,j,k,1) = zf[k+1] - zf[k];                        // dz
-        });
-    }
-
-    amrex::WriteSingleLevelPlotfile(plotfilename, mf, {"z_cc", "dz"},
-                                    m_geom, 0.0, 0);
-
-    FWT_DEBUG("wrote plotfile: " << plotfilename
-              << "  (2 components: z_cc, dz; " << m_ba.size() << " boxes)");
 }
 
 } // namespace fwt

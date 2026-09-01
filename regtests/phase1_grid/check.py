@@ -13,8 +13,9 @@ input files and validates:
                        the report is overridden to H_computed
   inputs_undershoot -> fatal abort, nonzero exit code, no report file
   inputs_plt        -> grid.output_format = both writes BOTH the ascii
-                       report and a well-formed AMReX plotfile whose
-                       z_cc/dz fields match the ascii report
+                       report and a well-formed AMReX plotfile that leads
+                       with the z_cc/dz fields (later phases append their
+                       own fields to the same plotfile)
   inputs_badformat  -> unrecognized grid.output_format aborts fatally
   inputs_debug      -> fwt.debug = 1 prints the full diagnostics without
                        changing any result, and stays silent by default
@@ -219,11 +220,17 @@ def check_output_format(exe):
     assert os.path.isfile(os.path.join(plt_dir, "Header")), (
         f"[{name}] plotfile {plt_dir} has no Header (not well-formed)")
 
+    # The Phase 1 contract is that the grid fields are present and lead
+    # the component list. Later phases add their own fields to the same
+    # plotfile (Phase 2 appends terrain_z and mask), so this must not
+    # assert the total component count.
     header = read_plotfile_header(plt_dir)
-    assert header["ncomp"] == 2, (
-        f"[{name}] expected 2 plotfile components, got {header['ncomp']}")
-    assert header["var_names"] == ["z_cc", "dz"], (
-        f"[{name}] expected fields ['z_cc', 'dz'], got {header['var_names']}")
+    assert header["var_names"][:2] == ["z_cc", "dz"], (
+        f"[{name}] expected the plotfile to lead with ['z_cc', 'dz'], "
+        f"got {header['var_names']}")
+    assert header["ncomp"] == len(header["var_names"]), (
+        f"[{name}] plotfile declares {header['ncomp']} components but "
+        f"names {len(header['var_names'])}")
 
     # The plotfile is a second view of the same grid: its nominal domain
     # top must agree with the ascii report's prob_hi[2].

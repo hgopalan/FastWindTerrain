@@ -1,0 +1,14 @@
+# Phase 2 regtest -- flat control case.
+# No terrain.file, so the ground is flat at terrain.flat_elevation = 0:
+# z_terrain must be identically 0 and every cell must be fluid.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+grid.output_format    = both
+grid.report_file      = grid_report_flat.txt
+grid.plot_file        = plt_flat
