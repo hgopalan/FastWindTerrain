@@ -7,6 +7,7 @@
 #include "Grid.H"
 #include "Terrain.H"
 #include "Inflow.H"
+#include "BoundaryConditions.H"
 #include "Output.H"
 #include "Debug.H"
 
@@ -34,6 +35,9 @@ int main (int argc, char* argv[])
 
         fwt::Inflow inflow;
         inflow.Build(grid, terrain);
+
+        fwt::BoundaryConditions bc;
+        bc.Build(grid, terrain, inflow, inflow.velocity());
 
         amrex::Print() << "Grid built: n_cell = ("
                         << grid.nx() << ", " << grid.ny() << ", " << grid.nz()
@@ -75,6 +79,7 @@ int main (int argc, char* argv[])
             grid.WriteReport(report_file);
             terrain.AppendReport(report_file);
             inflow.AppendReport(report_file);
+            bc.AppendReport(report_file);
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {

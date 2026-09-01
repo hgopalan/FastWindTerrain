@@ -1,0 +1,31 @@
+# Phase 4 regtest -- the edge case: an axis-aligned wind.
+# v_ref = 0, so ylo and yhi have no normal flow at all and are neither
+# inflow nor outflow. They are TANGENTIAL, and are treated as OPEN
+# (zero-gradient, lambda Dirichlet) rather than sealed -- terrain
+# deflects flow sideways, and a mass-consistent adjustment has to be
+# free to let it leave.
+#
+#   xlo -> inflow      (velocity prescribed, lambda Neumann)
+#   xhi -> outflow     (zero gradient,       lambda Dirichlet)
+#   ylo, yhi -> tangential, open
+#
+# This is also the case with only ONE inflow face, so it exercises the
+# "one or two prescribed faces" rule at its lower bound.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+inflow.mode           = loglaw
+inflow.u_ref          = 10.0
+inflow.v_ref          = 0.0
+inflow.z_ref          = 10.0
+inflow.z0             = 0.1
+
+grid.output_format    = both
+grid.report_file      = grid_report_edge.txt
+grid.plot_file        = plt_edge
+bc.dump_file          = bc_dump_edge.txt

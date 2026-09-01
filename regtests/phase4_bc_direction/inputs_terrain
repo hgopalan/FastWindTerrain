@@ -1,0 +1,28 @@
+# Phase 4 regtest -- an inflow face partly blocked by terrain.
+# terrain_slope.csv rises 0 -> 100 m across x. With the wind along -x,
+# xhi is the INFLOW face and its bottom 100 m is inside the terrain.
+#
+# Prescribing the profile there would drive flow straight into the
+# ground, so those ghost cells must be shut off instead. The rest of the
+# face still carries the profile.
+# The checker overrides terrain.file with an absolute path.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_slope.csv
+
+inflow.mode           = loglaw
+inflow.u_ref          = -10.0
+inflow.v_ref          = 0.0
+inflow.z_ref          = 10.0
+inflow.z0             = 0.1
+
+grid.output_format    = both
+grid.report_file      = grid_report_terrain.txt
+grid.plot_file        = plt_terrain
+bc.dump_file          = bc_dump_terrain.txt

@@ -108,3 +108,21 @@ Wind profiles and their terrain awareness.
   integration, the resulting imbalance must be surfaced rather than
   hidden, and the interior profile must be unchanged
 * calm wind and an unknown mode must both abort
+
+``phase4_bc_direction``
+-----------------------
+
+Directional boundary conditions. Every boundary cell is checked, not a
+sample: the solver writes one row per boundary cell to ``bc.dump_file``,
+and the expected ghost value is recomputed from the profile law.
+
+* ``inputs_sw`` / ``inputs_ne`` -- opposite winds. Each face must be
+  classified correctly, and every lateral face must flip between the two
+* ``inputs_edge`` -- an axis-aligned wind, so one inflow face, one
+  outflow face, and two tangential faces treated as open. Also the
+  lower bound of the "one or two prescribed faces" rule
+* ``inputs_terrain`` -- an inflow face partly buried in terrain: the
+  buried ghost cells are shut off and the rest still carry the profile
+* ``inputs_userfile`` -- ``userfile`` mode has no reference wind vector,
+  so this pins that the classification comes from the field's own face
+  fluxes

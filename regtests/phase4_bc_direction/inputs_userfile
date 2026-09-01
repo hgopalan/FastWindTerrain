@@ -1,0 +1,29 @@
+# Phase 4 regtest -- classification with no reference wind vector.
+# userfile mode has no inflow.u_ref / inflow.v_ref, so the faces cannot
+# be classified by testing a wind vector against each normal. They are
+# classified from the net flux the initial field actually carries
+# through each face instead.
+#
+# user_profile.txt has u > 0 and v > 0 everywhere, so:
+#
+#   xlo, ylo -> inflow
+#   xhi, yhi -> outflow
+#
+# The checker overrides inflow.file with an absolute path.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+inflow.mode            = userfile
+inflow.file            = user_profile.txt
+inflow.idw_n_neighbors = 6
+inflow.idw_exponent    = 2.0
+
+grid.output_format    = both
+grid.report_file      = grid_report_userfile.txt
+grid.plot_file        = plt_userfile
+bc.dump_file          = bc_dump_userfile.txt

@@ -17,6 +17,7 @@ on this layout.
    grid
    terrain
    inflow
+   boundary_conditions
    output
    debugging
    tools
@@ -33,6 +34,7 @@ Prefix           Covers
 ``grid.``        Mesh extents, vertical stretching, output selection
 ``terrain.``     Terrain file and the interpolation onto grid columns
 ``inflow.``      Wind profile and its parameters
+``bc.``          Boundary-condition options (currently a test aid)
 ``fwt.``         Whole-run switches, currently ``fwt.debug``
 ===============  ==========================================================
 
