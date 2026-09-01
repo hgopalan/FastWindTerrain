@@ -1,0 +1,16 @@
+# Phase 1 regtest -- nominal case (exact match)
+# 40x40 horizontal cells, ABL-scale domain (1000 m x 1000 m footprint).
+# Vertical grid: dz0 = 2 m, stretching_ratio = 1.05, nz = 66.
+# H_computed = dz0*(r^nz - 1)/(r-1) = 961.2758234855... m
+# prob_hi[2] is set to exactly this value so the run should proceed with
+# NO warning and NO adjustment (the exact-match branch). The overshoot
+# and undershoot branches are exercised separately in
+# inputs_overshoot / inputs_undershoot.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+grid.report_file      = grid_report_nominal.txt

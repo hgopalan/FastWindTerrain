@@ -1,0 +1,6 @@
+CEXE_headers += Source/Grid.H
+CEXE_sources += Source/Grid.cpp
+CEXE_sources += Source/main.cpp
+
+INCLUDE_LOCATIONS += Source
+VPATH_LOCATIONS   += Source
