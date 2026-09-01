@@ -8,3 +8,7 @@ tmp_build_dir/
 
 # AMReX crash artifacts
 Backtrace.*
+
+# Python
+__pycache__/
+*.pyc

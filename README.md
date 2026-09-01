@@ -129,6 +129,31 @@ elided in the middle.
 ./build/fastwindterrain inputs fwt.debug=1
 ```
 
+## Tools
+
+`tools/make_terrain.py` generates synthetic terrain files in the format
+the solver reads (`x,y,z` points, comma or whitespace separated, `#`
+comments, optional header line -- the same format as
+`massconsistent_amr`). Standard library only.
+
+```
+python3 tools/make_terrain.py --shape hill --peak 100 --sigma 150 \
+    --xhi 1000 --yhi 1000 --nx 51 --ny 51 -o terrain.csv
+```
+
+Shapes: `flat`, `hill` (Gaussian), `valley`, `ridge` (Gaussian in x,
+uniform in y), `slope` (constant gradient). `--jitter` displaces the
+sample points off the lattice, so the output is genuinely scattered and
+exercises the IDW interpolation rather than landing on grid nodes.
+
+The shape functions are importable, so a checker can compute the
+expected terrain height independently of the file:
+
+```python
+from make_terrain import elevation
+z = elevation("hill", x, y, peak=100.0, sigma=150.0, xc=500.0, yc=500.0)
+```
+
 ## Regtests
 
 `regtests/` holds one folder per phase, each with its own `inputs*`
