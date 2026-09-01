@@ -58,10 +58,8 @@ if(FWT_USE_INTERNAL_AMREX)
     set(AMReX_OMP            ${FWT_OMP})
     set(AMReX_FORTRAN        OFF)
     set(AMReX_INSTALL        OFF)
-    # Only Src/Base is needed so far; this mirrors the GNUmake build.
-    # AMReX_LINEAR_SOLVERS must be flipped ON with the variational
-    # Poisson solve (MLMG) in a later phase.
-    set(AMReX_LINEAR_SOLVERS OFF)
+    # The variational Poisson solve uses MLMG's nodal Laplacian.
+    set(AMReX_LINEAR_SOLVERS ON)
     set(AMReX_PARTICLES      OFF)
     set(AMReX_AMRLEVEL       OFF)
     set(AMReX_EB             OFF)

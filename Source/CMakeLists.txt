@@ -4,6 +4,7 @@ add_executable(fastwindterrain
     Terrain.cpp
     Inflow.cpp
     BoundaryConditions.cpp
+    Poisson.cpp
     Output.cpp
     main.cpp
 )

@@ -18,6 +18,7 @@ on this layout.
    terrain
    inflow
    boundary_conditions
+   poisson
    numerics
    output
    debugging
@@ -37,6 +38,7 @@ Prefix           Covers
 ``inflow.``      Wind profile and its parameters
 ``bc.``          Boundary-condition options (currently a test aid)
 ``numerics.``    Derivative scheme selection
+``poisson.``     Variational Poisson solve and its coefficients
 ``fwt.``         Whole-run switches, currently ``fwt.debug``
 ===============  ==========================================================
 

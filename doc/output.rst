@@ -44,6 +44,8 @@ The plotfile carries these cell-centered fields, in order:
      - Velocity y-component [m/s]
    * - ``w``
      - Velocity z-component [m/s]
+   * - ``sigma_x``, ``sigma_y``, ``sigma_z``
+     - Poisson operator coefficients, vertical metric included
 
 ``z_cc`` and ``dz`` are written because AMReX's ``Geometry`` is uniform
 in z, so the plotfile's own vertical coordinate is only nominal. A

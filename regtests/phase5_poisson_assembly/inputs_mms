@@ -1,0 +1,30 @@
+# Phase 5 regtest -- manufactured solution.
+#
+# lambda = sin(pi x/Lx) sin(pi y/Ly) sin(pi z/Lz) vanishes on every face,
+# so homogeneous Dirichlet is exact and the boundary treatment cannot
+# mask an error in the interior discretization. The RHS is set from the
+# analytic source, so this measures the operator and the vertical metric
+# and nothing else.
+#
+# The checker overrides n_cell, dz0 and stretching_ratio to sweep
+# resolutions at a FIXED total stretch, which is what makes the result a
+# convergence rate rather than a comparison of different grids.
+
+grid.n_cell           = 16 16 16
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 100.0 100.0 100.0
+grid.dz0              = 6.25
+grid.stretching_ratio = 1.0
+grid.max_grid_size    = 64
+
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0
+
+poisson.manufactured = 1
+poisson.alpha_h      = 1.0
+poisson.alpha_v      = 1.0
+
+grid.output_format = ascii
+grid.report_file   = grid_report_mms.txt

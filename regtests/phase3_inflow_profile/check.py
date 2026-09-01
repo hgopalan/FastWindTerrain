@@ -316,9 +316,14 @@ def check_powerlaw(exe):
     result = run_case(exe, name)
     require_success(name, result)
 
+    # Later phases append their own fields to the same plotfile, so this
+    # asserts the velocity fields are present and lead the list after the
+    # grid and terrain fields, not that they are the last ones.
     pf = Plotfile(os.path.join(WORKDIR, "plt_powerlaw"))
-    assert pf.var_names == ["z_cc", "dz", "terrain_z", "mask", "u", "v", "w"], (
-        f"[{name}] unexpected plotfile fields: {pf.var_names}")
+    assert pf.var_names[:7] == ["z_cc", "dz", "terrain_z", "mask",
+                                "u", "v", "w"], (
+        f"[{name}] expected the plotfile to lead with the grid, terrain "
+        f"and velocity fields, got {pf.var_names}")
 
     worst = check_analytic_profile(name, pf, powerlaw_speed)
     check_finite(name, pf)
