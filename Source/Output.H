@@ -3,6 +3,7 @@
 
 #include "Grid.H"
 #include "Terrain.H"
+#include "Inflow.H"
 
 #include <string>
 
@@ -14,13 +15,15 @@ namespace fwt {
 //   dz        -- true cell thickness [m]
 //   terrain_z -- terrain surface height for the column [m]
 //   mask      -- 1 solid, 0 fluid (binary immersed boundary)
+//   u, v, w   -- initial velocity field u0 [m/s]
 //
 // z_cc/dz are written because AMReX's Geometry is uniform in z, so the
 // plotfile's own vertical coordinate is only nominal and a visualization
 // tool needs these fields to see where the cells actually sit.
 void WritePlotfile (const std::string& plotfilename,
                     const Grid& grid,
-                    const Terrain& terrain);
+                    const Terrain& terrain,
+                    const Inflow& inflow);
 
 } // namespace fwt
 

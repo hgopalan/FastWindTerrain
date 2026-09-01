@@ -14,3 +14,11 @@ grid.max_grid_size    = 32
 grid.output_format    = both
 grid.report_file      = grid_report_plt.txt
 grid.plot_file        = plt_grid_test
+
+# Phase 3 onward every run builds an inflow profile, so a reference wind
+# is required even by the grid/terrain cases. These values do not affect
+# what this case checks.
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0

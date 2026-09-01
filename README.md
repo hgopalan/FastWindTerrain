@@ -1,258 +1,58 @@
 # FastWindTerrain
 
 Mass-consistent wind solver on a Cartesian AMReX mesh, with terrain
-represented as an immersed boundary. This repo ports only the
-**mass-consistent solver** core (not buildings, canopy, turbine wakes,
-dispersion, EnKF, etc. from the broader `massconsistent_amr` project).
+represented as an immersed boundary.
 
 Velocities are stored cell-centered and the pressure/potential (`lambda`)
 nodal, so a future fractional-step solver can build directly on this
 layout.
 
-## Status
+## Quick start
 
-- **Phase 1: grid & data layout scaffolding**, plus the AMReX submodule
-  and the CMake build.
-  Builds the AMReX `BoxArray`/`DistributionMapping`/`Geometry` for a
-  Cartesian mesh with uniform x,y spacing and a geometrically-stretched
-  z spacing (finer near the surface, coarsening upward -- useful for
-  resolving the ABL surface layer). See `Source/Grid.H`/`Grid.cpp`.
-- **Phase 2 (this PR): terrain surface & immersed-boundary mask.**
-  Reads a scattered `x,y,z` terrain file, interpolates it onto the grid
-  columns with inverse-distance weighting, and builds a **binary**
-  solid/fluid mask. See `Source/Terrain.H`/`Terrain.cpp`.
-
-Later phases (terrain/IB masking, inflow profiles, directional BCs,
-the variational Poisson solve, anisotropy + O'Brien adjustment,
-diagnostics/output) are tracked separately and build on this scaffolding.
-
-## Building
-
-AMReX is bundled as a git submodule at `external/amrex` (pinned to
-release `26.08`), so a fresh clone needs:
+AMReX is bundled as a submodule, so a fresh clone needs:
 
 ```
 git submodule update --init --recursive
-```
-
-Two build systems are supported and kept configured the same way
-(3D, double precision, `Src/Base` only, MPI/OpenMP off by default).
-
-### CMake (recommended)
-
-```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 8
 ctest --test-dir build --output-on-failure
 ```
 
-This produces `build/fastwindterrain`. Options:
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `FWT_MPI` | `OFF` | Build with MPI |
-| `FWT_OMP` | `OFF` | Build with OpenMP |
-| `FWT_USE_INTERNAL_AMREX` | `ON` | Use the submodule; `OFF` uses `find_package(AMReX)` |
-| `FWT_ENABLE_TESTS` | `ON` | Register the regtests with CTest |
-
-### GNUmake (AMReX native)
+Then run a case:
 
 ```
-make -j8
+./build/fastwindterrain inputs
 ```
 
-This produces `main3d.gnu.ex`. `AMREX_HOME` defaults to the submodule;
-override it to build against a different checkout:
+A GNUmake build is also supported (`make -j8`, producing `main3d.gnu.ex`).
 
-```
-make AMREX_HOME=/path/to/amrex
-```
+## Documentation
 
-## Grid stretching
+Full documentation lives in [`doc/`](doc/):
 
-The vertical grid is geometric: `dz(k) = dz0 * r^k` for `k = 0..nz-1`,
-where `dz0` is the surface-adjacent cell thickness and `r` is
-`grid.stretching_ratio` (default `1.0`, i.e. uniform). `nz`, `dz0`, `r`,
-and the requested domain height are all independent inputs; the code
-validates them after summing the geometric series to the actual height
-`H_computed`:
-
-- `H_computed` matches the requested height (within tolerance): proceeds normally.
-- `H_computed` **exceeds** the requested height: **non-fatal warning**,
-  and `grid.prob_hi[2]` is overridden to `H_computed` so the grid and
-  domain agree exactly.
-- `H_computed` **falls short** of the requested height: **fatal abort**
-  (increase `n_cell[2]`, `dz0`, or `stretching_ratio`).
-
-Example `inputs`:
-
-```
-grid.n_cell           = 40 40 66
-grid.prob_lo          = 0.0 0.0 0.0
-grid.prob_hi          = 1000.0 1000.0 961.2758234855
-grid.dz0              = 2.0
-grid.stretching_ratio = 1.05
-grid.max_grid_size    = 32
-grid.report_file      = grid_report.txt
-```
-
-## Terrain and the immersed-boundary mask
-
-The terrain surface is read from a scattered point file and interpolated
-onto each grid column, and cells below the surface are masked solid.
-
-| Input | Default | Meaning |
-| --- | --- | --- |
-| `terrain.file` | *(none)* | `x,y,z` point file. Absent means flat ground |
-| `terrain.flat_elevation` | `0.0` | Ground elevation when no file is given [m] |
-| `terrain.idw_n_neighbors` | `6` | Nearest points used by the interpolation |
-| `terrain.idw_exponent` | `2.0` | IDW power `p`; weight `= d^-p` |
-
-The file format is the one `massconsistent_amr`'s `read_terrain_file`
-accepts: one `x y z` point per line, comma **or** whitespace separated,
-`#` comments stripped, and any line that does not parse as three numbers
-skipped -- so a leading `x,y,z` header is fine. A named file that cannot
-be opened, or that yields no points, is a fatal error rather than a
-silent fall back to flat ground. Generate synthetic files with
-`tools/make_terrain.py` (see **Tools**).
-
-The interpolation is a port of `massconsistent_amr`'s `idw_terrain`: the
-`k` nearest points by squared distance, weighted `d^-p`, with a query
-landing on an input point returning that point's elevation exactly.
-
-The mask is **binary** -- there are no partial volume fractions:
-
-```
-mask(i,j,k) = 1 (solid)  if  z_cc(k) <= z_terrain(i,j)
-              0 (fluid)  otherwise
-```
-
-matching `massconsistent_amr`'s `is_solid = (z_cc - z_terrain <= 0)`, so
-a cell center sitting exactly on the surface is solid. `z_cc` is the
-true stretched cell-center height, not `geom().CellSize(2)`.
-
-`z_terrain` is a 2D field but is stored in a normal cell-centered
-MultiFab replicated along k: it costs `nz` times more memory than a
-column array and buys direct plotfile output plus uniform `(i,j,k)`
-indexing in every kernel.
-
-## Output
-
-`grid.output_format` selects how the grid is written:
-
-| Value | Effect |
+| Topic | |
 | --- | --- |
-| `ascii` (default) | Plain-text grid + terrain report to `grid.report_file` (default `grid_report.txt`) |
-| `plt` | AMReX native plotfile to `grid.plot_file` (default `plt_grid`) |
-| `both` | Both of the above |
+| [Building](doc/building.rst) | CMake and GNUmake, build options |
+| [Grid](doc/grid.rst) | Vertical stretching and the domain-height policy |
+| [Terrain](doc/terrain.rst) | Terrain files, interpolation, the immersed-boundary mask |
+| [Inflow](doc/inflow.rst) | Wind profiles, AGL anchoring, boundary mass flux |
+| [Output](doc/output.rst) | Report and plotfile formats |
+| [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |
+| [Tools](doc/tools.rst) | Synthetic terrain generation |
+| [Regtests](doc/regtests.rst) | Test suite and how to run it |
 
-Any other value is a fatal error. The plotfile carries four
-cell-centered fields: `z_cc`, `dz`, `terrain_z`, `mask`. Because AMReX's
-`Geometry` is uniform in z, the plotfile's own vertical coordinate is
-only nominal -- the true stretched grid is carried in `z_cc` and `dz`.
-
-## Debugging
-
-`fwt.debug = 1` turns on verbose diagnostics for the whole run:
-
-- every input that was parsed, with the ones that fell back to a
-  **default** marked as such
-- the domain-height arithmetic (`H_requested`, `H_computed`, relative
-  difference, and which of the three branches was taken)
-- the full `k, z_face, dz, z_cc` table
-- the index domain, `dx/dy`, periodicity, box list with owning rank,
-  and cells per rank
-- every file written
-
-Default is off, and with it off the output is byte-for-byte what it was
-before the switch existed. Debug lines carry a `[debug]` prefix and never
-contain the words `WARNING`/`ERROR`, so they cannot confuse the regtest
-checkers that key on those strings. Tables longer than 200 rows are
-elided in the middle.
+To build the docs as HTML:
 
 ```
-./build/fastwindterrain inputs fwt.debug=1
+sphinx-build -b html doc doc/_build
 ```
 
-## Tools
-
-`tools/make_terrain.py` generates synthetic terrain files in the format
-the solver reads (`x,y,z` points, comma or whitespace separated, `#`
-comments, optional header line -- the same format as
-`massconsistent_amr`). Standard library only.
+## Layout
 
 ```
-python3 tools/make_terrain.py --shape hill --peak 100 --sigma 150 \
-    --xhi 1000 --yhi 1000 --nx 51 --ny 51 -o terrain.csv
+Source/      solver source
+doc/         documentation
+regtests/    one directory per test group, each self-contained
+tools/       helper scripts
+external/    AMReX submodule
 ```
-
-Shapes: `flat`, `hill` (Gaussian), `valley`, `ridge` (Gaussian in x,
-uniform in y), `slope` (constant gradient). `--jitter` displaces the
-sample points off the lattice, so the output is genuinely scattered and
-exercises the IDW interpolation rather than landing on grid nodes.
-
-The shape functions are importable, so a checker can compute the
-expected terrain height independently of the file:
-
-```python
-from make_terrain import elevation
-z = elevation("hill", x, y, peak=100.0, sigma=150.0, xc=500.0, yc=500.0)
-```
-
-## Regtests
-
-`regtests/` holds one folder per phase, each with its own `inputs*`
-files and a standalone `check.py`. There is no separate `tests_example`
-tier -- regtests are the only test suite for now.
-
-Cases run in a scratch work directory (`build/regtests/<phase>` by
-default), so running the tests leaves nothing behind in the source tree.
-
-```
-python3 run_regtests.py build/fastwindterrain
-```
-
-or to run a single phase:
-
-```
-python3 run_regtests.py build/fastwindterrain phase1_grid
-```
-
-The same tests are registered with CTest (`ctest --test-dir build`).
-
-`regtests/plotfile.py` is a small standard-library reader for AMReX
-single-level plotfiles, shared by the phase checkers. It exists so the
-regtests can inspect field values without depending on `yt`.
-
-### phase1_grid
-
-- `inputs_nominal` -- stretched grid, exact height match (no warning)
-- `inputs_uniform` -- `stretching_ratio=1.0` regression case (must
-  reproduce a plain uniform grid exactly)
-- `inputs_overshoot` -- computed height exceeds requested height
-  (expects non-fatal warning + `prob_hi[2]` override)
-- `inputs_undershoot` -- computed height falls short of requested
-  height (expects fatal abort, nonzero exit code)
-- `inputs_plt` -- `output_format=both` writes both the ascii report and
-  a well-formed plotfile (`z_cc`, `dz`)
-- `inputs_badformat` -- an unrecognized `output_format` aborts fatally
-- `inputs_debug` -- `fwt.debug=1` prints the full diagnostics, agrees
-  with the ascii report, and changes no result; the default stays silent
-
-### phase2_terrain_ib
-
-The expected terrain height is recomputed in Python from the same point
-file, so these cases do not simply confirm the solver against itself.
-
-- `inputs_flat` -- no terrain file: `z_terrain == 0` everywhere and every
-  cell fluid
-- `inputs_hill` -- Gaussian hill sampled on a 20 m lattice while the grid
-  is 25 m, so cell centers never coincide with a terrain point and the
-  interpolation is genuinely exercised. Checks `z_terrain` against an
-  independent Python IDW, that the mask is exactly `z_cc <= z_terrain`,
-  that solid cells are contiguous from the ground up, that the mask
-  boundary lands in the right cell in every column, and that the
-  interpolated surface tracks the analytic Gaussian it was sampled from
-- `inputs_scattered` -- the same hill sampled off-lattice, so the
-  k-nearest search faces irregular spacing
-- a missing terrain file must abort rather than fall back to flat ground

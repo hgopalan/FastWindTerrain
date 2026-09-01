@@ -1,0 +1,21 @@
+# Phase 3 regtest -- user velocity file over flat ground.
+# user_profile.txt is six-column x,y,z,u,v,w with z as height ABOVE
+# GROUND, so the user profile is terrain-following like the analytic
+# laws. Its nonzero w exercises the sixth column.
+# The checker overrides inflow.file with an absolute path.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+inflow.mode            = userfile
+inflow.file            = user_profile.txt
+inflow.idw_n_neighbors = 6
+inflow.idw_exponent    = 2.0
+
+grid.output_format    = both
+grid.report_file      = grid_report_userfile.txt
+grid.plot_file        = plt_userfile

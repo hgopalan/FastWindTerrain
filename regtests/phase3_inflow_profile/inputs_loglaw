@@ -1,0 +1,21 @@
+# Phase 3 regtest -- log-law inflow over flat ground.
+# speed(z_agl) = speed_ref * ln((z_agl+z0)/z0) / ln((z_ref+z0)/z0)
+# The (z+z0) numerator is massconsistent_amr's form: the profile reaches
+# exactly zero at the ground rather than diverging.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+inflow.mode           = loglaw
+inflow.u_ref          = 8.0
+inflow.v_ref          = 6.0
+inflow.z_ref          = 10.0
+inflow.z0             = 0.1
+
+grid.output_format    = both
+grid.report_file      = grid_report_loglaw.txt
+grid.plot_file        = plt_loglaw

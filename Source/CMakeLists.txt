@@ -1,6 +1,7 @@
 add_executable(fastwindterrain
     Grid.cpp
     Terrain.cpp
+    Inflow.cpp
     Output.cpp
     main.cpp
 )
