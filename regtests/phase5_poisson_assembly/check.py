@@ -7,9 +7,9 @@ Validates:
   inputs_mms -> a manufactured solution with a known analytic lambda,
                 solved at three resolutions on a UNIFORM and on a
                 STRETCHED grid, checking second-order convergence
-  inputs_rhs -> the assembled nodal RHS against an independent Python
-                divergence of the plotfile's own velocity, and sigma
-                against its definition in every cell
+  inputs_rhs -> the scheme-based nodal RHS against an independent Python
+                divergence of the plotfile's own initial velocity, and
+                sigma against its definition in every cell
 
 The manufactured case is the one that matters most. AMReX's Geometry is
 uniform in z, so the true cell heights reach the operator only through
@@ -198,8 +198,17 @@ def check_rhs_and_sigma(exe):
     sigma against its definition."""
     name = "inputs_rhs"
     clean("plt_rhs", "grid_report_rhs.txt", "rhs_dump.txt")
+    # This case checks the RHS built from the configured derivative
+    # scheme against an independent implementation of that same scheme.
+    # From Phase 6 the default RHS comes from AMReX's own nodal
+    # divergence instead -- the operator the solve is built from -- so
+    # the scheme path is selected explicitly here.
     result = run_case(exe, "inputs_rhs", [
-        f"terrain.file={os.path.join(HERE, 'terrain_hill.csv')}"])
+        f"terrain.file={os.path.join(HERE, 'terrain_hill.csv')}",
+        "poisson.rhs_operator=scheme",
+        # One pass only: further passes rebuild the RHS from the
+        # corrected field, and this case inspects the one built from u0.
+        "poisson.n_projections=1"])
     require_success(name, result)
 
     rep = parse_report(os.path.join(WORKDIR, "grid_report_rhs.txt"))
@@ -218,6 +227,14 @@ def check_rhs_and_sigma(exe):
     mask = pf.field("mask")
     sx, sy, sz = (pf.field("sigma_x"), pf.field("sigma_y"),
                   pf.field("sigma_z"))
+    # Sigma is NOT masked inside terrain. Zeroing it there makes no-flux
+    # exact in the operator but leaves nodes buried in terrain with a
+    # zero diagonal, which the multigrid smoother divides by -- producing
+    # NaN and a solve that silently reports a zero residual.
+    # massconsistent_amr leaves its coefficients unmasked for the same
+    # reason and imposes the immersed boundary on the field instead. So
+    # sigma must equal alpha^2 times the metric EVERYWHERE, solid cells
+    # included.
     n_solid = 0
     worst_sigma = 0.0
     for k in range(NZ):
@@ -225,12 +242,6 @@ def check_rhs_and_sigma(exe):
             for i in range(0, NX, 3):
                 if mask(i, j, k) == SOLID:
                     n_solid += 1
-                    assert sx(i,j,k) == 0.0 and sy(i,j,k) == 0.0 \
-                        and sz(i,j,k) == 0.0, (
-                        f"[{name}] sigma must vanish in solid cells; at "
-                        f"({i},{j},{k}) it is ({sx(i,j,k)}, {sy(i,j,k)}, "
-                        f"{sz(i,j,k)})")
-                    continue
                 for got, expect, comp in (
                         (sx(i,j,k), ALPHA_H**2 * J[k], "sigma_x"),
                         (sy(i,j,k), ALPHA_H**2 * J[k], "sigma_y"),
@@ -239,11 +250,12 @@ def check_rhs_and_sigma(exe):
                     worst_sigma = max(worst_sigma, err)
                     assert err < 1.0e-12, (
                         f"[{name}] {comp} at ({i},{j},{k}) is {got}, "
-                        f"expected {expect} = alpha^2 * metric")
+                        f"expected {expect} = alpha^2 * metric. Sigma must "
+                        f"stay elliptic everywhere, solid cells included")
 
     assert n_solid > 0, (
-        f"[{name}] the hill should bury some cells, so the sigma = 0 "
-        f"branch is never exercised")
+        f"[{name}] the hill should bury some cells, so the unmasked-sigma "
+        f"behaviour inside terrain is actually exercised")
 
     # --- RHS, against an independent divergence -------------------------
     dump = {}
@@ -256,7 +268,9 @@ def check_rhs_and_sigma(exe):
             dump[(int(p[0]), int(p[1]), int(p[2]))] = float(p[3])
     assert dump, f"[{name}] no rows read from the RHS dump"
 
-    u, v, w = pf.field("u"), pf.field("v"), pf.field("w")
+    # The RHS is assembled from the INITIAL field, so compare
+    # against u0/v0/w0; u/v/w are post-projection from Phase 6 on.
+    u, v, w = pf.field("u0"), pf.field("v0"), pf.field("w0")
 
     dzdk = [0.0] * NZ
     for k in range(NZ):
@@ -311,21 +325,22 @@ def check_rhs_and_sigma(exe):
         f"(i,j,k)={worst_at[:3]}: solver {worst_at[3]} vs reference "
         f"{worst_at[4]}")
 
-    print(f"[PASS] {name}  (sigma exact to {worst_sigma:.1e} with "
-          f"{n_solid} solid cells checked; RHS matches an independent "
+    print(f"[PASS] {name}  (sigma exact to {worst_sigma:.1e}, unmasked "
+          f"across {n_solid} solid cells; RHS matches an independent "
           f"divergence to {worst_rhs/scale:.1e} over {n_checked} nodes, "
           f"{nonzero} of them nonzero)")
 
 
-def check_pinned_nodes(exe):
-    """A terrain tall enough to bury whole columns leaves nodes with no
-    fluid cell around them. Those rows are empty and must be pinned, not
-    left singular."""
-    name = "inputs_rhs (pinned nodes)"
+def check_rhs_masked_in_terrain(exe):
+    """The immersed boundary is imposed on the source, not the operator:
+    the divergence is cleared at nodes buried in terrain."""
+    name = "inputs_rhs (terrain masking)"
     rep = parse_report(os.path.join(WORKDIR, "grid_report_rhs.txt"))
-    n_pinned = rep["poisson_n_pinned_nodes"]
-    assert n_pinned >= 0
-    print(f"[PASS] {name}  ({int(n_pinned)} nodes pinned)")
+    n_zeroed = rep["poisson_rhs_nodes_zeroed"]
+    assert n_zeroed > 0, (
+        f"[{name}] a 100 m hill should bury some nodes entirely, but the "
+        f"RHS was cleared at none")
+    print(f"[PASS] {name}  (RHS cleared at {int(n_zeroed)} buried nodes)")
 
 
 def main():
@@ -346,7 +361,8 @@ def main():
     print(f"work directory: {WORKDIR}")
 
     failed = []
-    for check in (check_manufactured, check_rhs_and_sigma, check_pinned_nodes):
+    for check in (check_manufactured, check_rhs_and_sigma,
+                  check_rhs_masked_in_terrain):
         try:
             check(exe)
         except AssertionError as e:

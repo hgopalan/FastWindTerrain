@@ -91,38 +91,162 @@ Because it is derived, it is verified rather than assumed. See
 The immersed boundary
 =====================
 
-No-flux inside the terrain is imposed as ``sigma = 0`` in solid cells:
-zero conductivity carries no flux, which is the Neumann condition. It
-falls straight out of sigma being cell-centered, so no separate
-treatment is needed.
+The immersed boundary is imposed on the **field**, never on the operator
+coefficients:
 
-A node surrounded entirely by solid cells then has an empty row. Those
-nodes are pinned through the overset mask rather than left singular, and
-the count is reported as ``poisson_n_pinned_nodes``.
+* the divergence is cleared at nodes buried in terrain when the RHS is
+  built (reported as ``poisson_rhs_nodes_zeroed``)
+* the velocity is re-zeroed in solid cells after the correction
+* ``sigma`` stays elliptic everywhere, terrain included
+
+This follows ``massconsistent_amr``, whose face coefficients carry no
+terrain masking at all. The reason is practical and was learned the hard
+way: setting ``sigma = 0`` in solid cells makes no-flux exact in the
+operator, but leaves any node buried in terrain with a **zero diagonal**,
+which the multigrid smoother divides by. The result is NaN — and a NaN
+that hides itself, because ``max(x, NaN)`` returns ``x``, so every
+diagnostic reports a clean-looking zero: zero residual, zero lambda, zero
+divergence.
+
+Lambda is therefore solved inside the terrain as well, where it is
+meaningless but harmless.
 
 Boundary conditions
 ===================
 
-The ``lambda`` conditions come from the face classification (see
-:doc:`boundary_conditions`): Neumann where velocity is prescribed or
-there is no flow, Dirichlet where it is free. At least one face must be
-Dirichlet or the operator is singular, which the boundary-condition code
-asserts before the solve is ever built.
+``poisson.lambda_bc`` selects them, defaulting to ``flowthrough``: the
+classical mass-consistent convention of ``lambda = 0`` on every
+flow-through boundary, with Neumann where nothing flows through (ground
+and domain top). It is **fixed, not derived from the wind**.
+
+That is deliberate, and it supersedes the mapping the face
+classification suggests (see :doc:`boundary_conditions`). Deriving the
+lambda conditions from the wind -- Neumann on whichever faces the flow
+enters -- interacts badly with the *nodal* operator. ``mlndlap_divu``
+deliberately does not see the tangential velocity at a face it treats as
+inflow, and with an oblique wind those faces carry a large tangential
+component, so zeroing it manufactures an enormous artificial divergence.
+Measured on the same case:
+
+.. list-table::
+   :widths: 30 20 20
+   :header-rows: 1
+
+   * -
+     - directional
+     - flowthrough
+   * - initial ``max|div u|`` (controlled norm)
+     - 6.92
+     - **0.113**
+   * - corrected ``|U|max`` from a 10 m/s inflow
+     - 34.8 m/s
+     - **18.9 m/s**
+
+``massconsistent_amr`` never meets this, because its operator is
+cell-centered; it also fixes its lambda conditions rather than deriving
+them (``x`` Dirichlet, ``y`` and ``z`` Neumann).
+
+The face classification still governs the **velocity** boundary
+conditions, which is where the wind direction genuinely belongs. Setting
+``poisson.lambda_bc = directional`` restores the derived mapping, for
+comparison.
 
 The projection
 ==============
 
-The solve inverts a **linear** operator -- that is what MLMG does. The
-selected derivative scheme (see :doc:`numerics`) enters at the two ends
-instead: the divergence that forms the RHS, and the gradient in the
-velocity correction.
+``MLMG`` inverts a linear operator, so the derivative scheme (see
+:doc:`numerics`) does not enter the solve at all. Two inputs choose the
+operators:
 
-With WENO at those ends the result is an **approximate projection**: the
-corrected field carries ``div(u) = O(h^p)`` rather than machine zero,
-because the nonlinear ``D`` and ``G`` do not compose into the linear
-Laplacian that was inverted. This is a legitimate and published
-approach, but it means a divergence-free check has to assert a
-*convergence rate* under refinement rather than a fixed threshold.
+.. list-table::
+   :widths: 28 16 46
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``poisson.rhs_operator``
+     - ``fe``
+     - ``fe`` uses AMReX's own nodal divergence; ``scheme`` uses the
+       configured derivative scheme averaged to nodes
+   * - ``poisson.gradient_operator``
+     - ``amrex``
+     - ``amrex`` uses AMReX's own nodal gradient; ``scheme`` averages
+       lambda to cell centres and differentiates it with the configured
+       scheme, as ``massconsistent_amr`` does
+   * - ``poisson.n_projections``
+     - ``4``
+     - How many times to repeat the projection
+
+The defaults pair AMReX's own divergence and gradient, because those are
+the operators the solve is assembled from. The ``scheme`` variants are
+offered because they are the familiar formulation, but they are looser:
+on the Phase 6 hill case the divergence falls to 0.043 with ``amrex``
+against 0.076 with ``scheme``.
+
+Because the scheme never reaches the projection, ``weno3js``,
+``upwind2`` and ``central2`` give an **identical** corrected field. Only
+the reported diagnostic divergence differs, and a regtest pins exactly
+that.
+
+Repeating the projection
+------------------------
+
+AMReX's nodal projection is *approximate*: its divergence and gradient
+are not an exact factorisation of the operator, so one pass removes only
+part of the divergence. The remainder shrinks monotonically with
+``poisson.n_projections``. On the Phase 6 hill case:
+
+.. list-table::
+   :widths: 20 20
+   :header-rows: 1
+
+   * - Passes
+     - ``max|div u|``
+   * - 0
+     - 0.1133
+   * - 1
+     - 0.0935
+   * - 2
+     - 0.0728
+   * - 4
+     - 0.0431
+   * - 8
+     - 0.0234
+
+Multigrid and cell aspect ratio
+===============================
+
+Multigrid convergence degrades as cells get more anisotropic, and the
+cure is more smoothing sweeps -- roughly twice the aspect ratio, so 8
+sweeps at 4:1 and 16 at 8:1. The sweeps are chosen from the grid unless
+``poisson.num_pre_smooth`` / ``poisson.num_post_smooth`` are set, and the
+ratio actually used is reported.
+
+The surface layer is the worst case, being the thinnest: a 25 m
+horizontal spacing over a 2 m first cell is 12.5:1.
+
+Diagnostics
+===========
+
+Two divergence numbers are reported, and they measure different things:
+
+``poisson_div_controlled_before`` / ``_after``
+    The divergence in the norm the solve controls, using AMReX's own
+    nodal operator. **This is the one that says whether the projection
+    worked.**
+
+``poisson_div_before`` / ``_after``
+    The same field measured with the configured derivative scheme. A
+    different, wider operator that nothing drives to zero, so it is a
+    physics-facing diagnostic rather than a target.
+
+Velocity extrema are reported too -- per component, plus ``|U|max``,
+either side of the projection. They earn their place: a projection can
+reduce the divergence handsomely while wrecking the field, and no
+divergence number shows it. An earlier version of this solver reduced
+divergence fifteen-fold while turning a 10 m/s inflow into a 35 m/s
+corrected wind; only the extrema exposed it.
 
 Verification
 ============

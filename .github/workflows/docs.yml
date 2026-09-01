@@ -1,0 +1,49 @@
+name: Docs
+
+# The docs are part of the deliverable, so a change that breaks them
+# should fail the PR rather than be discovered later.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Sphinx
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r doc/requirements.txt
+
+      # -W turns warnings into errors, which is what makes this useful:
+      # a malformed table or a broken cross-reference renders as garbage
+      # rather than failing, so without -W it would pass silently.
+      - name: Build the docs, treating warnings as errors
+        run: sphinx-build -b html -W --keep-going doc doc/_build
+
+      - name: Upload the rendered docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: doc/_build
+          retention-days: 14

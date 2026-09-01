@@ -66,6 +66,20 @@ void Poisson::ReadParameters ()
     pp.query("verbose", m_verbose);
     pp.query("reltol", m_reltol);
     pp.query("abstol", m_abstol);
+    pp.query("num_pre_smooth", m_pre_smooth);
+    pp.query("num_post_smooth", m_post_smooth);
+    pp.query("rhs_operator", m_rhs_operator);
+    pp.query("lambda_bc", m_lambda_bc);
+    pp.query("gradient_operator", m_gradient_operator);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_gradient_operator == "amrex" || m_gradient_operator == "scheme",
+        "poisson.gradient_operator must be 'amrex' or 'scheme'");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_lambda_bc == "flowthrough" || m_lambda_bc == "directional",
+        "poisson.lambda_bc must be 'flowthrough' or 'directional'");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_rhs_operator == "fe" || m_rhs_operator == "scheme",
+        "poisson.rhs_operator must be 'fe' or 'scheme'");
 
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_alpha_h > 0.0,
         "poisson.alpha_h must be > 0");
@@ -110,18 +124,22 @@ void Poisson::BuildSigma (const Grid& grid, const Terrain& terrain)
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
-            if (mk(i,j,k) == solid) {
-                // No-flux inside the terrain: zero conductivity carries
-                // no flux, which is exactly the Neumann condition the
-                // immersed boundary needs.
-                s(i,j,k,0) = 0.0;
-                s(i,j,k,1) = 0.0;
-                s(i,j,k,2) = 0.0;
-                return;
-            }
             // The metric rides in on the coefficients: horizontal terms
             // are weighted by the cell's true height, the vertical term
             // by its inverse.
+            //
+            // Sigma is NOT masked inside the terrain. Zeroing it there
+            // makes no-flux exact in the operator, but leaves any node
+            // buried entirely in terrain with a zero diagonal, which the
+            // multigrid smoother divides by -- producing NaN and a solve
+            // that silently reports a zero residual. massconsistent_amr
+            // leaves its coefficients unmasked for the same reason and
+            // imposes the immersed boundary on the FIELD instead: the
+            // divergence is zeroed in solid cells when the RHS is built,
+            // and the velocity is re-zeroed there after the correction.
+            // Lambda is then solved inside the terrain too, where it is
+            // meaningless but harmless.
+            amrex::ignore_unused(mk, solid);
             s(i,j,k,0) = ah2 * J[k];
             s(i,j,k,1) = ah2 * J[k];
             s(i,j,k,2) = av2 / J[k];
@@ -155,6 +173,35 @@ void Poisson::BuildOperator (const Grid& grid, const Terrain& terrain,
             lo_bc[d] = amrex::LinOpBCType::Dirichlet;
             hi_bc[d] = amrex::LinOpBCType::Dirichlet;
         }
+    } else if (m_lambda_bc == "flowthrough") {
+        // The classical mass-consistent convention: lambda = 0 on every
+        // flow-through boundary, Neumann where nothing flows through
+        // (ground and domain top). Fixed, not derived from the wind.
+        //
+        // massconsistent_amr fixes its lambda conditions the same way
+        // (x Dirichlet, y and z Neumann). All four laterals are Dirichlet
+        // here because of the nodal operator, for the reason below.
+        //
+        // Deriving it from the wind instead -- Neumann on whichever faces
+        // the flow enters -- interacts badly with the NODAL divergence.
+        // mlndlap_divu deliberately does not see the tangential velocity
+        // at a face it considers inflow, and with an oblique wind those
+        // faces carry a large tangential component, so zeroing it
+        // manufactures an enormous artificial divergence: measured at
+        // 6.92 against 0.0216 for the same case with a fixed convention,
+        // and a corrected wind of 34.8 m/s against 18.9 m/s from a 10 m/s
+        // inflow. massconsistent_amr never meets this because its
+        // operator is cell-centered.
+        //
+        // The Phase 4 classification still governs the VELOCITY boundary
+        // conditions, which is where the wind direction genuinely
+        // belongs; it just no longer sets the lambda conditions.
+        lo_bc[0] = amrex::LinOpBCType::Dirichlet;
+        hi_bc[0] = amrex::LinOpBCType::Dirichlet;
+        lo_bc[1] = amrex::LinOpBCType::Dirichlet;
+        hi_bc[1] = amrex::LinOpBCType::Dirichlet;
+        lo_bc[2] = amrex::LinOpBCType::Neumann;   // ground
+        hi_bc[2] = amrex::LinOpBCType::Neumann;   // domain top, w = 0
     } else {
         // Face order is xlo, xhi, ylo, yhi, zlo, zhi.
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -164,54 +211,8 @@ void Poisson::BuildOperator (const Grid& grid, const Terrain& terrain,
     }
     m_op->setDomainBC(lo_bc, hi_bc);
 
-    // Nodes with no fluid cell around them have an empty row. Pin them
-    // rather than leaving the operator singular there.
-    m_overset.define(amrex::convert(m_ba, amrex::IntVect::TheNodeVector()),
-                     m_dm, 1, 0);
-    m_overset.setVal(1);          // 1 = solved for, 0 = pinned/known
-
-    const int solid = Terrain::kSolid;
-
-    // A nodal box reaches one cell past its cell-centered counterpart in
-    // every direction, so the mask has to be readable there. Ghosts
-    // outside the domain stay solid, which is the right answer: there is
-    // no fluid out there for a boundary node to see.
-    amrex::iMultiFab maskg(m_ba, m_dm, 1, 1);
-    maskg.setVal(solid);
-    amrex::iMultiFab::Copy(maskg, terrain.mask(), 0, 0, 1, 0);
-    maskg.FillBoundary(m_geom.periodicity());
-
-    long n_pinned = 0;
-    for (amrex::MFIter mfi(m_overset); mfi.isValid(); ++mfi) {
-        const amrex::Box& bx = mfi.validbox();
-        auto const& os = m_overset.array(mfi);
-        auto const& mk = maskg.const_array(mfi);
-        const amrex::Box& dom = m_geom.Domain();
-
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
-        {
-            bool any_fluid = false;
-            for (int kk = k-1; kk <= k; ++kk) {
-            for (int jj = j-1; jj <= j; ++jj) {
-            for (int ii = i-1; ii <= i; ++ii) {
-                if (ii < dom.smallEnd(0) || ii > dom.bigEnd(0) ||
-                    jj < dom.smallEnd(1) || jj > dom.bigEnd(1) ||
-                    kk < dom.smallEnd(2) || kk > dom.bigEnd(2)) { continue; }
-                if (mk(ii,jj,kk) != solid) { any_fluid = true; }
-            }}}
-            if (!any_fluid) {
-                os(i,j,k) = 0;
-                ++n_pinned;
-            }
-        });
-    }
-    amrex::ParallelDescriptor::ReduceLongSum(n_pinned);
-    m_n_pinned = n_pinned;
-
-    if (m_n_pinned > 0) {
-        m_op->setOversetMask(0, m_overset);
-    }
-
+    // No overset mask is needed. With sigma left elliptic everywhere
+    // there are no empty rows, so no node has to be pinned.
     m_op->setSigma(0, m_sigma);
 }
 
@@ -224,7 +225,9 @@ void Poisson::Build (const Grid& grid, const Terrain& terrain,
         amrex::ParmParse pp("poisson");
         int mms = 0;
         pp.query("manufactured", mms);
-        m_all_dirichlet = (mms != 0);
+        int forced = 0;
+        pp.query("force_all_dirichlet", forced);
+        m_all_dirichlet = (mms != 0) || (forced != 0);
     }
 
     m_ba = grid.ba();
@@ -237,6 +240,28 @@ void Poisson::Build (const Grid& grid, const Terrain& terrain,
     m_lambda.define(nba, m_dm, 1, 1);
     m_rhs.setVal(0.0);
     m_lambda.setVal(0.0);
+
+    // Multigrid convergence degrades as cells get more anisotropic,
+    // and the cure is more smoothing sweeps: roughly twice the aspect
+    // ratio (8 sweeps at 4:1, 16 at 8:1). The surface layer here is the
+    // worst case, being the thinnest.
+    {
+        const amrex::Real dx = grid.geom().CellSize(0);
+        const amrex::Real dy = grid.geom().CellSize(1);
+        amrex::Real worst = 1.0;
+        const amrex::Vector<amrex::Real>& zf = grid.z_face();
+        for (int k = 0; k < grid.nz(); ++k) {
+            const amrex::Real dz = zf[k+1] - zf[k];
+            worst = std::max(worst, std::max(dx, dy) / dz);
+            worst = std::max(worst, dz / std::min(dx, dy));
+        }
+        m_aspect = worst;
+
+        const int autos = std::min(32,
+            std::max(2, 2 * static_cast<int>(std::ceil(worst))));
+        if (m_pre_smooth  < 0) { m_pre_smooth  = autos; }
+        if (m_post_smooth < 0) { m_post_smooth = autos; }
+    }
 
     BuildSigma(grid, terrain);
     BuildOperator(grid, terrain, bc);
@@ -251,6 +276,10 @@ void Poisson::Build (const Grid& grid, const Terrain& terrain,
         FWT_DEBUG("dz_nominal       = " << grid.geom().CellSize(2) << " m");
         FWT_DEBUG("pinned nodes     = " << m_n_pinned
                   << "   (surrounded entirely by solid cells)");
+        FWT_DEBUG("cell aspect ratio= " << m_aspect
+                  << "   -> smoothing sweeps " << m_pre_smooth << "/"
+                  << m_post_smooth);
+        FWT_DEBUG("rhs_operator     = " << m_rhs_operator);
         FWT_DEBUG("all-Dirichlet    = " << (m_all_dirichlet ? "yes "
                   "(manufactured mode)" : "no (from the boundary "
                   "conditions)"));
@@ -340,6 +369,27 @@ void Poisson::ComputeRHS (const Grid& grid, const Terrain& terrain,
 
     divc.FillBoundary(m_geom.periodicity());
 
+    if (m_rhs_operator == "fe") {
+        // Use AMReX's OWN divergence rather than a hand-rolled one. The
+        // operator it assembles is D sigma G for a specific trilinear
+        // finite-element D and G, and only that exact pair makes the
+        // projection exact. A plausible-looking four-point average is a
+        // different operator, and leaves nearly all of the divergence
+        // behind -- measured, not assumed.
+        //
+        // D acts on (J u, J v, w): the computational flux vector whose
+        // divergence is J times the physical one, matching the weighting
+        // sigma already carries. updateVelocity returns the correction in
+        // the same variables, and it is unscaled afterwards.
+        ScaleToComputational(grid, terrain, vel, m_q);
+        m_op->compDivergence({&m_rhs}, {&m_q});
+        ZeroRHSInsideTerrain(terrain);   // IB on the source, not the operator
+
+        FWT_DEBUG("RHS assembled (fe, AMReX compDivergence): nodal, min "
+                  << m_rhs.min(0) << " max " << m_rhs.max(0));
+        return;
+    }
+
     // Average to nodes over whichever of the eight surrounding cells lie
     // inside the domain.
     m_rhs.setVal(0.0);
@@ -365,6 +415,8 @@ void Poisson::ComputeRHS (const Grid& grid, const Terrain& terrain,
         });
     }
 
+    ZeroRHSInsideTerrain(terrain);   // IB on the source, not the operator
+
     FWT_DEBUG("RHS assembled: nodal, min " << m_rhs.min(0)
               << " max " << m_rhs.max(0));
 }
@@ -378,13 +430,366 @@ amrex::Real Poisson::Solve ()
     amrex::MLMG mlmg(*m_op);
     mlmg.setMaxIter(m_max_iter);
     mlmg.setVerbose(m_verbose);
+    mlmg.setPreSmooth(m_pre_smooth);
+    mlmg.setPostSmooth(m_post_smooth);
 
     amrex::Vector<amrex::MultiFab*> sol {&m_lambda};
     amrex::Vector<const amrex::MultiFab*> rhs {&m_rhs};
 
     const amrex::Real resid = mlmg.solve(sol, rhs, m_reltol, m_abstol);
-    FWT_DEBUG("MLMG solve: residual " << resid);
+    m_resid = resid;
+    m_lambda.FillBoundary(m_geom.periodicity());
+    FWT_DEBUG("MLMG solve: residual " << resid
+              << ", lambda in [" << m_lambda.min(0) << ", "
+              << m_lambda.max(0) << "]"
+              << (m_lambda.contains_nan() ? "  CONTAINS NaN" : ""));
     return resid;
+}
+
+// ---------------------------------------------------------------------------
+// Velocity correction
+// ---------------------------------------------------------------------------
+
+void Poisson::ScaleToComputational (const Grid& grid, const Terrain& terrain,
+                                    const amrex::MultiFab& vel,
+                                    amrex::MultiFab& q) const
+{
+    const amrex::Real hz = grid.geom().CellSize(2);
+    const amrex::Vector<amrex::Real>& zf = grid.z_face();
+    const int nz = grid.nz();
+
+    amrex::Vector<amrex::Real> Jc(nz);
+    for (int k = 0; k < nz; ++k) { Jc[k] = (zf[k+1] - zf[k]) / hz; }
+    amrex::Gpu::DeviceVector<amrex::Real> d_J(Jc.size());
+    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, Jc.begin(), Jc.end(),
+                          d_J.begin());
+    amrex::Gpu::streamSynchronize();
+    const amrex::Real* pJ = d_J.data();
+
+    const int solid = Terrain::kSolid;
+    if (!q.ok()) { q.define(m_ba, m_dm, 3, 1); }
+    q.setVal(0.0);
+
+    for (amrex::MFIter mfi(q); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.tilebox();
+        auto const& a = q.array(mfi);
+        auto const& v = vel.const_array(mfi);
+        auto const& mk = terrain.mask().const_array(mfi);
+        amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            const amrex::Real f = (mk(i,j,k) == solid) ? 0.0 : 1.0;
+            a(i,j,k,0) = f * pJ[k] * v(i,j,k,0);
+            a(i,j,k,1) = f * pJ[k] * v(i,j,k,1);
+            a(i,j,k,2) = f * v(i,j,k,2);
+        });
+    }
+    q.FillBoundary(m_geom.periodicity());
+}
+
+void Poisson::ApplyCorrection (const Grid& grid, const Terrain& terrain,
+                               amrex::MultiFab& vel) const
+{
+    if (m_gradient_operator == "scheme") {
+        CorrectWithScheme(grid, terrain, vel);
+        return;
+    }
+
+    // The default. The correction is the gradient AMReX's own operator
+    // implies, for the same reason the RHS is its divergence: that pair
+    // is what the solve is built from. updateVelocity applies
+    // q -= sigma grad(lambda).
+    ScaleToComputational(grid, terrain, vel, m_q);
+    m_op->updateVelocity({&m_q}, {&m_lambda});
+
+    const amrex::Real hz = grid.geom().CellSize(2);
+    const amrex::Vector<amrex::Real>& zf = grid.z_face();
+    const int nz = grid.nz();
+    amrex::Vector<amrex::Real> Jc(nz);
+    for (int k = 0; k < nz; ++k) { Jc[k] = (zf[k+1] - zf[k]) / hz; }
+    amrex::Gpu::DeviceVector<amrex::Real> d_J(Jc.size());
+    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, Jc.begin(), Jc.end(),
+                          d_J.begin());
+    amrex::Gpu::streamSynchronize();
+    const amrex::Real* pJ = d_J.data();
+
+    const int solid = Terrain::kSolid;
+    for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.tilebox();
+        auto const& v = vel.array(mfi);
+        auto const& a = m_q.const_array(mfi);
+        auto const& mk = terrain.mask().const_array(mfi);
+        amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            if (mk(i,j,k) == solid) {
+                // No flow inside the terrain, after the projection as
+                // well as before it.
+                v(i,j,k,0) = 0.0;
+                v(i,j,k,1) = 0.0;
+                v(i,j,k,2) = 0.0;
+                return;
+            }
+            // Back out of the computational variables.
+            v(i,j,k,0) = a(i,j,k,0) / pJ[k];
+            v(i,j,k,1) = a(i,j,k,1) / pJ[k];
+            v(i,j,k,2) = a(i,j,k,2);
+        });
+    }
+}
+
+// The alternative correction: average lambda to cell centres and take
+// its gradient with the configured derivative scheme, which is how
+// massconsistent_amr does it (its lambda is cell-centered to begin
+// with). Offered because it is the familiar formulation, but it is not
+// the gradient the nodal operator was assembled from, so the projection
+// is looser -- the regtest reports both.
+void Poisson::CorrectWithScheme (const Grid& grid, const Terrain& terrain,
+                                 amrex::MultiFab& vel) const
+{
+    const amrex::Real dx = grid.geom().CellSize(0);
+    const amrex::Real dy = grid.geom().CellSize(1);
+    const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
+    const int nz = grid.nz();
+
+    // lambda at cell centres: the average of the eight surrounding nodes.
+    amrex::MultiFab lcc(m_ba, m_dm, 1, 2);
+    lcc.setVal(0.0);
+    for (amrex::MFIter mfi(lcc); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto const& c = lcc.array(mfi);
+        auto const& l = m_lambda.const_array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            amrex::Real sum = 0.0;
+            for (int kk = 0; kk <= 1; ++kk) {
+            for (int jj = 0; jj <= 1; ++jj) {
+            for (int ii = 0; ii <= 1; ++ii) {
+                sum += l(i+ii,j+jj,k+kk);
+            }}}
+            c(i,j,k) = 0.125 * sum;
+        });
+    }
+    lcc.FillBoundary(m_geom.periodicity());
+
+    amrex::Vector<amrex::Real> dzdk(nz);
+    for (int k = 0; k < nz; ++k) {
+        if (k == 0)           { dzdk[k] = z_cc[1] - z_cc[0]; }
+        else if (k == nz - 1) { dzdk[k] = z_cc[nz-1] - z_cc[nz-2]; }
+        else                  { dzdk[k] = 0.5 * (z_cc[k+1] - z_cc[k-1]); }
+    }
+    amrex::Gpu::DeviceVector<amrex::Real> d_dzdk(dzdk.size());
+    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, dzdk.begin(), dzdk.end(),
+                          d_dzdk.begin());
+    amrex::Gpu::streamSynchronize();
+    const amrex::Real* pdzdk = d_dzdk.data();
+
+    const Scheme scheme = Numerics::scheme();
+    const amrex::Real ah2 = m_alpha_h * m_alpha_h;
+    const amrex::Real av2 = m_alpha_v * m_alpha_v;
+    const int solid = Terrain::kSolid;
+    const amrex::Box& dom = m_geom.Domain();
+    const int klo = dom.smallEnd(2), khi = dom.bigEnd(2);
+
+    for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.tilebox();
+        auto const& v  = vel.array(mfi);
+        auto const& c  = lcc.const_array(mfi);
+        auto const& mk = terrain.mask().const_array(mfi);
+        amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            if (mk(i,j,k) == solid) {
+                v(i,j,k,0) = 0.0; v(i,j,k,1) = 0.0; v(i,j,k,2) = 0.0;
+                return;
+            }
+            const int km2 = amrex::max(k-2, klo), km1 = amrex::max(k-1, klo);
+            const int kp1 = amrex::min(k+1, khi), kp2 = amrex::min(k+2, khi);
+
+            // No advecting velocity for an elliptic field, so the schemes
+            // fall back to their central form.
+            const amrex::Real gx = Derivative(scheme,
+                c(i-2,j,k), c(i-1,j,k), c(i,j,k), c(i+1,j,k), c(i+2,j,k),
+                0.0, dx);
+            const amrex::Real gy = Derivative(scheme,
+                c(i,j-2,k), c(i,j-1,k), c(i,j,k), c(i,j+1,k), c(i,j+2,k),
+                0.0, dy);
+            const amrex::Real gz = Derivative(scheme,
+                c(i,j,km2), c(i,j,km1), c(i,j,k), c(i,j,kp1), c(i,j,kp2),
+                0.0, pdzdk[k]);
+
+            v(i,j,k,0) -= ah2 * gx;
+            v(i,j,k,1) -= ah2 * gy;
+            v(i,j,k,2) -= av2 * gz;
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Immersed boundary: mask the source, not the operator
+// ---------------------------------------------------------------------------
+
+// massconsistent_amr imposes the immersed boundary entirely on the
+// field, never on the operator coefficients: the divergence is set to
+// zero in solid cells before the solve, and the velocity is re-zeroed
+// there afterwards. The nodal analogue of "solid cell" is a node with no
+// fluid cell around it at all, so interface nodes keep their source and
+// only nodes buried in terrain are cleared.
+void Poisson::ZeroRHSInsideTerrain (const Terrain& terrain)
+{
+    const int solid = Terrain::kSolid;
+
+    // A nodal box reaches one cell past its cell-centered counterpart, so
+    // the mask needs a ghost layer; outside the domain counts as solid.
+    amrex::iMultiFab maskg(m_ba, m_dm, 1, 1);
+    maskg.setVal(solid);
+    amrex::iMultiFab::Copy(maskg, terrain.mask(), 0, 0, 1, 0);
+    maskg.FillBoundary(m_geom.periodicity());
+
+    const amrex::Box& dom = m_geom.Domain();
+    long n_zeroed = 0;
+
+    for (amrex::MFIter mfi(m_rhs); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto const& r  = m_rhs.array(mfi);
+        auto const& mk = maskg.const_array(mfi);
+
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            bool any_fluid = false;
+            for (int kk = k-1; kk <= k; ++kk) {
+            for (int jj = j-1; jj <= j; ++jj) {
+            for (int ii = i-1; ii <= i; ++ii) {
+                if (ii < dom.smallEnd(0) || ii > dom.bigEnd(0) ||
+                    jj < dom.smallEnd(1) || jj > dom.bigEnd(1) ||
+                    kk < dom.smallEnd(2) || kk > dom.bigEnd(2)) { continue; }
+                if (mk(ii,jj,kk) != solid) { any_fluid = true; }
+            }}}
+            if (!any_fluid) { r(i,j,k) = 0.0; ++n_zeroed; }
+        });
+    }
+    amrex::ParallelDescriptor::ReduceLongSum(n_zeroed);
+    m_n_rhs_zeroed = n_zeroed;
+
+    FWT_DEBUG("RHS zeroed at " << n_zeroed << " nodes buried in terrain");
+}
+
+// ---------------------------------------------------------------------------
+// Velocity extrema
+// ---------------------------------------------------------------------------
+
+// Component-wise extrema over FLUID cells. A projection that has gone
+// wrong shows up here long before anything subtle does: a corrected wind
+// far larger than the one that went in means the setup is wrong, whatever
+// the residual says.
+Poisson::VelRange Poisson::VelocityRange (const Terrain& terrain,
+                                          const amrex::MultiFab& vel)
+{
+    VelRange r;
+    for (int n = 0; n < 3; ++n) {
+        r.lo[n] =  std::numeric_limits<amrex::Real>::max();
+        r.hi[n] = -std::numeric_limits<amrex::Real>::max();
+    }
+    r.speed_max = 0.0;
+
+    const int solid = Terrain::kSolid;
+    for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto const& v  = vel.const_array(mfi);
+        auto const& mk = terrain.mask().const_array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            if (mk(i,j,k) == solid) { return; }
+            amrex::Real s2 = 0.0;
+            for (int n = 0; n < 3; ++n) {
+                const amrex::Real c = v(i,j,k,n);
+                r.lo[n] = std::min(r.lo[n], c);
+                r.hi[n] = std::max(r.hi[n], c);
+                s2 += c * c;
+            }
+            r.speed_max = std::max(r.speed_max, std::sqrt(s2));
+        });
+    }
+    for (int n = 0; n < 3; ++n) {
+        amrex::ParallelDescriptor::ReduceRealMin(r.lo[n]);
+        amrex::ParallelDescriptor::ReduceRealMax(r.hi[n]);
+    }
+    amrex::ParallelDescriptor::ReduceRealMax(r.speed_max);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Divergence diagnostics
+// ---------------------------------------------------------------------------
+
+// The divergence in the norm the projection actually controls: AMReX's
+// own nodal divergence, the same operator that built the RHS. Anything
+// hand-rolled here measures a different operator -- an earlier version
+// of this function did, and disagreed with the real one by a factor of
+// thirteen, which made a working projection look broken.
+amrex::Real Poisson::MaxDivergenceFE (const Grid& grid,
+                                      const Terrain& terrain,
+                                      const amrex::MultiFab& vel)
+{
+    ScaleToComputational(grid, terrain, vel, m_q);
+
+    amrex::MultiFab d(amrex::convert(m_ba, amrex::IntVect::TheNodeVector()),
+                      m_dm, 1, 0);
+    d.setVal(0.0);
+    m_op->compDivergence({&d}, {&m_q});
+
+    return std::max(std::abs(d.min(0)), std::abs(d.max(0)));
+}
+
+amrex::Real Poisson::MaxDivergence (const Grid& grid, const Terrain& terrain,
+                                    const amrex::MultiFab& vel) const
+{
+    const amrex::Real dx = grid.geom().CellSize(0);
+    const amrex::Real dy = grid.geom().CellSize(1);
+    const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
+    const int nz = grid.nz();
+
+    amrex::Vector<amrex::Real> dzdk(nz);
+    for (int k = 0; k < nz; ++k) {
+        if (k == 0)           { dzdk[k] = z_cc[1] - z_cc[0]; }
+        else if (k == nz - 1) { dzdk[k] = z_cc[nz-1] - z_cc[nz-2]; }
+        else                  { dzdk[k] = 0.5 * (z_cc[k+1] - z_cc[k-1]); }
+    }
+    amrex::Gpu::DeviceVector<amrex::Real> d_dzdk(dzdk.size());
+    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, dzdk.begin(), dzdk.end(),
+                          d_dzdk.begin());
+    amrex::Gpu::streamSynchronize();
+    const amrex::Real* pdzdk = d_dzdk.data();
+
+    const Scheme scheme = Numerics::scheme();
+    const int solid = Terrain::kSolid;
+    const amrex::Box& dom = m_geom.Domain();
+    const int klo = dom.smallEnd(2), khi = dom.bigEnd(2);
+
+    amrex::Real worst = 0.0;
+    for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto const& v  = vel.const_array(mfi);
+        auto const& mk = terrain.mask().const_array(mfi);
+
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            if (mk(i,j,k) == solid) { return; }
+            const int km2 = amrex::max(k-2, klo), km1 = amrex::max(k-1, klo);
+            const int kp1 = amrex::min(k+1, khi), kp2 = amrex::min(k+2, khi);
+
+            const amrex::Real d =
+                Derivative(scheme, v(i-2,j,k,0), v(i-1,j,k,0), v(i,j,k,0),
+                           v(i+1,j,k,0), v(i+2,j,k,0), v(i,j,k,0), dx)
+              + Derivative(scheme, v(i,j-2,k,1), v(i,j-1,k,1), v(i,j,k,1),
+                           v(i,j+1,k,1), v(i,j+2,k,1), v(i,j,k,1), dy)
+              + Derivative(scheme, v(i,j,km2,2), v(i,j,km1,2), v(i,j,k,2),
+                           v(i,j,kp1,2), v(i,j,kp2,2), v(i,j,k,2), pdzdk[k]);
+            worst = std::max(worst, std::abs(d));
+        });
+    }
+    amrex::ParallelDescriptor::ReduceRealMax(worst);
+    return worst;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +884,29 @@ void Poisson::AppendReport (const std::string& filename) const
     os << "poisson_n_pinned_nodes " << m_n_pinned << "\n";
     os << "poisson_rhs_min " << m_rhs.min(0) << "\n";
     os << "poisson_rhs_max " << m_rhs.max(0) << "\n";
+    os << "poisson_solve_residual " << m_resid << "\n";
+    os << "poisson_aspect_ratio " << m_aspect << "\n";
+    os << "poisson_num_pre_smooth " << m_pre_smooth << "\n";
+    os << "poisson_num_post_smooth " << m_post_smooth << "\n";
+    os << "poisson_rhs_operator " << m_rhs_operator << "\n";
+    os << "poisson_lambda_bc " << m_lambda_bc << "\n";
+    os << "poisson_gradient_operator " << m_gradient_operator << "\n";
+    os << "poisson_rhs_nodes_zeroed " << m_n_rhs_zeroed << "\n";
+    os << "poisson_speed_max_before " << m_speed_before << "\n";
+    os << "poisson_speed_max_after " << m_speed_after << "\n";
+    for (int n = 0; n < 3; ++n) {
+        const char* nm = (n == 0) ? "u" : ((n == 1) ? "v" : "w");
+        os << "poisson_" << nm << "_min_after " << m_vel_after.lo[n] << "\n";
+        os << "poisson_" << nm << "_max_after " << m_vel_after.hi[n] << "\n";
+    }
+    os << "poisson_div_before " << m_div_before << "\n";
+    os << "poisson_div_after " << m_div_after << "\n";
+    os << "poisson_div_controlled_before " << m_div_fe_before << "\n";
+    os << "poisson_div_controlled_after " << m_div_fe_after << "\n";
+    os << "poisson_n_projections " << m_n_projections << "\n";
+    os << "poisson_lambda_absmax "
+       << std::max(std::abs(m_lambda.min(0)), std::abs(m_lambda.max(0)))
+       << "\n";
     os.close();
 }
 
