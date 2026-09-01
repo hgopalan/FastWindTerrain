@@ -54,6 +54,23 @@ of ``Cell_H``. It also runs standalone as a summary dumper::
 Test groups
 ===========
 
+``phase5_poisson_assembly``
+---------------------------
+
+The anisotropic Poisson operator (see :doc:`poisson`).
+
+* ``inputs_mms`` -- a manufactured solution with a known analytic
+  lambda, solved at three resolutions for each of several fixed total
+  stretch ratios, requiring second-order convergence throughout. The
+  true cell heights reach the operator only through sigma, so a wrong
+  metric factor costs an order here -- and costs more of one the more
+  the grid is stretched, which is why several ratios are swept
+* ``inputs_rhs`` -- a hill makes ``u0`` genuinely non-solenoidal, since
+  the profile is anchored to height above ground. Checks the assembled
+  nodal RHS against an independent Python divergence of the plotfile's
+  own velocity, and sigma against its definition in every sampled cell
+  including the ``sigma = 0`` branch inside terrain
+
 ``gradient_schemes``
 --------------------
 

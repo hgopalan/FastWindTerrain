@@ -6,7 +6,7 @@
 #   make AMREX_HOME=/path/to/amrex
 #
 # See CMakeLists.txt for the CMake build, which is kept configured the
-# same way (3D, double precision, Src/Base only).
+# same way (3D, double precision, with the MLMG linear solvers).
 
 AMREX_HOME ?= $(shell pwd)/external/amrex
 
@@ -23,4 +23,6 @@ Blocs := .
 include $(AMREX_HOME)/Tools/GNUMake/Make.defs
 include $(Bpack)
 include $(AMREX_HOME)/Src/Base/Make.package
+include $(AMREX_HOME)/Src/Boundary/Make.package
+include $(AMREX_HOME)/Src/LinearSolvers/MLMG/Make.package
 include $(AMREX_HOME)/Tools/GNUMake/Make.rules

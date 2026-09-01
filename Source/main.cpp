@@ -4,10 +4,14 @@
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Version.H>
 
+#include <fstream>
+#include <iomanip>
+
 #include "Grid.H"
 #include "Terrain.H"
 #include "Inflow.H"
 #include "BoundaryConditions.H"
+#include "Poisson.H"
 #include "Output.H"
 #include "Debug.H"
 #include "Derivatives.H"
@@ -52,6 +56,33 @@ int main (int argc, char* argv[])
         fwt::BoundaryConditions bc;
         bc.Build(grid, terrain, inflow, inflow.velocity());
 
+        fwt::Poisson poisson;
+        poisson.Build(grid, terrain, bc);
+
+        int manufactured = 0;
+        {
+            amrex::ParmParse pp("poisson");
+            pp.query("manufactured", manufactured);
+        }
+
+        fwt::Poisson::Error mms_err {0.0, 0.0};
+        if (manufactured) {
+            mms_err = poisson.RunManufactured(grid);
+            amrex::Print() << "Manufactured solution: L2 error = "
+                           << mms_err.l2 << ", Linf error = "
+                           << mms_err.linf << "\n";
+        } else {
+            poisson.ComputeRHS(grid, terrain, inflow.velocity());
+        }
+
+        {
+            amrex::ParmParse pp("poisson");
+            std::string rhs_dump;
+            if (pp.query("rhs_dump_file", rhs_dump) && !rhs_dump.empty()) {
+                poisson.WriteRHSDump(rhs_dump);
+            }
+        }
+
         amrex::Print() << "Grid built: n_cell = ("
                         << grid.nx() << ", " << grid.ny() << ", " << grid.nz()
                         << "), n_boxes = " << grid.ba().size() << "\n";
@@ -94,10 +125,17 @@ int main (int argc, char* argv[])
             inflow.AppendReport(report_file);
             bc.AppendReport(report_file);
             fwt::AppendNumericsReport(report_file);
+            poisson.AppendReport(report_file);
+            if (manufactured) {
+                std::ofstream os(report_file, std::ios::app);
+                os << std::setprecision(17);
+                os << "poisson_mms_l2 " << mms_err.l2 << "\n";
+                os << "poisson_mms_linf " << mms_err.linf << "\n";
+            }
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {
-            fwt::WritePlotfile(plot_file, grid, terrain, inflow);
+            fwt::WritePlotfile(plot_file, grid, terrain, inflow, poisson);
             amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
         }
     }

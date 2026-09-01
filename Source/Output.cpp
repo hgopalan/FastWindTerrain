@@ -10,9 +10,10 @@ namespace fwt {
 void WritePlotfile (const std::string& plotfilename,
                     const Grid& grid,
                     const Terrain& terrain,
-                    const Inflow& inflow)
+                    const Inflow& inflow,
+                    const Poisson& poisson)
 {
-    constexpr int ncomp = 7;
+    constexpr int ncomp = 10;
     amrex::MultiFab mf(grid.ba(), grid.dm(), ncomp, 0);
 
     // z_face lives on the host; copy it once so the fill kernel is valid
@@ -29,6 +30,7 @@ void WritePlotfile (const std::string& plotfilename,
         auto const& zt = terrain.z_terrain().const_array(mfi);
         auto const& mk = terrain.mask().const_array(mfi);
         auto const& vl = inflow.velocity().const_array(mfi);
+        auto const& sg = poisson.sigma().const_array(mfi);
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
@@ -39,16 +41,21 @@ void WritePlotfile (const std::string& plotfilename,
             a(i,j,k,4) = vl(i,j,k,0);                            // u
             a(i,j,k,5) = vl(i,j,k,1);                            // v
             a(i,j,k,6) = vl(i,j,k,2);                            // w
+            a(i,j,k,7) = sg(i,j,k,0);                            // sigma_x
+            a(i,j,k,8) = sg(i,j,k,1);                            // sigma_y
+            a(i,j,k,9) = sg(i,j,k,2);                            // sigma_z
         });
     }
 
     amrex::WriteSingleLevelPlotfile(plotfilename, mf,
                                     {"z_cc", "dz", "terrain_z", "mask",
-                                     "u", "v", "w"},
+                                     "u", "v", "w",
+                                     "sigma_x", "sigma_y", "sigma_z"},
                                     grid.geom(), 0.0, 0);
 
     FWT_DEBUG("wrote plotfile: " << plotfilename << "  (" << ncomp
-              << " components: z_cc, dz, terrain_z, mask, u, v, w; "
+              << " components: z_cc, dz, terrain_z, mask, u, v, w, "
+                 "sigma_x, sigma_y, sigma_z; "
               << grid.ba().size() << " boxes)");
 }
 

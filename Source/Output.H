@@ -4,6 +4,7 @@
 #include "Grid.H"
 #include "Terrain.H"
 #include "Inflow.H"
+#include "Poisson.H"
 
 #include <string>
 
@@ -16,6 +17,7 @@ namespace fwt {
 //   terrain_z -- terrain surface height for the column [m]
 //   mask      -- 1 solid, 0 fluid (binary immersed boundary)
 //   u, v, w   -- initial velocity field u0 [m/s]
+//   sigma_x/y/z -- Poisson operator coefficients, metric included
 //
 // z_cc/dz are written because AMReX's Geometry is uniform in z, so the
 // plotfile's own vertical coordinate is only nominal and a visualization
@@ -23,7 +25,8 @@ namespace fwt {
 void WritePlotfile (const std::string& plotfilename,
                     const Grid& grid,
                     const Terrain& terrain,
-                    const Inflow& inflow);
+                    const Inflow& inflow,
+                    const Poisson& poisson);
 
 } // namespace fwt
 
