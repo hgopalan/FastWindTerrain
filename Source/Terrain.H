@@ -57,6 +57,12 @@ public:
     // mask: cell-centered, 1 component, kSolid / kFluid.
     const amrex::iMultiFab& mask ()      const { return m_mask; }
 
+    // Terrain height per (i,j) column: nx*ny entries, i fastest. Computed
+    // identically on every rank, so anything needing the surface height
+    // as plain host data (the Phase 3 profile, for one) can read it here
+    // instead of gathering it back out of the MultiFab.
+    const std::vector<amrex::Real>& column_heights () const { return m_h; }
+
     bool has_file ()          const { return !m_file.empty(); }
     const std::string& file() const { return m_file; }
     int  n_points ()          const { return static_cast<int>(m_zp.size()); }
@@ -104,6 +110,7 @@ private:
     std::vector<amrex::Real> m_xp, m_yp, m_zp;
 
     // --- derived ---
+    std::vector<amrex::Real> m_h;        // per-column height, nx*ny
     amrex::MultiFab  m_z_terrain;
     amrex::iMultiFab m_mask;
 

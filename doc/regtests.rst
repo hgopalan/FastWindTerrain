@@ -1,0 +1,110 @@
+========
+Regtests
+========
+
+``regtests/`` holds one directory per test group, each with its own
+``inputs*`` files and a standalone ``check.py``. There is no separate
+example tier -- these are the whole test suite.
+
+Running them
+============
+
+::
+
+    python3 run_regtests.py build/fastwindterrain
+
+or one group::
+
+    python3 run_regtests.py build/fastwindterrain phase1_grid
+
+The same tests are registered with CTest::
+
+    ctest --test-dir build --output-on-failure
+
+Cases run in a scratch work directory (``build/regtests/<group>`` by
+default, overridable with ``--workdir``), so running the tests leaves
+nothing behind in the source tree.
+
+How the checks are written
+==========================
+
+Two rules keep these tests meaningful rather than self-confirming:
+
+**Recompute, do not read back.** Expected values are derived in Python
+from the same inputs the solver was given -- the analytic profile laws,
+an independent IDW implementation, an independent flux integration --
+rather than read out of the solver's own output. A checker that only
+compares the solver against itself would pass through most real bugs.
+
+**Test the invariant, not a sample.** Where an invariant is cheap to
+check exhaustively, it is: the mask is verified against
+``z_cc <= z_terrain`` in every cell of the domain, not at sampled
+points.
+
+``regtests/plotfile.py`` is a small standard-library reader for AMReX
+single-level plotfiles, shared by the checkers. It exists so the tests
+can inspect field values without depending on ``yt``. Each FAB is
+self-describing, so only the ``FabOnDisk`` offsets have to be parsed out
+of ``Cell_H``. It also runs standalone as a summary dumper::
+
+    python3 regtests/plotfile.py build/regtests/phase2_terrain_ib/plt_hill
+
+Test groups
+===========
+
+``phase1_grid``
+---------------
+
+Grid construction and the domain-height policy.
+
+* ``inputs_nominal`` -- exact height match, no warning, report matches
+  the analytic geometric-stretching formula
+* ``inputs_uniform`` -- ``stretching_ratio = 1.0`` reproduces a plain
+  uniform grid exactly
+* ``inputs_overshoot`` -- non-fatal warning plus ``prob_hi[2]`` override
+* ``inputs_undershoot`` -- fatal abort, nonzero exit, no report written
+* ``inputs_plt`` -- ``output_format = both`` writes the ascii report and
+  a well-formed plotfile
+* ``inputs_badformat`` -- an unrecognized ``output_format`` aborts
+* ``inputs_debug`` -- ``fwt.debug=1`` prints the full diagnostics and
+  changes no result; the default stays silent
+
+``phase2_terrain_ib``
+---------------------
+
+Terrain interpolation and the immersed-boundary mask.
+
+* ``inputs_flat`` -- no terrain file: ``z_terrain == 0`` everywhere and
+  every cell fluid
+* ``inputs_hill`` -- Gaussian hill sampled on a 20 m lattice against a
+  25 m grid, so cell centers never coincide with a terrain point.
+  Checks ``z_terrain`` against an independent Python IDW, that the mask
+  is exactly ``z_cc <= z_terrain`` in every cell, that solid cells are
+  contiguous from the ground up, that the mask boundary lands in the
+  right cell in every column, and that the interpolated surface tracks
+  the analytic Gaussian it was sampled from
+* ``inputs_scattered`` -- the same hill sampled off-lattice, so the
+  k-nearest search faces irregular spacing
+* a missing terrain file must abort rather than fall back to flat ground
+
+``phase3_inflow_profile``
+-------------------------
+
+Wind profiles and their terrain awareness.
+
+* ``inputs_powerlaw``, ``inputs_loglaw`` -- ``u0`` matches the analytic
+  law at every sampled height and points along ``(u_ref, v_ref)``;
+  solid cells hold zero; nothing is non-finite
+* ``inputs_userfile`` -- ``u0`` matches an independent Python 3D IDW of
+  the same six-column file, the sixth column is genuinely used, and an
+  exact hit on a table point returns that point's values
+* ``inputs_powerlaw_bump`` -- AGL anchoring over a hill. The profile is
+  compared against the flat run interpolated to the same height above
+  ground, with the tolerance calibrated from the interpolation error
+  itself rather than guessed, plus a check that the profile moved at all
+  relative to the same absolute height
+* ``inputs_boundary_terrain`` -- terrain intersecting the lateral
+  boundaries. The reported boundary flux must match an independent
+  integration, the resulting imbalance must be surfaced rather than
+  hidden, and the interior profile must be unchanged
+* calm wind and an unknown mode must both abort

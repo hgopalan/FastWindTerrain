@@ -12,3 +12,6 @@ Backtrace.*
 # Python
 __pycache__/
 *.pyc
+
+# Sphinx
+doc/_build/

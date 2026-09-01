@@ -138,7 +138,8 @@ void Terrain::BuildTerrainHeight (const Grid& grid)
     // decomposed piece and communicating -- the column array is tiny
     // next to the 3D fields, and this keeps the result independent of
     // the decomposition.
-    std::vector<amrex::Real> h(std::size_t(nx) * std::size_t(ny));
+    std::vector<amrex::Real>& h = m_h;
+    h.assign(std::size_t(nx) * std::size_t(ny), 0.0);
 
     if (m_xp.empty()) {
         std::fill(h.begin(), h.end(), m_flat_elevation);

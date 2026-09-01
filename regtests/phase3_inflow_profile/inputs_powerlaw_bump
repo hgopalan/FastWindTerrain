@@ -1,0 +1,24 @@
+# Phase 3 regtest -- the same power law over a 100 m Gaussian hill.
+# Compared against inputs_powerlaw, this is what proves the profile is
+# anchored to AGL: at any column, the speed at z_terrain + z_agl here
+# must equal the speed at z_agl over flat ground.
+# The checker overrides terrain.file with an absolute path.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_hill.csv
+
+inflow.mode              = powerlaw
+inflow.u_ref             = 8.0
+inflow.v_ref             = 6.0
+inflow.z_ref             = 10.0
+inflow.powerlaw_exponent = 0.14
+
+grid.output_format    = both
+grid.report_file      = grid_report_bump.txt
+grid.plot_file        = plt_bump

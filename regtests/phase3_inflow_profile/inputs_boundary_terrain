@@ -1,0 +1,30 @@
+# Phase 3 regtest -- terrain intersecting the lateral boundaries.
+# terrain_slope.csv rises 0 -> 100 m across x, so xlo is fully open while
+# xhi is blocked over its bottom 100 m. With the wind along +x the open
+# inflow and outflow areas differ, which is exactly the inhomogeneous
+# boundary a mass-consistent solver has to cope with.
+#
+# The resulting net boundary flux is a DIAGNOSTIC, not an error: the
+# mass-consistent solve is itself the correction, and it stays well posed
+# as long as one face carries a Dirichlet condition on lambda. Nothing is
+# rescaled here.
+# The checker overrides terrain.file with an absolute path.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_slope.csv
+
+inflow.mode           = loglaw
+inflow.u_ref          = 10.0
+inflow.v_ref          = 0.0
+inflow.z_ref          = 10.0
+inflow.z0             = 0.1
+
+grid.output_format    = both
+grid.report_file      = grid_report_boundary.txt
+grid.plot_file        = plt_boundary

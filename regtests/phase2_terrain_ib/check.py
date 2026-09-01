@@ -287,9 +287,13 @@ def check_flat(exe):
         f"[{name}] flat ground at z = 0 must leave every cell fluid, "
         f"got {report['terrain_n_solid']} solid")
 
+    # The Phase 2 contract is that the grid and terrain fields are present
+    # and lead the component list; later phases append their own (Phase 3
+    # adds u, v, w), so this must not assert the total count.
     pf = Plotfile(os.path.join(WORKDIR, "plt_flat"))
-    assert pf.var_names == ["z_cc", "dz", "terrain_z", "mask"], (
-        f"[{name}] unexpected plotfile fields: {pf.var_names}")
+    assert pf.var_names[:4] == ["z_cc", "dz", "terrain_z", "mask"], (
+        f"[{name}] expected the plotfile to lead with "
+        f"['z_cc', 'dz', 'terrain_z', 'mask'], got {pf.var_names}")
 
     zt = pf.field("terrain_z")
     mask = pf.field("mask")

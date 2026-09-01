@@ -6,6 +6,7 @@
 
 #include "Grid.H"
 #include "Terrain.H"
+#include "Inflow.H"
 #include "Output.H"
 #include "Debug.H"
 
@@ -13,7 +14,7 @@ int main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
     {
-        amrex::Print() << "FastWindTerrain -- Phase 2: terrain & immersed-boundary mask\n";
+        amrex::Print() << "FastWindTerrain -- mass-consistent wind solver\n";
 
         // fwt.debug = 1 turns on verbose diagnostics everywhere.
         fwt::Debug::Init();
@@ -31,6 +32,9 @@ int main (int argc, char* argv[])
         fwt::Terrain terrain;
         terrain.Build(grid);
 
+        fwt::Inflow inflow;
+        inflow.Build(grid, terrain);
+
         amrex::Print() << "Grid built: n_cell = ("
                         << grid.nx() << ", " << grid.ny() << ", " << grid.nz()
                         << "), n_boxes = " << grid.ba().size() << "\n";
@@ -39,6 +43,12 @@ int main (int argc, char* argv[])
                        << terrain.z_max() << "] m, solid cells = "
                        << terrain.n_solid() << " of " << terrain.n_total()
                        << "\n";
+
+        amrex::Print() << "Inflow: mode = " << inflow.mode_name()
+                       << ", boundary flux in/out = " << inflow.flux_in()
+                       << " / " << inflow.flux_out()
+                       << " m^3/s, relative imbalance = "
+                       << inflow.flux_imbalance() << "\n";
 
         // Output is user-selectable: ascii (plain-text grid report),
         // plt (AMReX native plotfile), or both. ascii is the default
@@ -64,10 +74,11 @@ int main (int argc, char* argv[])
         if (fwt::Grid::WantsAscii(fmt)) {
             grid.WriteReport(report_file);
             terrain.AppendReport(report_file);
+            inflow.AppendReport(report_file);
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {
-            fwt::WritePlotfile(plot_file, grid, terrain);
+            fwt::WritePlotfile(plot_file, grid, terrain, inflow);
             amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
         }
     }
