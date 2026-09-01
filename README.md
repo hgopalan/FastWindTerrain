@@ -37,6 +37,7 @@ Full documentation lives in [`doc/`](doc/):
 | [Terrain](doc/terrain.rst) | Terrain files, interpolation, the immersed-boundary mask |
 | [Inflow](doc/inflow.rst) | Wind profiles, AGL anchoring, boundary mass flux |
 | [Boundary conditions](doc/boundary_conditions.rst) | Face classification, ghost values, lambda conditions |
+| [Numerics](doc/numerics.rst) | Derivative schemes and their verification |
 | [Output](doc/output.rst) | Report and plotfile formats |
 | [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](doc/tools.rst) | Synthetic terrain generation |

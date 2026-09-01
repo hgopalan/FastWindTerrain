@@ -1,0 +1,21 @@
+# Gradient-scheme regtest -- convergence study.
+# A deliberately tiny grid: this case exists to run the scheme self
+# test, not to solve anything. numerics.selftest_file triggers a
+# grid-refinement study of every scheme and writes the observed orders.
+
+grid.n_cell           = 8 8 8
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 100.0 100.0 80.0
+grid.dz0              = 10.0
+grid.stretching_ratio = 1.0
+grid.max_grid_size    = 8
+
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0
+
+numerics.selftest_file = gradient_selftest.txt
+
+grid.output_format = ascii
+grid.report_file   = grid_report_selftest.txt

@@ -10,6 +10,7 @@
 #include "BoundaryConditions.H"
 #include "Output.H"
 #include "Debug.H"
+#include "Derivatives.H"
 
 int main (int argc, char* argv[])
 {
@@ -25,6 +26,18 @@ int main (int argc, char* argv[])
         FWT_DEBUG("amrex::Real      = " << sizeof(amrex::Real) * 8 << "-bit");
         for (int i = 1; i < argc; ++i) {
             FWT_DEBUG("argv[" << i << "]         = " << argv[i]);
+        }
+
+        // Directional-derivative scheme (numerics.gradient_scheme).
+        fwt::Numerics::Init();
+
+        std::string selftest_file;
+        {
+            amrex::ParmParse pp("numerics");
+            pp.query("selftest_file", selftest_file);
+        }
+        if (!selftest_file.empty()) {
+            fwt::RunGradientSelfTest(selftest_file);
         }
 
         fwt::Grid grid;
@@ -80,6 +93,7 @@ int main (int argc, char* argv[])
             terrain.AppendReport(report_file);
             inflow.AppendReport(report_file);
             bc.AppendReport(report_file);
+            fwt::AppendNumericsReport(report_file);
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {

@@ -3,8 +3,10 @@ Regtests
 ========
 
 ``regtests/`` holds one directory per test group, each with its own
-``inputs*`` files and a standalone ``check.py``. There is no separate
-example tier -- these are the whole test suite.
+``inputs*`` files and a standalone ``check.py``. A directory counts as a
+test group as soon as it holds a ``check.py``; the names follow no
+required pattern. There is no separate example tier -- these are the
+whole test suite.
 
 Running them
 ============
@@ -51,6 +53,22 @@ of ``Cell_H``. It also runs standalone as a summary dumper::
 
 Test groups
 ===========
+
+``gradient_schemes``
+--------------------
+
+The directional-derivative schemes (see :doc:`numerics`).
+
+* ``inputs_selftest`` -- a grid-refinement study of every scheme on both
+  a uniform and a stretched grid, in both norms and for both upwind
+  branches, checking the observed order of accuracy. Order is the check
+  that separates a working scheme from a plausible-looking one: a sign
+  error or a mis-shifted stencil still produces smooth output, but will
+  not converge at the right rate. Also checks that the WENO
+  reconstruction stays bounded across a step while the unlimited linear
+  combination does not
+* ``inputs_scheme`` -- the scheme name round-trips into the report, the
+  default is ``weno3js``, and an unrecognized name aborts
 
 ``phase1_grid``
 ---------------

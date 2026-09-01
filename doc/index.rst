@@ -18,6 +18,7 @@ on this layout.
    terrain
    inflow
    boundary_conditions
+   numerics
    output
    debugging
    tools
@@ -35,6 +36,7 @@ Prefix           Covers
 ``terrain.``     Terrain file and the interpolation onto grid columns
 ``inflow.``      Wind profile and its parameters
 ``bc.``          Boundary-condition options (currently a test aid)
+``numerics.``    Derivative scheme selection
 ``fwt.``         Whole-run switches, currently ``fwt.debug``
 ===============  ==========================================================
 
