@@ -21,6 +21,8 @@ It prints everything the run resolved and derived:
   the solid-cell count and fraction
 * the inflow mode, the profile speed at a few heights AGL, and the
   boundary mass flux
+* the cell-local variational weights and their range
+* the O'Brien residual and the vertical velocity left at the domain top
 * every file written
 
 Guarantees

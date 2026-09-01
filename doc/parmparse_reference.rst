@@ -1,0 +1,246 @@
+====================
+ParmParse reference
+====================
+
+Every input, in one place. Each is also documented in context on the page
+listed, which is where the reasoning lives; this page is for looking one
+up.
+
+Any input can be overridden on the command line::
+
+    ./build/fastwindterrain inputs poisson.alpha_v=0.3 fwt.debug=1
+
+Unrecognised values for an enumerated input are fatal, never a silent
+fallback.
+
+``grid.`` -- mesh and output selection
+======================================
+
+See :doc:`grid` and :doc:`output`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``grid.n_cell``
+     - --
+     - Cell counts ``nx ny nz``
+   * - ``grid.prob_lo``
+     - --
+     - Domain lower corner [m]
+   * - ``grid.prob_hi``
+     - --
+     - Domain upper corner [m]
+   * - ``grid.dz0``
+     - --
+     - Surface-adjacent cell thickness [m]
+   * - ``grid.stretching_ratio``
+     - ``1.0``
+     - Geometric ratio ``r``; ``1.0`` is a uniform grid
+   * - ``grid.max_grid_size``
+     - ``32``
+     - Box size in x and y. The grid is never split in z
+   * - ``grid.output_format``
+     - ``ascii``
+     - ``ascii``, ``plt`` or ``both``
+   * - ``grid.report_file``
+     - ``grid_report.txt``
+     - Plain-text report
+   * - ``grid.plot_file``
+     - ``plt_grid``
+     - AMReX plotfile
+
+``terrain.`` -- surface and immersed boundary
+=============================================
+
+See :doc:`terrain`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``terrain.file``
+     - *(none)*
+     - ``x,y,z`` point file; absent means flat ground
+   * - ``terrain.flat_elevation``
+     - ``0.0``
+     - Ground elevation with no file [m]
+   * - ``terrain.idw_n_neighbors``
+     - ``6``
+     - Nearest points used by the interpolation
+   * - ``terrain.idw_exponent``
+     - ``2.0``
+     - IDW power
+
+``inflow.`` -- the initial wind field
+=====================================
+
+See :doc:`inflow`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``inflow.mode``
+     - ``powerlaw``
+     - ``powerlaw``, ``loglaw`` or ``userfile``
+   * - ``inflow.u_ref``, ``inflow.v_ref``
+     - ``0.0``
+     - Reference velocity components [m/s]. Both zero is fatal
+   * - ``inflow.z_ref``
+     - ``10.0``
+     - Reference height, AGL [m]
+   * - ``inflow.powerlaw_exponent``
+     - ``0.14``
+     - Power-law exponent
+   * - ``inflow.z0``
+     - ``0.1``
+     - Roughness length [m]
+   * - ``inflow.file``
+     - *(none)*
+     - Six-column ``x y z u v w`` file
+   * - ``inflow.idw_n_neighbors``
+     - ``6``
+     - Nearest points for ``userfile``
+   * - ``inflow.idw_exponent``
+     - ``2.0``
+     - IDW power for ``userfile``
+   * - ``inflow.z_agl_min``
+     - ``z0``
+     - Floor on height above ground [m]
+
+``bc.`` -- boundary conditions
+==============================
+
+See :doc:`boundary_conditions`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``bc.dump_file``
+     - *(none)*
+     - One row per boundary ghost cell. A single-rank test aid
+
+``anisotropy.`` and ``obrien.``
+===============================
+
+See :doc:`anisotropy`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``anisotropy.enable``
+     - ``0``
+     - Cell-local variational weights
+   * - ``anisotropy.source``
+     - ``slope``
+     - ``slope`` or ``none``
+   * - ``anisotropy.alpha_h_mode``
+     - ``base``
+     - Whether the slope factor reaches ``alpha_h``
+   * - ``anisotropy.slope_scale``
+     - ``0.5``
+     - Slope at which the factor falls to ``1/e``
+   * - ``anisotropy.decay_height``
+     - ``500.0``
+     - Decay height for the suppression [m]
+   * - ``anisotropy.min_factor``
+     - ``0.05``
+     - Lower clamp, as a factor on the base
+   * - ``anisotropy.max_factor``
+     - ``2.0``
+     - Upper clamp
+   * - ``obrien.enable``
+     - ``0``
+     - Vertical-velocity adjustment
+
+``poisson.`` -- the solve
+=========================
+
+See :doc:`poisson`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``poisson.alpha_h``
+     - ``1.0``
+     - Horizontal transmissivity (base value)
+   * - ``poisson.alpha_v``
+     - ``1.0``
+     - Vertical transmissivity (base value)
+   * - ``poisson.lambda_bc``
+     - ``flowthrough``
+     - ``flowthrough`` or ``directional``
+   * - ``poisson.rhs_operator``
+     - ``fe``
+     - ``fe`` (AMReX's divergence) or ``scheme``
+   * - ``poisson.gradient_operator``
+     - ``amrex``
+     - ``amrex`` (AMReX's gradient) or ``scheme``
+   * - ``poisson.n_projections``
+     - ``4``
+     - Projection passes
+   * - ``poisson.max_iter``
+     - ``200``
+     - MLMG iteration cap
+   * - ``poisson.reltol``
+     - ``1e-11``
+     - MLMG relative tolerance
+   * - ``poisson.num_pre_smooth``
+     - *(from the grid)*
+     - Smoothing sweeps; chosen from the cell aspect ratio
+   * - ``poisson.num_post_smooth``
+     - *(from the grid)*
+     - As above
+   * - ``poisson.verbose``
+     - ``0``
+     - MLMG verbosity
+   * - ``poisson.manufactured``
+     - ``0``
+     - Solve a known analytic problem instead
+   * - ``poisson.rhs_dump_file``
+     - *(none)*
+     - Nodal RHS. A single-rank test aid
+
+``numerics.`` and ``fwt.``
+==========================
+
+See :doc:`numerics` and :doc:`debugging`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``numerics.gradient_scheme``
+     - ``weno3js``
+     - ``weno3js``, ``upwind2`` or ``central2``
+   * - ``numerics.selftest_file``
+     - *(none)*
+     - Scheme convergence study. A test aid
+   * - ``fwt.debug``
+     - ``0``
+     - Verbose run diagnostics

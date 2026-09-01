@@ -39,6 +39,12 @@ option(FWT_OMP                "Build with OpenMP"                     OFF)
 option(FWT_USE_INTERNAL_AMREX "Use the AMReX git submodule"           ON)
 option(FWT_ENABLE_TESTS       "Register the regtests with CTest"      ON)
 
+# GPU backend, passed straight through to AMReX. NONE builds for the CPU.
+# CI compiles all of these; it cannot RUN them, since hosted runners have
+# no GPU, so the GPU jobs are build-only.
+set(FWT_GPU_BACKEND NONE CACHE STRING "GPU backend: NONE, CUDA, HIP, SYCL")
+set_property(CACHE FWT_GPU_BACKEND PROPERTY STRINGS NONE CUDA HIP SYCL)
+
 # --- AMReX ----------------------------------------------------------------
 if(FWT_USE_INTERNAL_AMREX)
     if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/external/amrex/CMakeLists.txt)
@@ -64,6 +70,7 @@ if(FWT_USE_INTERNAL_AMREX)
     set(AMReX_AMRLEVEL       OFF)
     set(AMReX_EB             OFF)
     set(AMReX_FFT            OFF)
+    set(AMReX_GPU_BACKEND    ${FWT_GPU_BACKEND})
     set(AMReX_PLOTFILE_TOOLS OFF)
 
     add_subdirectory(external/amrex)

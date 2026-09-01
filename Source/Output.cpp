@@ -12,9 +12,10 @@ void WritePlotfile (const std::string& plotfilename,
                     const Terrain& terrain,
                     const Inflow& inflow,
                     const Poisson& poisson,
-                    const amrex::MultiFab& vel0)
+                    const amrex::MultiFab& vel0,
+                    const Anisotropy& aniso)
 {
-    constexpr int ncomp = 13;
+    constexpr int ncomp = 15;
     amrex::MultiFab mf(grid.ba(), grid.dm(), ncomp, 0);
 
     // z_face lives on the host; copy it once so the fill kernel is valid
@@ -33,6 +34,8 @@ void WritePlotfile (const std::string& plotfilename,
         auto const& vl = inflow.velocity().const_array(mfi);
         auto const& sg = poisson.sigma().const_array(mfi);
         auto const& v0 = vel0.const_array(mfi);
+        auto const& ah = aniso.alpha_h().const_array(mfi);
+        auto const& av = aniso.alpha_v().const_array(mfi);
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
@@ -49,6 +52,8 @@ void WritePlotfile (const std::string& plotfilename,
             a(i,j,k,10) = v0(i,j,k,0);                           // u0
             a(i,j,k,11) = v0(i,j,k,1);                           // v0
             a(i,j,k,12) = v0(i,j,k,2);                           // w0
+            a(i,j,k,13) = ah(i,j,k);                             // alpha_h
+            a(i,j,k,14) = av(i,j,k);                             // alpha_v
         });
     }
 
@@ -56,12 +61,14 @@ void WritePlotfile (const std::string& plotfilename,
                                     {"z_cc", "dz", "terrain_z", "mask",
                                      "u", "v", "w",
                                      "sigma_x", "sigma_y", "sigma_z",
-                                     "u0", "v0", "w0"},
+                                     "u0", "v0", "w0",
+                                     "alpha_h", "alpha_v"},
                                     grid.geom(), 0.0, 0);
 
     FWT_DEBUG("wrote plotfile: " << plotfilename << "  (" << ncomp
               << " components: z_cc, dz, terrain_z, mask, u, v, w, "
-                 "sigma_x, sigma_y, sigma_z, u0, v0, w0; "
+                 "sigma_x, sigma_y, sigma_z, u0, v0, w0, "
+                 "alpha_h, alpha_v; "
               << grid.ba().size() << " boxes)");
 }
 

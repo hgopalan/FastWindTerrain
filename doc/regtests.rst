@@ -97,6 +97,20 @@ The velocity-extrema assertion is not decoration. An earlier version of
 this solver reduced divergence fifteen-fold while turning a 10 m/s
 inflow into a 35 m/s corrected wind, and no divergence number showed it.
 
+``phase7_anisotropy_obrien``
+----------------------------
+
+Cell-local anisotropy and the O'Brien adjustment (see :doc:`anisotropy`).
+
+* ``inputs_slope`` -- over a steep hill, ``alpha_v`` must follow a slope
+  factor recomputed independently in the checker, be suppressed on the
+  flanks and sit at base over flat ground; and after the adjustment
+  ``w`` must be **exactly** zero at the domain top, held to round-off
+  rather than a tolerance, since making it exact is the whole point
+* with ``anisotropy.enable = 0`` both weights must hold their base
+  values, so the feature cannot change results when switched off
+* ``alpha_h_mode = slope`` must apply the same factor to both weights
+
 ``gradient_schemes``
 --------------------
 

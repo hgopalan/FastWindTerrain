@@ -161,7 +161,32 @@ void Grid::BuildAMReXGeometry ()
     amrex::Box domain(dom_lo, dom_hi);
 
     m_ba.define(domain);
-    m_ba.maxSize(m_max_grid_size);
+    // Split in x and y only: every box spans the FULL height.
+    //
+    // Anything that integrates up a column -- the O'Brien vertical
+    // velocity adjustment, and whatever else wants continuity along z --
+    // is non-local in that direction and cannot be done box by box if a
+    // column is cut between boxes. Reading past the end of a box that
+    // way is undefined behaviour and does not announce itself: it
+    // produced values around 1e107 before this was fixed.
+    //
+    // The cost is nothing in practice. Atmospheric domains have
+    // nx, ny >> nz, so the horizontal split is what carries the
+    // parallelism anyway.
+    m_ba.maxSize(amrex::IntVect(m_max_grid_size, m_max_grid_size,
+                                domain.length(2)));
+
+    // Hold the invariant explicitly rather than trusting maxSize: a
+    // later change to the decomposition would otherwise reintroduce the
+    // bug silently.
+    for (int ibox = 0; ibox < m_ba.size(); ++ibox) {
+        const amrex::Box& b = m_ba[ibox];
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            b.smallEnd(2) == domain.smallEnd(2) &&
+            b.bigEnd(2)   == domain.bigEnd(2),
+            "the grid was split in z: every box must span the full height, "
+            "or a column integration cannot be done box by box");
+    }
 
     m_dm.define(m_ba);
 

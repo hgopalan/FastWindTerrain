@@ -38,7 +38,10 @@ Full documentation lives in [`doc/`](doc/):
 | [Inflow](doc/inflow.rst) | Wind profiles, AGL anchoring, boundary mass flux |
 | [Boundary conditions](doc/boundary_conditions.rst) | Face classification, ghost values, lambda conditions |
 | [Poisson solver](doc/poisson.rst) | The variational solve, anisotropy, and the stretched grid |
+| [Anisotropy](doc/anisotropy.rst) | Cell-local weights and the O'Brien adjustment |
 | [Numerics](doc/numerics.rst) | Derivative schemes and their verification |
+| [Input reference](doc/parmparse_reference.rst) | Every input in one place |
+| [References](doc/references.rst) | The methods, and where each is used |
 | [Output](doc/output.rst) | Report and plotfile formats |
 | [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](doc/tools.rst) | Synthetic terrain generation |
@@ -58,6 +61,9 @@ regtest suite:
 - **CMake** on Linux (Release and Debug) and macOS (Release), with CTest
 - **GNUmake** on Linux, which nothing else exercises and would otherwise
   rot unnoticed
+- **CUDA, HIP and SYCL** builds, compile-only: hosted runners have no
+  GPU, so these prove the code still compiles for each backend and stop
+  there
 - a check that a full build and test run leaves the working tree clean
 - the documentation, built with warnings as errors
 

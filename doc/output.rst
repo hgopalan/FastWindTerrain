@@ -48,6 +48,8 @@ The plotfile carries these cell-centered fields, in order:
      - Poisson operator coefficients, vertical metric included
    * - ``u0``, ``v0``, ``w0``
      - The initial field, before the projection [m/s]
+   * - ``alpha_h``, ``alpha_v``
+     - The cell-local variational weights
 
 ``z_cc`` and ``dz`` are written because AMReX's ``Geometry`` is uniform
 in z, so the plotfile's own vertical coordinate is only nominal. A

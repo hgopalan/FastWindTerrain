@@ -102,7 +102,8 @@ void Poisson::ReadParameters ()
 // Sigma, carrying the vertical metric
 // ---------------------------------------------------------------------------
 
-void Poisson::BuildSigma (const Grid& grid, const Terrain& terrain)
+void Poisson::BuildSigma (const Grid& grid, const Terrain& terrain,
+                          const Anisotropy& aniso)
 {
     m_sigma.define(grid.ba(), grid.dm(), AMREX_SPACEDIM, 0);
 
@@ -113,14 +114,16 @@ void Poisson::BuildSigma (const Grid& grid, const Terrain& terrain)
     amrex::Gpu::streamSynchronize();
     const amrex::Real* J = d_J.data();
 
-    const amrex::Real ah2 = m_alpha_h * m_alpha_h;
-    const amrex::Real av2 = m_alpha_v * m_alpha_v;
     const int solid = Terrain::kSolid;
 
     for (amrex::MFIter mfi(m_sigma); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.tilebox();
         auto const& s  = m_sigma.array(mfi);
         auto const& mk = terrain.mask().const_array(mfi);
+        // Cell-local weights. With anisotropy disabled these hold the
+        // base values, so the operator is exactly what it was before.
+        auto const& ah = aniso.alpha_h().const_array(mfi);
+        auto const& av = aniso.alpha_v().const_array(mfi);
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
@@ -140,6 +143,8 @@ void Poisson::BuildSigma (const Grid& grid, const Terrain& terrain)
             // Lambda is then solved inside the terrain too, where it is
             // meaningless but harmless.
             amrex::ignore_unused(mk, solid);
+            const amrex::Real ah2 = ah(i,j,k) * ah(i,j,k);
+            const amrex::Real av2 = av(i,j,k) * av(i,j,k);
             s(i,j,k,0) = ah2 * J[k];
             s(i,j,k,1) = ah2 * J[k];
             s(i,j,k,2) = av2 / J[k];
@@ -217,9 +222,10 @@ void Poisson::BuildOperator (const Grid& grid, const Terrain& terrain,
 }
 
 void Poisson::Build (const Grid& grid, const Terrain& terrain,
-                     const BoundaryConditions& bc)
+                     const BoundaryConditions& bc, const Anisotropy& aniso)
 {
     ReadParameters();
+    m_aniso = &aniso;
 
     {
         amrex::ParmParse pp("poisson");
@@ -263,7 +269,7 @@ void Poisson::Build (const Grid& grid, const Terrain& terrain,
         if (m_post_smooth < 0) { m_post_smooth = autos; }
     }
 
-    BuildSigma(grid, terrain);
+    BuildSigma(grid, terrain, aniso);
     BuildOperator(grid, terrain, bc);
 
     if (Debug::Enabled()) {
@@ -585,17 +591,20 @@ void Poisson::CorrectWithScheme (const Grid& grid, const Terrain& terrain,
     const amrex::Real* pdzdk = d_dzdk.data();
 
     const Scheme scheme = Numerics::scheme();
-    const amrex::Real ah2 = m_alpha_h * m_alpha_h;
-    const amrex::Real av2 = m_alpha_v * m_alpha_v;
     const int solid = Terrain::kSolid;
     const amrex::Box& dom = m_geom.Domain();
     const int klo = dom.smallEnd(2), khi = dom.bigEnd(2);
+    const int ilo = dom.smallEnd(0), ihi = dom.bigEnd(0);
+    const int jlo = dom.smallEnd(1), jhi = dom.bigEnd(1);
 
     for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.tilebox();
         auto const& v  = vel.array(mfi);
         auto const& c  = lcc.const_array(mfi);
         auto const& mk = terrain.mask().const_array(mfi);
+        // The same cell-local weights sigma was built from.
+        auto const& ah = m_aniso->alpha_h().const_array(mfi);
+        auto const& av = m_aniso->alpha_v().const_array(mfi);
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
@@ -608,16 +617,27 @@ void Poisson::CorrectWithScheme (const Grid& grid, const Terrain& terrain,
 
             // No advecting velocity for an elliptic field, so the schemes
             // fall back to their central form.
+            // Clamp to the domain. lcc's physical-boundary ghosts are
+            // only zeroed, never filled, so an unclamped stencil would
+            // quietly differentiate against lambda = 0 outside the
+            // domain -- wrong, and silent.
+            const int im2 = amrex::max(i-2, ilo), im1 = amrex::max(i-1, ilo);
+            const int ip1 = amrex::min(i+1, ihi), ip2 = amrex::min(i+2, ihi);
+            const int jm2 = amrex::max(j-2, jlo), jm1 = amrex::max(j-1, jlo);
+            const int jp1 = amrex::min(j+1, jhi), jp2 = amrex::min(j+2, jhi);
+
             const amrex::Real gx = Derivative(scheme,
-                c(i-2,j,k), c(i-1,j,k), c(i,j,k), c(i+1,j,k), c(i+2,j,k),
+                c(im2,j,k), c(im1,j,k), c(i,j,k), c(ip1,j,k), c(ip2,j,k),
                 0.0, dx);
             const amrex::Real gy = Derivative(scheme,
-                c(i,j-2,k), c(i,j-1,k), c(i,j,k), c(i,j+1,k), c(i,j+2,k),
+                c(i,jm2,k), c(i,jm1,k), c(i,j,k), c(i,jp1,k), c(i,jp2,k),
                 0.0, dy);
             const amrex::Real gz = Derivative(scheme,
                 c(i,j,km2), c(i,j,km1), c(i,j,k), c(i,j,kp1), c(i,j,kp2),
                 0.0, pdzdk[k]);
 
+            const amrex::Real ah2 = ah(i,j,k) * ah(i,j,k);
+            const amrex::Real av2 = av(i,j,k) * av(i,j,k);
             v(i,j,k,0) -= ah2 * gx;
             v(i,j,k,1) -= ah2 * gy;
             v(i,j,k,2) -= av2 * gz;

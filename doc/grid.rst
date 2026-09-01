@@ -66,6 +66,22 @@ Example
 Here ``H_computed = dz0 (r^nz - 1)/(r - 1) = 961.2758...`` m, matching
 the requested height exactly.
 
+Decomposition
+=============
+
+The BoxArray is split in **x and y only**: every box spans the full
+height, and the grid asserts that when it builds.
+
+Anything that integrates up a column -- the O'Brien vertical-velocity
+adjustment, and whatever else needs continuity along z -- is non-local in
+that direction and cannot be done box by box if a column is cut between
+boxes. Reading past the end of a box that way is undefined behaviour and
+does not announce itself.
+
+The cost is nothing in practice: atmospheric domains have
+``nx, ny >> nz``, so the horizontal split carries the parallelism anyway.
+``grid.max_grid_size`` therefore applies to x and y.
+
 A note on the vertical coordinate
 =================================
 

@@ -117,6 +117,146 @@ jobs:
         run: python3 run_regtests.py main3d.gnu.ex
 
   # ---------------------------------------------------------------------
+  # GPU backends: COMPILE ONLY.
+  #
+  # Hosted runners have no GPU, so these jobs prove the code still builds
+  # for each backend and stop there. Running the regtests on them would
+  # fail with "no CUDA-capable device is detected" and tell us nothing.
+  #
+  # This still earns its place: a device lambda that captures a host
+  # container, or a kernel calling a host-only function, is a compile
+  # error under nvcc and invisible to a CPU build.
+  # ---------------------------------------------------------------------
+  cuda:
+    name: Build CUDA (compile only)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: 'network'
+          use-github-cache: 'false'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+
+      - name: Configure (CUDA)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFWT_GPU_BACKEND=CUDA \
+            -DAMReX_CUDA_ARCH=8.0
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify the executable exists
+        run: test -f build/fastwindterrain
+
+  hip:
+    name: Build HIP (compile only)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build wget gnupg
+
+      - name: Add the ROCm apt repository
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key \
+            | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2.4 jammy main' \
+            | sudo tee /etc/apt/sources.list.d/rocm.list
+          printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' \
+            | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update -qq
+
+      - name: Install ROCm/HIP
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            rocm-dev rocrand-dev rocprim-dev rocsparse-dev rocm-cmake
+          echo 'export PATH=/opt/rocm/llvm/bin:/opt/rocm/bin:$PATH' \
+            | sudo tee /etc/profile.d/rocm.sh
+
+      - name: Configure and build (HIP, gfx90a)
+        shell: bash
+        run: |
+          source /etc/profile.d/rocm.sh
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=$(which clang) \
+            -DCMAKE_CXX_COMPILER=$(which clang++) \
+            -DFWT_GPU_BACKEND=HIP \
+            -DAMReX_AMD_ARCH=gfx90a
+          cmake --build build --parallel
+
+      - name: Verify the executable exists
+        run: test -f build/fastwindterrain
+
+  sycl:
+    name: Build SYCL (compile only)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build wget gnupg
+
+      - name: Add the Intel oneAPI apt repository
+        run: |
+          wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update -qq
+
+      - name: Install the Intel DPC++ compiler
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            intel-oneapi-compiler-dpcpp-cpp
+
+      - name: Configure and build (SYCL)
+        shell: bash
+        run: |
+          source /opt/intel/oneapi/setvars.sh
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=$(which icx) \
+            -DCMAKE_CXX_COMPILER=$(which icpx) \
+            -DFWT_GPU_BACKEND=SYCL
+          cmake --build build --parallel
+
+      - name: Verify the executable exists
+        run: test -f build/fastwindterrain
+
+  # ---------------------------------------------------------------------
   # A stray build artifact in a PR is easy to miss in review and annoying
   # to remove later, so the tree is checked after a full build and test.
   # ---------------------------------------------------------------------
