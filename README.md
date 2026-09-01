@@ -11,7 +11,8 @@ layout.
 
 ## Status
 
-- **Phase 1 (this PR): grid & data layout scaffolding.**
+- **Phase 1 (this PR): grid & data layout scaffolding**, plus the AMReX
+  submodule and the CMake build.
   Builds the AMReX `BoxArray`/`DistributionMapping`/`Geometry` for a
   Cartesian mesh with uniform x,y spacing and a geometrically-stretched
   z spacing (finer near the surface, coarsening upward -- useful for
@@ -23,15 +24,45 @@ diagnostics/output) are tracked separately and build on this scaffolding.
 
 ## Building
 
-Requires an AMReX source checkout. Point `AMREX_HOME` at it (or place
-it at `../amrex` relative to this repo):
+AMReX is bundled as a git submodule at `external/amrex` (pinned to
+release `26.08`), so a fresh clone needs:
 
 ```
-export AMREX_HOME=/path/to/amrex
-make -j4
+git submodule update --init --recursive
 ```
 
-This produces an executable named like `main3d.gnu.ex`.
+Two build systems are supported and kept configured the same way
+(3D, double precision, `Src/Base` only, MPI/OpenMP off by default).
+
+### CMake (recommended)
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 8
+ctest --test-dir build --output-on-failure
+```
+
+This produces `build/fastwindterrain`. Options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `FWT_MPI` | `OFF` | Build with MPI |
+| `FWT_OMP` | `OFF` | Build with OpenMP |
+| `FWT_USE_INTERNAL_AMREX` | `ON` | Use the submodule; `OFF` uses `find_package(AMReX)` |
+| `FWT_ENABLE_TESTS` | `ON` | Register the regtests with CTest |
+
+### GNUmake (AMReX native)
+
+```
+make -j8
+```
+
+This produces `main3d.gnu.ex`. `AMREX_HOME` defaults to the submodule;
+override it to build against a different checkout:
+
+```
+make AMREX_HOME=/path/to/amrex
+```
 
 ## Grid stretching
 
@@ -61,21 +92,40 @@ grid.max_grid_size    = 32
 grid.report_file      = grid_report.txt
 ```
 
+## Output
+
+`grid.output_format` selects how the grid is written:
+
+| Value | Effect |
+| --- | --- |
+| `ascii` (default) | Plain-text grid report to `grid.report_file` (default `grid_report.txt`) |
+| `plt` | AMReX native plotfile to `grid.plot_file` (default `plt_grid`) |
+| `both` | Both of the above |
+
+Any other value is a fatal error. Because AMReX's `Geometry` is uniform
+in z, the plotfile's own vertical coordinate is only nominal -- the true
+stretched grid is carried in the cell-centered fields `z_cc` and `dz`.
+
 ## Regtests
 
 `regtests/` holds one folder per phase, each with its own `inputs*`
 files and a standalone `check.py`. There is no separate `tests_example`
 tier -- regtests are the only test suite for now.
 
+Cases run in a scratch work directory (`build/regtests/<phase>` by
+default), so running the tests leaves nothing behind in the source tree.
+
 ```
-python3 run_regtests.py /path/to/main3d.gnu.ex
+python3 run_regtests.py build/fastwindterrain
 ```
 
 or to run a single phase:
 
 ```
-python3 run_regtests.py /path/to/main3d.gnu.ex phase1_grid
+python3 run_regtests.py build/fastwindterrain phase1_grid
 ```
+
+The same tests are registered with CTest (`ctest --test-dir build`).
 
 ### phase1_grid
 
@@ -86,3 +136,6 @@ python3 run_regtests.py /path/to/main3d.gnu.ex phase1_grid
   (expects non-fatal warning + `prob_hi[2]` override)
 - `inputs_undershoot` -- computed height falls short of requested
   height (expects fatal abort, nonzero exit code)
+- `inputs_plt` -- `output_format=both` writes both the ascii report and
+  a well-formed plotfile (`z_cc`, `dz`)
+- `inputs_badformat` -- an unrecognized `output_format` aborts fatally

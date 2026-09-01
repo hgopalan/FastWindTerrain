@@ -1,10 +1,14 @@
 # FastWindTerrain -- GNUmakefile
 #
-# Expects AMREX_HOME to point at a built/checked-out AMReX source tree,
-# e.g.:  export AMREX_HOME=/path/to/amrex
-# (or add it as a git submodule under external/amrex and set the path below)
+# AMReX comes from the bundled git submodule by default:
+#   git submodule update --init --recursive
+# Override to build against a different checkout:
+#   make AMREX_HOME=/path/to/amrex
+#
+# See CMakeLists.txt for the CMake build, which is kept configured the
+# same way (3D, double precision, Src/Base only).
 
-AMREX_HOME ?= ../amrex
+AMREX_HOME ?= $(shell pwd)/external/amrex
 
 DEBUG        = FALSE
 DIM          = 3

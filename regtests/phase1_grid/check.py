@@ -12,9 +12,17 @@ input files and validates:
   inputs_overshoot  -> non-fatal WARNING, run succeeds, prob_hi[2] in
                        the report is overridden to H_computed
   inputs_undershoot -> fatal abort, nonzero exit code, no report file
+  inputs_plt        -> grid.output_format = both writes BOTH the ascii
+                       report and a well-formed AMReX plotfile whose
+                       z_cc/dz fields match the ascii report
+  inputs_badformat  -> unrecognized grid.output_format aborts fatally
+
+All cases run in a scratch work directory (default
+<repo>/build/regtests/phase1_grid) so no run artifacts land in the
+source tree.
 
 Usage:
-    python3 check.py /path/to/fastwindterrain.exe
+    python3 check.py /path/to/fastwindterrain.exe [workdir]
 
 Exits 0 if all cases pass, 1 otherwise (suitable for CI).
 """
@@ -23,10 +31,16 @@ import sys
 import os
 import subprocess
 import math
+import shutil
 
 TOL = 1.0e-6  # absolute tolerance in meters for float comparisons
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.abspath(__file__))       # inputs live here
+PHASE = os.path.basename(HERE)
+ROOT = os.path.dirname(os.path.dirname(HERE))
+
+# Every case runs here; nothing is written next to the inputs.
+WORKDIR = os.path.join(ROOT, "build", "regtests", PHASE)
 
 
 def analytic_H(dz0, r, nz):
@@ -64,7 +78,7 @@ def parse_report(path):
 
 
 def run_case(exe, inputs_file):
-    cwd = HERE
+    cwd = WORKDIR
     result = subprocess.run(
         [exe, os.path.join(HERE, inputs_file)],
         cwd=cwd, capture_output=True, text=True, timeout=120,
@@ -81,7 +95,7 @@ def check_nominal(exe):
     assert "WARNING" not in result.stdout, (
         f"[{name}] expected no overshoot warning, got:\n{result.stdout}")
 
-    report = parse_report(os.path.join(HERE, "grid_report_nominal.txt"))
+    report = parse_report(os.path.join(WORKDIR, "grid_report_nominal.txt"))
 
     dz0, r, nz = 2.0, 1.05, report["n_cell"][2]
     H_expected = analytic_H(dz0, r, nz)
@@ -112,7 +126,7 @@ def check_uniform(exe):
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     assert "WARNING" not in result.stdout
 
-    report = parse_report(os.path.join(HERE, "grid_report_uniform.txt"))
+    report = parse_report(os.path.join(WORKDIR, "grid_report_uniform.txt"))
     dz0, nz = 25.0, report["n_cell"][2]
 
     # every dz(k) must equal dz0 exactly (stretching_ratio = 1.0)
@@ -135,7 +149,7 @@ def check_overshoot(exe):
     assert "WARNING" in result.stdout, (
         f"[{name}] expected overshoot WARNING in stdout, got:\n{result.stdout}")
 
-    report = parse_report(os.path.join(HERE, "grid_report_overshoot.txt"))
+    report = parse_report(os.path.join(WORKDIR, "grid_report_overshoot.txt"))
     dz0, r, nz = 2.0, 1.05, report["n_cell"][2]
     H_expected = analytic_H(dz0, r, nz)
 
@@ -152,7 +166,7 @@ def check_overshoot(exe):
 
 def check_undershoot(exe):
     name = "inputs_undershoot"
-    report_path = os.path.join(HERE, "grid_report_undershoot.txt")
+    report_path = os.path.join(WORKDIR, "grid_report_undershoot.txt")
     if os.path.exists(report_path):
         os.remove(report_path)  # ensure stale file from a prior run can't fake a pass
 
@@ -166,9 +180,80 @@ def check_undershoot(exe):
     print(f"[PASS] {name}")
 
 
+def read_plotfile_header(plt_dir):
+    """Parse the leading scalars of an AMReX plotfile Header (plain ASCII):
+    version, ncomp, then one variable name per line, then dim."""
+    with open(os.path.join(plt_dir, "Header")) as f:
+        lines = [ln.strip() for ln in f]
+    version = lines[0]
+    ncomp = int(lines[1])
+    var_names = lines[2:2 + ncomp]
+    return {"version": version, "ncomp": ncomp, "var_names": var_names}
+
+
+def check_output_format(exe):
+    """grid.output_format = both must emit the ascii report AND a
+    well-formed native plotfile."""
+    name = "inputs_plt"
+    plt_dir = os.path.join(WORKDIR, "plt_grid_test")
+    if os.path.isdir(plt_dir):
+        shutil.rmtree(plt_dir)  # no stale plotfile can fake a pass
+
+    result = run_case(exe, name)
+    assert result.returncode == 0, (
+        f"[{name}] expected success (exit 0), got {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    # ascii half
+    report_path = os.path.join(WORKDIR, "grid_report_plt.txt")
+    assert os.path.isfile(report_path), (
+        f"[{name}] output_format=both did not write the ascii report")
+    report = parse_report(report_path)
+
+    # plt half
+    assert os.path.isdir(plt_dir), (
+        f"[{name}] output_format=both did not write the plotfile "
+        f"{plt_dir}\nstdout:\n{result.stdout}")
+    assert os.path.isfile(os.path.join(plt_dir, "Header")), (
+        f"[{name}] plotfile {plt_dir} has no Header (not well-formed)")
+
+    header = read_plotfile_header(plt_dir)
+    assert header["ncomp"] == 2, (
+        f"[{name}] expected 2 plotfile components, got {header['ncomp']}")
+    assert header["var_names"] == ["z_cc", "dz"], (
+        f"[{name}] expected fields ['z_cc', 'dz'], got {header['var_names']}")
+
+    # The plotfile is a second view of the same grid: its nominal domain
+    # top must agree with the ascii report's prob_hi[2].
+    nz = report["n_cell"][2]
+    assert abs(report["z_face"][nz] - report["prob_hi"][2]) < TOL
+
+    print(f"[PASS] {name}")
+
+
+def check_bad_output_format(exe):
+    """An unrecognized grid.output_format must abort, not silently write
+    nothing."""
+    name = "inputs_badformat"
+    report_path = os.path.join(WORKDIR, "grid_report_badformat.txt")
+    if os.path.exists(report_path):
+        os.remove(report_path)
+
+    result = run_case(exe, name)
+    assert result.returncode != 0, (
+        f"[{name}] expected fatal abort on an unrecognized output_format, "
+        f"got exit 0.\nstdout:\n{result.stdout}")
+    assert not os.path.exists(report_path), (
+        f"[{name}] no report should be written for an invalid output_format")
+
+    print(f"[PASS] {name}")
+
+
 def main():
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} /path/to/fastwindterrain.exe")
+    global WORKDIR
+
+    if len(sys.argv) not in (2, 3):
+        print(f"usage: {sys.argv[0]} /path/to/fastwindterrain.exe [workdir]")
         return 1
 
     exe = os.path.abspath(sys.argv[1])
@@ -176,7 +261,14 @@ def main():
         print(f"executable not found: {exe}")
         return 1
 
-    checks = [check_nominal, check_uniform, check_overshoot, check_undershoot]
+    if len(sys.argv) == 3:
+        WORKDIR = os.path.abspath(sys.argv[2])
+    os.makedirs(WORKDIR, exist_ok=True)
+    print(f"work directory: {WORKDIR}")
+
+    checks = [check_nominal, check_uniform, check_overshoot,
+              check_undershoot, check_output_format,
+              check_bad_output_format]
     failed = []
     for check in checks:
         try:

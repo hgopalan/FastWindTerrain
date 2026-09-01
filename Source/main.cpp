@@ -17,12 +17,28 @@ int main (int argc, char* argv[])
                         << grid.nx() << ", " << grid.ny() << ", " << grid.nz()
                         << "), n_boxes = " << grid.ba().size() << "\n";
 
-        std::string report_file = "grid_report.txt";
+        // Output is user-selectable: ascii (plain-text grid report),
+        // plt (AMReX native plotfile), or both. ascii is the default
+        // so the Phase 1 regtest checkers keep working unchanged.
+        std::string report_file   = "grid_report.txt";
+        std::string plot_file     = "plt_grid";
+        std::string output_format = "ascii";
+
         amrex::ParmParse pp("grid");
         pp.query("report_file", report_file);
-        grid.WriteReport(report_file);
+        pp.query("plot_file", plot_file);
+        pp.query("output_format", output_format);
 
-        amrex::Print() << "Wrote grid report to " << report_file << "\n";
+        const auto fmt = fwt::Grid::ParseOutputFormat(output_format);
+
+        if (fwt::Grid::WantsAscii(fmt)) {
+            grid.WriteReport(report_file);
+            amrex::Print() << "Wrote grid report to " << report_file << "\n";
+        }
+        if (fwt::Grid::WantsPlt(fmt)) {
+            grid.WritePlotfile(plot_file);
+            amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
+        }
     }
     amrex::Finalize();
     return 0;

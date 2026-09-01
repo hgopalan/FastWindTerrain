@@ -58,11 +58,22 @@ public:
     amrex::Real dz0 ()               const { return m_dz0; }
     amrex::Real stretching_ratio ()  const { return m_stretch_ratio; }
 
-    // Writes a plain-text summary of the grid (parameters + full z_face
-    // array) -- used directly by the Phase 1 regtest checker. This is
-    // deliberately independent of the Phase 8 plt/ascii field-output
-    // machinery, which does not exist yet at this phase.
+    // Output (selected by grid.output_format = ascii | plt | both;
+    // see Grid::OutputFormat / main.cpp):
+    //
+    //   ascii -- plain-text summary of the grid (parameters + full
+    //            z_face/z_cc arrays). Used directly by the Phase 1
+    //            regtest checker, so it stays the default.
+    //   plt   -- AMReX native plotfile carrying the true stretched
+    //            vertical coordinate as cell-centered fields.
     void WriteReport (const std::string& filename) const;
+    void WritePlotfile (const std::string& plotfilename) const;
+
+    // Parses grid.output_format; aborts on an unrecognized value.
+    enum class OutputFormat { ascii, plt, both };
+    static OutputFormat ParseOutputFormat (const std::string& s);
+    static bool WantsAscii (OutputFormat f) { return f != OutputFormat::plt; }
+    static bool WantsPlt   (OutputFormat f) { return f != OutputFormat::ascii; }
 
 private:
 
