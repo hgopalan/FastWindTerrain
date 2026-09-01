@@ -1,0 +1,16 @@
+# Phase 1 regtest -- output format selection.
+# Same grid as inputs_nominal, but grid.output_format = both, so the run
+# must emit BOTH the ascii grid report and an AMReX native plotfile.
+# The plotfile carries the true stretched vertical coordinate as the
+# cell-centered fields z_cc and dz (AMReX's own Geometry is uniform in z).
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+grid.output_format    = both
+grid.report_file      = grid_report_plt.txt
+grid.plot_file        = plt_grid_test

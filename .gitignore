@@ -1,0 +1,10 @@
+# CMake build tree (also the regtest scratch root: build/regtests/<phase>)
+build/
+build*/
+
+# GNUmake (AMReX build system)
+*.ex
+tmp_build_dir/
+
+# AMReX crash artifacts
+Backtrace.*

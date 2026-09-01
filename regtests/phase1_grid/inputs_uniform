@@ -1,0 +1,12 @@
+# Phase 1 regtest -- uniform grid regression case
+# stretching_ratio = 1.0 must reproduce a plain uniform grid exactly:
+# dz(k) = dz0 for all k, H_computed = dz0 * nz.
+# nz=40, dz0=25 m -> H_computed = 1000 m (exact match, ABL-scale domain).
+
+grid.n_cell           = 40 40 40
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 1000.0
+grid.dz0              = 25.0
+grid.stretching_ratio = 1.0
+grid.max_grid_size    = 32
+grid.report_file      = grid_report_uniform.txt

@@ -1,0 +1,12 @@
+# Phase 1 regtest -- undershoot case
+# Same dz0/stretching_ratio/nz as inputs_nominal (H_computed = 961.2758...m)
+# but requested prob_hi[2] = 1200 m, i.e. GREATER than H_computed.
+# Expected: FATAL abort (nonzero exit code), no report file written.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 1200.0
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+grid.report_file      = grid_report_undershoot.txt

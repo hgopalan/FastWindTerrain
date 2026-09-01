@@ -1,0 +1,13 @@
+# Phase 1 regtest -- overshoot case
+# Same dz0/stretching_ratio/nz as inputs_nominal (H_computed = 961.2758...m)
+# but requested prob_hi[2] = 900 m, i.e. LESS than H_computed.
+# Expected: non-fatal WARNING, run completes, and the code overrides
+# prob_hi[2] to H_computed (961.2758... m) so grid and domain agree.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 900.0
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+grid.report_file      = grid_report_overshoot.txt
