@@ -1,4 +1,5 @@
 #include "Grid.H"
+#include "Debug.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -36,11 +37,27 @@ void Grid::ReadParameters ()
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_dz0 > 0.0, "grid.dz0 must be > 0");
 
     // Default 1.0 reproduces a uniform z grid exactly (backward compatible).
-    pp.query("stretching_ratio", m_stretch_ratio);
+    const bool got_ratio = pp.query("stretching_ratio", m_stretch_ratio);
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_stretch_ratio > 0.0,
         "grid.stretching_ratio must be > 0");
 
-    pp.query("max_grid_size", m_max_grid_size);
+    const bool got_mgs = pp.query("max_grid_size", m_max_grid_size);
+
+    // Echo the resolved inputs, marking the ones that fell back to a
+    // default -- an unspecified default is exactly what tends to be
+    // missed when a run does not do what the input file suggests.
+    FWT_DEBUG_SECTION("Grid inputs (grid.*)");
+    FWT_DEBUG("n_cell           = " << m_n_cell[0] << " " << m_n_cell[1]
+                                     << " " << m_n_cell[2]);
+    FWT_DEBUG("prob_lo          = " << m_prob_lo[0] << " " << m_prob_lo[1]
+                                     << " " << m_prob_lo[2] << " m");
+    FWT_DEBUG("prob_hi          = " << m_prob_hi[0] << " " << m_prob_hi[1]
+                                     << " " << m_prob_hi[2] << " m  (as requested)");
+    FWT_DEBUG("dz0              = " << m_dz0 << " m");
+    FWT_DEBUG("stretching_ratio = " << m_stretch_ratio
+                                     << (got_ratio ? "" : "   [default]"));
+    FWT_DEBUG("max_grid_size    = " << m_max_grid_size
+                                     << (got_mgs ? "" : "   [default]"));
 }
 
 void Grid::BuildVerticalStretching ()
@@ -65,6 +82,22 @@ void Grid::BuildVerticalStretching ()
         "grid.prob_hi[2] must be greater than grid.prob_lo[2]");
 
     const amrex::Real rel_diff = (H_computed - H_requested) / H_requested;
+
+    FWT_DEBUG_SECTION("Vertical stretching");
+    FWT_DEBUG("nz               = " << nz);
+    FWT_DEBUG("dz(0)            = " << dz[0] << " m   (surface-adjacent)");
+    FWT_DEBUG("dz(nz-1)         = " << dz[nz-1] << " m   (domain top)");
+    FWT_DEBUG("H_requested      = " << H_requested << " m");
+    FWT_DEBUG("H_computed       = " << H_computed << " m   (sum of dz0*r^k)");
+    FWT_DEBUG("relative diff    = " << rel_diff
+                                     << "   (match tolerance "
+                                     << kHeightMatchRelTol << ")");
+    FWT_DEBUG("height check     = "
+              << (rel_diff > kHeightMatchRelTol
+                      ? "overshoot -> prob_hi[2] will be overridden"
+                      : (rel_diff < -kHeightMatchRelTol
+                             ? "undershoot -> fatal"
+                             : "exact match -> no adjustment")));
 
     if (rel_diff > kHeightMatchRelTol) {
         // Overshoot: non-fatal. Warn and adjust the domain top so the
@@ -105,6 +138,23 @@ void Grid::BuildVerticalStretching ()
         m_z_face[k+1] = m_z_face[k] + dz[k];
         m_z_cc[k]     = 0.5 * (m_z_face[k] + m_z_face[k+1]);
     }
+
+    if (Debug::Enabled()) {
+        FWT_DEBUG_SECTION("z table (k, z_face[k], dz[k], z_cc[k]) [m]");
+        for (int k = 0; k < nz; ++k) {
+            if (!Debug::ShowRow(k, nz)) {
+                if (k == Debug::kMaxTableRows/2) {
+                    FWT_DEBUG("  ... " << nz - Debug::kMaxTableRows
+                                        << " rows elided ...");
+                }
+                continue;
+            }
+            FWT_DEBUG("  " << k << "  " << m_z_face[k] << "  " << dz[k]
+                            << "  " << m_z_cc[k]);
+        }
+        FWT_DEBUG("  " << nz << "  " << m_z_face[nz]
+                        << "   (top face; no cell above)");
+    }
 }
 
 void Grid::BuildAMReXGeometry ()
@@ -131,6 +181,53 @@ void Grid::BuildAMReXGeometry ()
     amrex::Array<int,3> is_periodic {0, 0, 0}; // all physical BCs (Phase 4)
 
     m_geom.define(domain, real_box, amrex::CoordSys::cartesian, is_periodic);
+
+    if (Debug::Enabled()) {
+        FWT_DEBUG_SECTION("AMReX geometry / decomposition");
+        FWT_DEBUG("index domain     = " << domain);
+        FWT_DEBUG("prob_lo          = " << m_prob_lo[0] << " " << m_prob_lo[1]
+                                         << " " << m_prob_lo[2] << " m");
+        FWT_DEBUG("prob_hi          = " << m_prob_hi[0] << " " << m_prob_hi[1]
+                                         << " " << m_prob_hi[2]
+                                         << " m  (post height check)");
+        FWT_DEBUG("dx, dy           = " << m_geom.CellSize(0) << ", "
+                                         << m_geom.CellSize(1) << " m");
+        FWT_DEBUG("nominal dz       = " << m_geom.CellSize(2)
+                  << " m   (Geometry is uniform in z; use z_face/z_cc "
+                     "for the true spacing)");
+        FWT_DEBUG("is_periodic      = " << is_periodic[0] << " "
+                                         << is_periodic[1] << " "
+                                         << is_periodic[2]
+                                         << "   (all physical BCs)");
+        FWT_DEBUG("max_grid_size    = " << m_max_grid_size);
+        FWT_DEBUG("n_boxes          = " << m_ba.size());
+        FWT_DEBUG("n_ranks          = "
+                  << amrex::ParallelDescriptor::NProcs());
+
+        const int nbox = static_cast<int>(m_ba.size());
+        FWT_DEBUG_SECTION("box list (index, box, rank)");
+        for (int i = 0; i < nbox; ++i) {
+            if (!Debug::ShowRow(i, nbox)) {
+                if (i == Debug::kMaxTableRows/2) {
+                    FWT_DEBUG("  ... " << nbox - Debug::kMaxTableRows
+                                        << " rows elided ...");
+                }
+                continue;
+            }
+            FWT_DEBUG("  " << i << "  " << m_ba[i] << "  rank " << m_dm[i]);
+        }
+
+        // Cells per rank: the quantity that actually predicts load imbalance.
+        const int nranks = amrex::ParallelDescriptor::NProcs();
+        amrex::Vector<long> cells_per_rank(nranks, 0L);
+        for (int i = 0; i < nbox; ++i) {
+            cells_per_rank[m_dm[i]] += m_ba[i].numPts();
+        }
+        FWT_DEBUG_SECTION("cells per rank");
+        for (int r = 0; r < nranks; ++r) {
+            FWT_DEBUG("  rank " << r << "  " << cells_per_rank[r] << " cells");
+        }
+    }
 }
 
 void Grid::Build ()
@@ -166,6 +263,7 @@ void Grid::WriteReport (const std::string& filename) const
         }
         os.close();
     }
+    FWT_DEBUG("wrote ascii grid report: " << filename);
 }
 
 Grid::OutputFormat Grid::ParseOutputFormat (const std::string& s)
@@ -173,6 +271,7 @@ Grid::OutputFormat Grid::ParseOutputFormat (const std::string& s)
     if (s == "ascii") { return OutputFormat::ascii; }
     if (s == "plt")   { return OutputFormat::plt;   }
     if (s == "both")  { return OutputFormat::both;  }
+    // Not a debug-only line: an unrecognized format is always fatal.
     amrex::Abort("grid.output_format = '" + s +
                  "' is not recognized (expected ascii, plt, or both)");
     return OutputFormat::ascii;   // unreachable; silences the compiler
@@ -207,6 +306,9 @@ void Grid::WritePlotfile (const std::string& plotfilename) const
 
     amrex::WriteSingleLevelPlotfile(plotfilename, mf, {"z_cc", "dz"},
                                     m_geom, 0.0, 0);
+
+    FWT_DEBUG("wrote plotfile: " << plotfilename
+              << "  (2 components: z_cc, dz; " << m_ba.size() << " boxes)");
 }
 
 } // namespace fwt
