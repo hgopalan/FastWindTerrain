@@ -19,11 +19,14 @@ on this layout.
    inflow
    boundary_conditions
    poisson
+   anisotropy
    numerics
    output
    debugging
+   parmparse_reference
    tools
    regtests
+   references
 
 Input file conventions
 ======================
@@ -39,6 +42,8 @@ Prefix           Covers
 ``bc.``          Boundary-condition options (currently a test aid)
 ``numerics.``    Derivative scheme selection
 ``poisson.``     Variational Poisson solve and its coefficients
+``anisotropy.``  Cell-local variational weights
+``obrien.``      Vertical-velocity adjustment
 ``fwt.``         Whole-run switches, currently ``fwt.debug``
 ===============  ==========================================================
 
@@ -49,3 +54,19 @@ regtests point a case at an absolute file path::
 
 An unrecognized value for an enumerated input (``grid.output_format``,
 ``inflow.mode``) is a fatal error rather than a silent fallback.
+
+:doc:`parmparse_reference` lists every input in one place.
+
+GPU support
+===========
+
+The compute kernels are written for the GPU -- every ``ParallelFor``
+takes its data through device containers -- and CI compiles the CUDA, HIP
+and SYCL backends on every pull request. Those jobs are **compile-only**:
+hosted runners have no GPU, so nothing is executed there.
+
+Several setup and diagnostic paths (the boundary ghost fill, the nodal
+RHS averaging, the divergence diagnostics, the O'Brien column pass) are
+host loops. They are correct, and under a GPU build they run on the host
+through managed memory rather than being accelerated. They are not in the
+solve, which is AMReX's own multigrid.

@@ -55,6 +55,7 @@ public:
     const amrex::Vector<amrex::Real>& z_face () const { return m_z_face; }
     const amrex::Vector<amrex::Real>& z_cc   () const { return m_z_cc; }
 
+    int max_grid_size ()             const { return m_max_grid_size; }
     amrex::Real dz0 ()               const { return m_dz0; }
     amrex::Real stretching_ratio ()  const { return m_stretch_ratio; }
 

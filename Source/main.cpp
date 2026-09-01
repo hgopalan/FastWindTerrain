@@ -11,6 +11,8 @@
 #include "Terrain.H"
 #include "Inflow.H"
 #include "BoundaryConditions.H"
+#include "Anisotropy.H"
+#include "Obrien.H"
 #include "Poisson.H"
 #include "Output.H"
 #include "Debug.H"
@@ -56,8 +58,21 @@ int main (int argc, char* argv[])
         fwt::BoundaryConditions bc;
         bc.Build(grid, terrain, inflow, inflow.velocity());
 
+        // Cell-local variational weights, from the terrain slope.
+        fwt::Anisotropy aniso;
+        aniso.Build(grid, terrain);
+
+        // O'Brien runs on u0, BEFORE the projection: it rewrites w from
+        // continuity, and doing that afterwards would put back the
+        // divergence the solve had just removed. massconsistent_amr
+        // applies it at the same point.
+        fwt::Obrien obrien;
+        if (obrien.Apply(grid, terrain, inflow.velocity()) > 0) {
+            bc.RefillGhosts(grid, terrain, inflow, inflow.velocity());
+        }
+
         fwt::Poisson poisson;
-        poisson.Build(grid, terrain, bc);
+        poisson.Build(grid, terrain, bc, aniso);
 
         // Keep the initial field: the projection corrects in place, and
         // both are worth having in the output -- the checkers compare
@@ -201,6 +216,8 @@ int main (int argc, char* argv[])
             inflow.AppendReport(report_file);
             bc.AppendReport(report_file);
             fwt::AppendNumericsReport(report_file);
+            aniso.AppendReport(report_file);
+            obrien.AppendReport(report_file);
             poisson.AppendReport(report_file);
             if (manufactured) {
                 std::ofstream os(report_file, std::ios::app);
@@ -212,7 +229,7 @@ int main (int argc, char* argv[])
         }
         if (fwt::Grid::WantsPlt(fmt)) {
             fwt::WritePlotfile(plot_file, grid, terrain, inflow, poisson,
-                               vel0);
+                               vel0, aniso);
             amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
         }
     }

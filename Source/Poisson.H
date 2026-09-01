@@ -4,6 +4,7 @@
 #include "Grid.H"
 #include "Terrain.H"
 #include "BoundaryConditions.H"
+#include "Anisotropy.H"
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_MLNodeLaplacian.H>
@@ -72,7 +73,7 @@ class Poisson
 public:
 
     void Build (const Grid& grid, const Terrain& terrain,
-                const BoundaryConditions& bc);
+                const BoundaryConditions& bc, const Anisotropy& aniso);
 
     // Nodal RHS from the cell-centered velocity, in computational space.
     void ComputeRHS (const Grid& grid, const Terrain& terrain,
@@ -166,7 +167,14 @@ private:
     void ZeroRHSInsideTerrain (const Terrain& terrain);
     void CorrectWithScheme (const Grid& grid, const Terrain& terrain,
                             amrex::MultiFab& vel) const;
-    void BuildSigma (const Grid& grid, const Terrain& terrain);
+
+    // The cell-local weights the operator was built from. Held so the
+    // correction uses the same object the operator does -- if sigma
+    // varies per cell and the correction does not, they are no longer
+    // the same operator pair.
+    const Anisotropy* m_aniso = nullptr;
+    void BuildSigma (const Grid& grid, const Terrain& terrain,
+                     const Anisotropy& aniso);
     void BuildOperator (const Grid& grid, const Terrain& terrain,
                         const BoundaryConditions& bc);
 
