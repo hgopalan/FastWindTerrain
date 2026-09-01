@@ -139,6 +139,21 @@ amrex::Real Inflow::ProfileSpeed (amrex::Real z_agl) const
     return 0.0;
 }
 
+void Inflow::VelocityAt (amrex::Real x, amrex::Real y, amrex::Real z_agl,
+                        amrex::Real& u, amrex::Real& v, amrex::Real& w) const
+{
+    if (m_mode == Mode::userfile) {
+        InterpolateIDW3D(x, y, std::max(z_agl, m_z_agl_min),
+                         m_xp, m_yp, m_zp, m_up, m_vp, m_wp,
+                         m_idw_k, m_idw_exponent, u, v, w);
+    } else {
+        const amrex::Real speed = ProfileSpeed(z_agl);
+        u = speed * m_dir_x;
+        v = speed * m_dir_y;
+        w = 0.0;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The user velocity file
 // ---------------------------------------------------------------------------
@@ -239,7 +254,8 @@ void Inflow::InterpolateIDW3D (amrex::Real xq, amrex::Real yq, amrex::Real zq,
 
 void Inflow::BuildVelocity (const Grid& grid, const Terrain& terrain)
 {
-    m_vel.define(grid.ba(), grid.dm(), 3, 0);
+    // One ghost layer: the physical boundary conditions live there.
+    m_vel.define(grid.ba(), grid.dm(), 3, 1);
 
     const int nx = grid.nx();
     const int ny = grid.ny();
@@ -270,19 +286,10 @@ void Inflow::BuildVelocity (const Grid& grid, const Terrain& terrain)
                 const amrex::Real xq = xlo + (amrex::Real(i) + 0.5) * dx;
                 const amrex::Real z_agl = z_cc[k] - h[std::size_t(j)*nx + i];
 
+                // One evaluation path for the interior and for the
+                // inflow ghost cells the boundary conditions fill.
                 amrex::Real u, v, w;
-                if (m_mode == Mode::userfile) {
-                    // The file's z is read as AGL, so the user profile is
-                    // terrain-following like the analytic laws.
-                    InterpolateIDW3D(xq, yq, std::max(z_agl, m_z_agl_min),
-                                     m_xp, m_yp, m_zp, m_up, m_vp, m_wp,
-                                     m_idw_k, m_idw_exponent, u, v, w);
-                } else {
-                    const amrex::Real speed = ProfileSpeed(z_agl);
-                    u = speed * m_dir_x;
-                    v = speed * m_dir_y;
-                    w = 0.0;
-                }
+                VelocityAt(xq, yq, z_agl, u, v, w);
 
                 const std::size_t c = (std::size_t(k)*ny + j)*nx + i;
                 buf[0*ncell + c] = u;

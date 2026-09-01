@@ -69,8 +69,11 @@ public:
     void Build (const Grid& grid, const Terrain& terrain);
 
     // --- Read-only accessors --------------------------------------------
-    // Cell-centered velocity, 3 components (u, v, w).
+    // Cell-centered velocity, 3 components (u, v, w), one ghost layer.
+    // The non-const overload exists so the boundary conditions can fill
+    // the ghost cells in place.
     const amrex::MultiFab& velocity () const { return m_vel; }
+    amrex::MultiFab& velocity ()             { return m_vel; }
 
     Mode mode ()                     const { return m_mode; }
     const std::string& mode_name ()  const { return m_mode_name; }
@@ -88,6 +91,20 @@ public:
     // regtest checkers and later phases can evaluate the same law.
     // Aborts for mode = userfile, which is a 3D field, not a 1D law.
     amrex::Real ProfileSpeed (amrex::Real z_agl) const;
+
+    // Velocity at an arbitrary point, whatever the mode: the profile
+    // laws for powerlaw/loglaw, the interpolated file for userfile.
+    // Used to fill inflow ghost cells, which sit outside the domain and
+    // so cannot be read from the field itself.
+    void VelocityAt (amrex::Real x, amrex::Real y, amrex::Real z_agl,
+                     amrex::Real& u, amrex::Real& v, amrex::Real& w) const;
+
+    // Horizontal unit vector along (u_ref, v_ref). This is what the
+    // boundary-condition classification tests each face normal against.
+    amrex::Real dir_x () const { return m_dir_x; }
+    amrex::Real dir_y () const { return m_dir_y; }
+    amrex::Real speed_ref () const { return m_speed_ref; }
+    amrex::Real z_agl_min () const { return m_z_agl_min; }
 
     static Mode ParseMode (const std::string& s);
 
