@@ -43,6 +43,11 @@ check exhaustively, it is: the mask is verified against
 ``z_cc <= z_terrain`` in every cell of the domain, not at sampled
 points.
 
+From Phase 6 the plotfile carries the velocity **after** the projection
+in ``u``/``v``/``w``, and the initial field in ``u0``/``v0``/``w0``.
+Checkers that test the profile or the assembled RHS read the ``u0``
+fields.
+
 ``regtests/plotfile.py`` is a small standard-library reader for AMReX
 single-level plotfiles, shared by the checkers. It exists so the tests
 can inspect field values without depending on ``yt``. Each FAB is
@@ -70,6 +75,27 @@ The anisotropic Poisson operator (see :doc:`poisson`).
   nodal RHS against an independent Python divergence of the plotfile's
   own velocity, and sigma against its definition in every sampled cell
   including the ``sigma = 0`` branch inside terrain
+
+``phase6_solve_correction``
+---------------------------
+
+The linear solve and the velocity correction (see :doc:`poisson`).
+
+* ``inputs_flat`` -- a uniform profile over flat ground is already
+  solenoidal, so lambda must come out ~0 and the velocity must be
+  untouched. This is the case that catches a projection which "corrects"
+  a field that was already fine
+* ``inputs_bump`` -- over a 100 m hill the projection has real work to
+  do. Checks that the divergence in the norm the solve **controls** goes
+  down, that it keeps going down as passes are added, and that the
+  corrected wind stays physical
+* the same case across all three derivative schemes, which must leave
+  the corrected field identical -- the scheme does not reach the
+  projection
+
+The velocity-extrema assertion is not decoration. An earlier version of
+this solver reduced divergence fifteen-fold while turning a 10 m/s
+inflow into a 35 m/s corrected wind, and no divergence number showed it.
 
 ``gradient_schemes``
 --------------------

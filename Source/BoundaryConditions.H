@@ -92,6 +92,16 @@ public:
     // classification was made from.
     amrex::Real face_flux (int face) const { return m_flux[face]; }
 
+    // Re-applies the EXISTING classification to the ghost cells, without
+    // reclassifying. The projection changes the interior, so the ghosts
+    // have to be refreshed before anything reads a stencil near a face --
+    // but which face is an inflow face is a property of the incoming
+    // wind, not of the corrected field, and must not be re-derived from
+    // it.
+    void RefillGhosts (const Grid& grid, const Terrain& terrain,
+                       const Inflow& inflow, amrex::MultiFab& vel)
+    { FillGhosts(grid, terrain, inflow, vel); }
+
     void AppendReport (const std::string& filename) const;
 
     // Writes one row per boundary cell (face, i, j, k, ghost u/v/w,

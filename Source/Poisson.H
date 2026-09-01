@@ -81,6 +81,59 @@ public:
     // Solves for lambda. Returns the final residual reported by MLMG.
     amrex::Real Solve ();
 
+    // Applies the variational correction in place:
+    //
+    //     u = u0 - alpha_h^2 dlambda/dx     (and likewise v)
+    //     w = w0 - alpha_v^2 dlambda/dz
+    //
+    // lambda is nodal, so each cell-centered derivative is the average of
+    // the four node differences spanning the cell in that direction. The
+    // vertical one is divided by the cell's TRUE height, which is where
+    // the stretched grid enters -- alpha_v^2 itself is the raw
+    // coefficient, not the metric-weighted sigma the operator carries.
+    //
+    // Velocity is re-zeroed inside the terrain afterwards: the correction
+    // is not defined there, and the immersed boundary has to hold after
+    // the projection as well as before it.
+    void ApplyCorrection (const Grid& grid, const Terrain& terrain,
+                          amrex::MultiFab& vel) const;
+
+    // vel -> (J u, J v, w), the computational flux variables the operator
+    // and sigma are written in.
+    void ScaleToComputational (const Grid& grid, const Terrain& terrain,
+                               const amrex::MultiFab& vel,
+                               amrex::MultiFab& q) const;
+
+    // Largest |div(u)| over fluid cells, in physical units. Computed with
+    // the configured scheme, so it measures the same discrete divergence
+    // the RHS was built from.
+    amrex::Real MaxDivergence (const Grid& grid, const Terrain& terrain,
+                               const amrex::MultiFab& vel) const;
+
+    // The divergence in the norm the projection actually controls, using
+    // AMReX's own nodal divergence rather than a hand-rolled stand-in.
+    amrex::Real MaxDivergenceFE (const Grid& grid, const Terrain& terrain,
+                                 const amrex::MultiFab& vel);
+
+    // Component-wise velocity extrema over fluid cells. A corrected wind
+    // far larger than the one that went in is the loudest signal that a
+    // setup is wrong, so it is measured and reported either side of the
+    // projection.
+    struct VelRange {
+        amrex::Real lo[3];
+        amrex::Real hi[3];
+        amrex::Real speed_max;
+    };
+    static VelRange VelocityRange (const Terrain& terrain,
+                                   const amrex::MultiFab& vel);
+
+    void set_vel_before (const VelRange& r) { m_vel_before = r;
+                                              m_speed_before = r.speed_max; }
+    void set_vel_after (const VelRange& r)  { m_vel_after = r;
+                                              m_speed_after = r.speed_max; }
+
+    amrex::Real solve_residual () const { return m_resid; }
+
     const amrex::MultiFab& lambda () const { return m_lambda; }
     const amrex::MultiFab& rhs ()    const { return m_rhs; }
     // sigma carries the metric; component d is the coefficient for
@@ -108,6 +161,11 @@ public:
 private:
 
     void ReadParameters ();
+    // Clears the source at nodes buried in terrain, matching how
+    // massconsistent_amr imposes the immersed boundary.
+    void ZeroRHSInsideTerrain (const Terrain& terrain);
+    void CorrectWithScheme (const Grid& grid, const Terrain& terrain,
+                            amrex::MultiFab& vel) const;
     void BuildSigma (const Grid& grid, const Terrain& terrain);
     void BuildOperator (const Grid& grid, const Terrain& terrain,
                         const BoundaryConditions& bc);
@@ -118,13 +176,54 @@ private:
     int  m_verbose = 0;
     amrex::Real m_reltol = 1.0e-11;
     amrex::Real m_abstol = 0.0;
+    VelRange m_vel_before {};
+    VelRange m_vel_after {};
+    amrex::Real m_speed_before = 0.0;
+    amrex::Real m_speed_after = 0.0;
+    // Multigrid struggles as the cell aspect ratio grows, and needs more
+    // smoothing sweeps to compensate: about 2x the aspect ratio (8 at
+    // AR 4, 16 at AR 8). Chosen from the grid unless set explicitly.
+    int  m_pre_smooth = -1;
+    int  m_post_smooth = -1;
+    amrex::Real m_aspect = 1.0;
+    // Which divergence forms the RHS: the FE-consistent nodal
+    // divergence, or the configured scheme averaged to nodes.
+    std::string m_rhs_operator = "fe";
+    // Which lambda boundary conditions the operator uses. See
+    // BuildOperator for why the directional mapping is not the default.
+    std::string m_lambda_bc = "flowthrough";
+    // Which gradient the correction uses: AMReX's own nodal gradient,
+    // the one the operator was assembled from, or the configured
+    // derivative scheme applied to lambda averaged to cell centres.
+    std::string m_gradient_operator = "amrex";
 
     amrex::MultiFab m_sigma;      // AMREX_SPACEDIM components, cell centered
     amrex::MultiFab m_rhs;        // nodal
     amrex::MultiFab m_lambda;     // nodal
     amrex::iMultiFab m_overset;   // nodal: which nodes are pinned
+    mutable amrex::MultiFab m_q;  // cell-centered computational flux vars
 
     long m_n_pinned = 0;
+    long m_n_rhs_zeroed = 0;
+    amrex::Real m_resid = 0.0;
+    // Divergence before and after the correction, for the report.
+    mutable amrex::Real m_div_before = 0.0;
+    mutable amrex::Real m_div_after = 0.0;
+    // The divergence in the norm the solve actually controls, which is
+    // the one that measures whether the projection worked.
+    mutable amrex::Real m_div_fe_before = 0.0;
+    mutable amrex::Real m_div_fe_after = 0.0;
+    mutable int m_n_projections = 1;
+
+public:
+    void set_div_before (amrex::Real d) const { m_div_before = d; }
+    void set_div_after (amrex::Real d) const { m_div_after = d; }
+    void set_div_fe (amrex::Real b, amrex::Real a) const
+        { m_div_fe_before = b; m_div_fe_after = a; }
+    void set_n_projections (int n) const { m_n_projections = n; }
+    amrex::Real div_before () const { return m_div_before; }
+    amrex::Real div_after () const { return m_div_after; }
+private:
     bool m_all_dirichlet = false; // manufactured mode overrides the BCs
 
     std::unique_ptr<amrex::MLNodeLaplacian> m_op;

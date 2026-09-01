@@ -1,0 +1,155 @@
+name: CI
+
+# Runs on every pull request, which is the point: a contributor should
+# find out that a change breaks a build or a regtest from the PR, not
+# from someone else's machine after it merges.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_COMPRESS: "true"
+  CCACHE_MAXSIZE: "1G"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # CMake build + the full regtest suite, via CTest.
+  # ---------------------------------------------------------------------
+  cmake:
+    name: CMake (${{ matrix.os }}, ${{ matrix.build_type }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux carries both build types; macOS builds Release only, to
+          # keep the matrix honest without paying for a second AMReX
+          # compile on the slower runner.
+          - os: ubuntu-latest
+            build_type: Release
+          - os: ubuntu-latest
+            build_type: Debug
+          - os: macos-latest
+            build_type: Release
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja ccache
+
+      - name: Set up ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ matrix.build_type }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ matrix.build_type }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify the executable exists
+        run: test -f build/fastwindterrain
+
+      - name: Run the regtests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+  # ---------------------------------------------------------------------
+  # The GNUmake build, which would otherwise rot unnoticed: nothing else
+  # exercises it, and it is a supported path.
+  # ---------------------------------------------------------------------
+  gnumake:
+    name: GNUmake (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # gfortran is needed here but not by the CMake build: AMReX's
+          # GNUmake build compiles its Fortran sources, while the CMake
+          # configuration turns Fortran off.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gfortran
+
+      - name: Build
+        run: make -j $(nproc)
+
+      - name: Run the regtests against the GNUmake executable
+        run: python3 run_regtests.py main3d.gnu.ex
+
+  # ---------------------------------------------------------------------
+  # A stray build artifact in a PR is easy to miss in review and annoying
+  # to remove later, so the tree is checked after a full build and test.
+  # ---------------------------------------------------------------------
+  clean-tree:
+    name: Working tree stays clean
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Check for untracked or modified files
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The build or the regtests left files behind:"
+            git status --porcelain
+            echo
+            echo "Regtests write into build/, which is gitignored."
+            echo "Anything listed above escaped that."
+            exit 1
+          fi
+          echo "Working tree is clean."

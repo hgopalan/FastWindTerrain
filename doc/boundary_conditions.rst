@@ -82,6 +82,16 @@ Free (outflow, tangential)   Dirichlet
 No flow (top, ground)        Neumann
 ===========================  ==========================================
 
+.. note::
+
+   These lambda conditions are what the classification *implies*, and
+   they are available as ``poisson.lambda_bc = directional``. They are
+   **not** the default. The nodal operator does not tolerate Neumann
+   lambda on a face carrying tangential velocity -- see
+   :doc:`poisson` -- so the solve uses a fixed flow-through convention
+   instead. The velocity conditions below are unaffected: that is where
+   the wind direction genuinely belongs.
+
 **At least one face must be Dirichlet.** With every face Neumann the
 operator is singular: ``lambda`` is determined only up to a constant, and
 an RHS that does not integrate to zero has no solution at all, so the

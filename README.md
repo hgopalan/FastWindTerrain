@@ -50,6 +50,17 @@ To build the docs as HTML:
 sphinx-build -b html doc doc/_build
 ```
 
+## Continuous integration
+
+Every pull request builds with both build systems and runs the whole
+regtest suite:
+
+- **CMake** on Linux (Release and Debug) and macOS (Release), with CTest
+- **GNUmake** on Linux, which nothing else exercises and would otherwise
+  rot unnoticed
+- a check that a full build and test run leaves the working tree clean
+- the documentation, built with warnings as errors
+
 ## Layout
 
 ```

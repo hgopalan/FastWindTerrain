@@ -16,7 +16,8 @@ namespace fwt {
 //   dz        -- true cell thickness [m]
 //   terrain_z -- terrain surface height for the column [m]
 //   mask      -- 1 solid, 0 fluid (binary immersed boundary)
-//   u, v, w   -- initial velocity field u0 [m/s]
+//   u, v, w    -- velocity after the projection [m/s]
+//   u0, v0, w0 -- the initial field, before the correction [m/s]
 //   sigma_x/y/z -- Poisson operator coefficients, metric included
 //
 // z_cc/dz are written because AMReX's Geometry is uniform in z, so the
@@ -26,7 +27,8 @@ void WritePlotfile (const std::string& plotfilename,
                     const Grid& grid,
                     const Terrain& terrain,
                     const Inflow& inflow,
-                    const Poisson& poisson);
+                    const Poisson& poisson,
+                    const amrex::MultiFab& vel0);
 
 } // namespace fwt
 

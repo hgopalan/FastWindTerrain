@@ -23,6 +23,9 @@ validates:
 The expected profiles are recomputed here rather than read back from the
 solver, so the checker does not confirm the solver against itself.
 
+These cases check the INITIAL field, so they read u0/v0/w0 from the
+plotfile: from Phase 6 on, u/v/w hold the velocity after the projection.
+
 All cases run in a scratch work directory (default
 <repo>/build/regtests/phase3_inflow_profile) so no run artifacts land in
 the source tree.
@@ -206,7 +209,7 @@ def check_analytic_profile(name, pf, law, stride=9,
     zcc = pf.field("z_cc")
     zt = pf.field("terrain_z")
     mask = pf.field("mask")
-    u, v, w = pf.field("u"), pf.field("v"), pf.field("w")
+    u, v, w = pf.field("u0"), pf.field("v0"), pf.field("w0")
 
     worst = 0.0
     worst_at = None
@@ -242,7 +245,7 @@ def check_analytic_profile(name, pf, law, stride=9,
 def check_finite(name, pf):
     """No NaN or Inf anywhere, including the first cell above ground where
     the log law would diverge without the z_agl floor."""
-    for comp in ("u", "v", "w"):
+    for comp in ("u0", "v0", "w0"):
         f = pf.field(comp)
         for value in f.values():
             assert math.isfinite(value), (
@@ -254,7 +257,7 @@ def integrate_boundary_flux(pf, report):
     plotfile fields. Mirrors Inflow::ComputeBoundaryFlux but is written
     from the definition, not from that code."""
     mask = pf.field("mask")
-    u, v, w = pf.field("u"), pf.field("v"), pf.field("w")
+    u, v, w = pf.field("u0"), pf.field("v0"), pf.field("w0")
     z_face = [report["z_face"][k] for k in range(NZ + 1)]
     dz = [z_face[k + 1] - z_face[k] for k in range(NZ)]
 
@@ -324,6 +327,10 @@ def check_powerlaw(exe):
                                 "u", "v", "w"], (
         f"[{name}] expected the plotfile to lead with the grid, terrain "
         f"and velocity fields, got {pf.var_names}")
+    for f0 in ("u0", "v0", "w0"):
+        assert f0 in pf.var_names, (
+            f"[{name}] the plotfile must also carry the pre-projection "
+            f"field {f0}; u/v/w are post-correction from Phase 6 on")
 
     worst = check_analytic_profile(name, pf, powerlaw_speed)
     check_finite(name, pf)
@@ -372,7 +379,7 @@ def check_userfile(exe):
 
     pf = Plotfile(os.path.join(WORKDIR, "plt_userfile"))
     zcc, zt = pf.field("z_cc"), pf.field("terrain_z")
-    u, v, w = pf.field("u"), pf.field("v"), pf.field("w")
+    u, v, w = pf.field("u0"), pf.field("v0"), pf.field("w0")
 
     worst = 0.0
     worst_at = None
@@ -430,9 +437,9 @@ def check_agl_anchoring(exe):
     #    runs never coincide once the hill shifts them, so the flat
     #    profile is interpolated to the hill column's AGL heights.
     flat = Plotfile(os.path.join(WORKDIR, "plt_powerlaw"))
-    flat_u, flat_zcc = flat.field("u"), flat.field("z_cc")
+    flat_u, flat_zcc = flat.field("u0"), flat.field("z_cc")
     zcc, zt = pf.field("z_cc"), pf.field("terrain_z")
-    u, mask = pf.field("u"), pf.field("mask")
+    u, mask = pf.field("u0"), pf.field("mask")
 
     # The hill peaks near the domain center; pick a column with real relief.
     ic, jc = NX // 2, NY // 2

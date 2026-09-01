@@ -59,6 +59,14 @@ int main (int argc, char* argv[])
         fwt::Poisson poisson;
         poisson.Build(grid, terrain, bc);
 
+        // Keep the initial field: the projection corrects in place, and
+        // both are worth having in the output -- the checkers compare
+        // against u0, and a user wants to see what the adjustment did.
+        amrex::MultiFab vel0(grid.ba(), grid.dm(), 3,
+                             inflow.velocity().nGrow());
+        amrex::MultiFab::Copy(vel0, inflow.velocity(), 0, 0, 3,
+                              inflow.velocity().nGrow());
+
         int manufactured = 0;
         {
             amrex::ParmParse pp("poisson");
@@ -73,6 +81,74 @@ int main (int argc, char* argv[])
                            << mms_err.linf << "\n";
         } else {
             poisson.ComputeRHS(grid, terrain, inflow.velocity());
+
+            const amrex::Real div0 =
+                poisson.MaxDivergence(grid, terrain, inflow.velocity());
+            poisson.set_div_before(div0);
+            poisson.set_vel_before(
+                fwt::Poisson::VelocityRange(terrain, inflow.velocity()));
+
+            const amrex::Real fe0 =
+                poisson.MaxDivergenceFE(grid, terrain, inflow.velocity());
+
+            // AMReX's nodal projection is approximate: its divergence and
+            // gradient are not an exact factorisation of the operator, so
+            // one pass removes only part of the divergence. Repeating the
+            // projection drives the remainder down geometrically.
+            int n_proj = 4;
+            {
+                amrex::ParmParse pp("poisson");
+                pp.query("n_projections", n_proj);
+            }
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(n_proj >= 1,
+                "poisson.n_projections must be >= 1");
+
+            for (int ip = 0; ip < n_proj; ++ip) {
+                if (ip > 0) {
+                    poisson.ComputeRHS(grid, terrain, inflow.velocity());
+                }
+                poisson.Solve();
+                poisson.ApplyCorrection(grid, terrain, inflow.velocity());
+
+                // The correction changed the interior, so the ghosts are
+                // refreshed before anything reads a stencil near a face.
+                // The classification is NOT redone: which face is an
+                // inflow face follows from the incoming wind, not from
+                // the corrected field.
+                bc.RefillGhosts(grid, terrain, inflow, inflow.velocity());
+
+                if (n_proj > 1) {
+                    amrex::Print() << "  projection pass " << (ip + 1)
+                        << ": max|div| (controlled norm) = "
+                        << poisson.MaxDivergenceFE(grid, terrain,
+                                                   inflow.velocity())
+                        << "\n";
+                }
+            }
+
+            const amrex::Real div1 =
+                poisson.MaxDivergence(grid, terrain, inflow.velocity());
+            poisson.set_div_after(div1);
+
+            amrex::Print() << "Projection: max|div(u)| " << div0 << " -> "
+                           << div1 << "  (factor "
+                           << (div1 > 0.0 ? div0 / div1 : 0.0) << ")\n";
+            const amrex::Real fe1 =
+                poisson.MaxDivergenceFE(grid, terrain, inflow.velocity());
+            poisson.set_div_fe(fe0, fe1);
+            poisson.set_n_projections(n_proj);
+            amrex::Print() << "  in the norm the solve controls: "
+                           << fe0 << " -> " << fe1 << "\n";
+
+            // A corrected wind far larger than the one that went in means
+            // the setup is wrong, whatever the residual says.
+            const auto vr =
+                fwt::Poisson::VelocityRange(terrain, inflow.velocity());
+            poisson.set_vel_after(vr);
+            amrex::Print() << "  velocity u [" << vr.lo[0] << ", " << vr.hi[0]
+                           << "]  v [" << vr.lo[1] << ", " << vr.hi[1]
+                           << "]  w [" << vr.lo[2] << ", " << vr.hi[2]
+                           << "]  |U|max " << vr.speed_max << " m/s\n";
         }
 
         {
@@ -135,7 +211,8 @@ int main (int argc, char* argv[])
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {
-            fwt::WritePlotfile(plot_file, grid, terrain, inflow, poisson);
+            fwt::WritePlotfile(plot_file, grid, terrain, inflow, poisson,
+                               vel0);
             amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
         }
     }
