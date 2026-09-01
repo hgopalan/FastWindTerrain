@@ -1,0 +1,20 @@
+# Gradient-scheme regtest -- scheme selection.
+# The checker runs this once per scheme name, overriding
+# numerics.gradient_scheme on the command line, and confirms the
+# resolved scheme comes back in the report. Run with no override it must
+# report the default, weno3js.
+
+grid.n_cell           = 8 8 8
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 100.0 100.0 80.0
+grid.dz0              = 10.0
+grid.stretching_ratio = 1.0
+grid.max_grid_size    = 8
+
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0
+
+grid.output_format = ascii
+grid.report_file   = grid_report_scheme.txt

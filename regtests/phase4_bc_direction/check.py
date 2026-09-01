@@ -15,10 +15,10 @@ validates:
                     faces must be classified from the flux the field
                     itself carries
 
-Every boundary cell is checked, not a sample: the solver writes one row
-per boundary cell to bc.dump_file, and the expected ghost value is
-recomputed here from the profile law rather than read back from the
-solver.
+Every boundary ghost cell is checked, not a sample: the solver writes one
+row per ghost cell (both layers) to bc.dump_file, and the expected ghost
+value is recomputed here from the profile law rather than read back from
+the solver.
 
 The boundary conditions checked, per face type:
 
@@ -162,7 +162,13 @@ def parse_report(path):
 
 
 def parse_dump(path):
-    """One row per boundary cell: face i j k ghost_uvw int_uvw."""
+    """One row per boundary ghost cell:
+
+        face layer i j k  ghost_uvw  mirror_uvw  edge_uvw
+
+    layer counts outward from 1. `mirror` is the interior cell reflected
+    about the face, `edge` the interior cell adjacent to it; they
+    coincide only for layer 1."""
     rows = []
     with open(path) as f:
         for line in f:
@@ -172,19 +178,28 @@ def parse_dump(path):
             p = line.split()
             rows.append({
                 "face": p[0],
-                "ijk": (int(p[1]), int(p[2]), int(p[3])),
-                "ghost": (float(p[4]), float(p[5]), float(p[6])),
-                "interior": (float(p[7]), float(p[8]), float(p[9])),
+                "layer": int(p[1]),
+                "ijk": (int(p[2]), int(p[3]), int(p[4])),
+                "ghost": (float(p[5]), float(p[6]), float(p[7])),
+                "mirror": (float(p[8]), float(p[9]), float(p[10])),
+                "edge": (float(p[11]), float(p[12]), float(p[13])),
             })
     assert rows, f"no rows read from {path}"
     return rows
 
 
-def interior_index(face, i, j, k):
+DOMAIN_HI = {0: NX - 1, 1: NY - 1, 2: NZ - 1}
+
+
+def edge_index(face, i, j, k):
+    """The interior cell adjacent to the face, whatever ghost layer the
+    row is from. This is the cell whose terrain column the ghost sits
+    over."""
     d, side = FACES[face]
-    return ((i - side) if d == 0 else i,
-            (j - side) if d == 1 else j,
-            (k - side) if d == 2 else k)
+    e = 0 if side < 0 else DOMAIN_HI[d]
+    return (e if d == 0 else i,
+            e if d == 1 else j,
+            e if d == 2 else k)
 
 
 def run_case(exe, inputs_file, extra=()):
@@ -256,9 +271,10 @@ def check_ghost_values(name, rows, pf, profile, report):
     for row in rows:
         face = row["face"]
         i, j, k = row["ijk"]
-        ii, jj, kk = interior_index(face, i, j, k)
+        ii, jj, kk = edge_index(face, i, j, k)
         gu, gv, gw = row["ghost"]
-        iu, iv, iw = row["interior"]
+        mu, mv, mw = row["mirror"]
+        eu_, ev_, ew_ = row["edge"]
 
         ftype = report[f"bc_{face}"][0]
         counts[ftype] = counts.get(ftype, 0) + 1
@@ -286,25 +302,30 @@ def check_ghost_values(name, rows, pf, profile, report):
                 f"profile at z_agl = {z_agl}")
 
         elif ftype in ("outflow", "tangential"):
-            err = max(abs(gu - iu), abs(gv - iv), abs(gw - iw))
+            # Zero gradient: every ghost layer takes the value of the
+            # interior cell adjacent to the face.
+            err = max(abs(gu - eu_), abs(gv - ev_), abs(gw - ew_))
             worst[ftype] = max(worst[ftype], err)
             assert err == 0.0, (
-                f"[{name}] {face} is {ftype} so the ghost must copy the "
-                f"interior exactly; at ({i},{j},{k}) ghost ({gu}, {gv}, "
-                f"{gw}) vs interior ({iu}, {iv}, {iw})")
+                f"[{name}] {face} is {ftype} so ghost layer {row['layer']} "
+                f"must copy the edge cell exactly; at ({i},{j},{k}) ghost "
+                f"({gu}, {gv}, {gw}) vs edge ({eu_}, {ev_}, {ew_})")
 
         elif ftype == "noflow":
-            # w reflected so the face value is zero; u,v free slip.
-            err = max(abs(gu - iu), abs(gv - iv), abs(gw + iw))
+            # w reflected about the face; u,v free slip. The reflection
+            # partner is the mirrored cell, which for layer 2 is one
+            # deeper than the edge cell.
+            err = max(abs(gu - mu), abs(gv - mv), abs(gw + mw))
             worst["noflow"] = max(worst["noflow"], err)
             assert err == 0.0, (
-                f"[{name}] {face} is noflow so ghost w must be -interior w "
-                f"and u,v must copy; at ({i},{j},{k}) ghost ({gu}, {gv}, "
-                f"{gw}) vs interior ({iu}, {iv}, {iw})")
-            # The whole point: w averages to zero ON the face.
-            assert abs(0.5 * (gw + iw)) < TOL, (
-                f"[{name}] {face}: w at the face is {0.5 * (gw + iw)}, "
-                f"not zero")
+                f"[{name}] {face} is noflow so ghost w must be -mirror w "
+                f"and u,v must copy; at ({i},{j},{k}) layer {row['layer']} "
+                f"ghost ({gu}, {gv}, {gw}) vs mirror ({mu}, {mv}, {mw})")
+            # The whole point, for the layer that straddles the face.
+            if row["layer"] == 1:
+                assert abs(0.5 * (gw + mw)) < TOL, (
+                    f"[{name}] {face}: w at the face is "
+                    f"{0.5 * (gw + mw)}, not zero")
 
     # Every face type present must have been exercised.
     for ftype, n in counts.items():
@@ -463,9 +484,10 @@ def check_userfile_direction(exe):
     for row in rows:
         if report[f"bc_{row['face']}"][0] != "outflow":
             continue
-        assert row["ghost"] == row["interior"], (
-            f"[{name}] {row['face']} outflow ghost at {row['ijk']} does not "
-            f"copy the interior: {row['ghost']} vs {row['interior']}")
+        assert row["ghost"] == row["edge"], (
+            f"[{name}] {row['face']} outflow ghost at {row['ijk']} "
+            f"(layer {row['layer']}) does not copy the edge cell: "
+            f"{row['ghost']} vs {row['edge']}")
         n_checked += 1
     assert n_checked > 0, f"[{name}] no outflow cells were checked"
 

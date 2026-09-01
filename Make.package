@@ -1,10 +1,12 @@
 CEXE_headers += Grid.H
+CEXE_headers += Derivatives.H
 CEXE_headers += Terrain.H
 CEXE_headers += Inflow.H
 CEXE_headers += BoundaryConditions.H
 CEXE_headers += Output.H
 CEXE_headers += Debug.H
 CEXE_sources += Grid.cpp
+CEXE_sources += Derivatives.cpp
 CEXE_sources += Terrain.cpp
 CEXE_sources += Inflow.cpp
 CEXE_sources += BoundaryConditions.cpp

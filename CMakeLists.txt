@@ -82,8 +82,10 @@ if(FWT_ENABLE_TESTS)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     enable_testing()
 
+    # A regtest directory is one holding a check.py; the names follow no
+    # required pattern.
     file(GLOB FWT_PHASE_DIRS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/regtests
-         ${CMAKE_CURRENT_SOURCE_DIR}/regtests/phase*)
+         ${CMAKE_CURRENT_SOURCE_DIR}/regtests/*)
     foreach(phase IN LISTS FWT_PHASE_DIRS)
         if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/regtests/${phase}/check.py)
             add_test(NAME ${phase}

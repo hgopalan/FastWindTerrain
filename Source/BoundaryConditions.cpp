@@ -188,6 +188,7 @@ void BoundaryConditions::FillGhosts (const Grid& grid, const Terrain& terrain,
     const amrex::Real ylo = grid.geom().ProbLo(1);
 
     const int nx = grid.nx();
+    const int nghost = vel.nGrow();
     const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
     const std::vector<amrex::Real>& h = terrain.column_heights();
 
@@ -209,75 +210,83 @@ void BoundaryConditions::FillGhosts (const Grid& grid, const Terrain& terrain,
             const int box_edge = (side < 0) ? bx.smallEnd(d) : bx.bigEnd(d);
             if (box_edge != dom_edge) { continue; }
 
-            // The one-cell ghost layer just outside this face.
-            amrex::Box gbx(bx);
-            if (side < 0) {
-                gbx.setSmall(d, dom_edge - 1);
-                gbx.setBig(d, dom_edge - 1);
-            } else {
-                gbx.setSmall(d, dom_edge + 1);
-                gbx.setBig(d, dom_edge + 1);
-            }
+            // Every ghost layer, not just the first: the upwind stencils
+            // reach kStencilRadius cells outside the domain.
+            for (int g = 1; g <= nghost; ++g) {
+                const int gidx = dom_edge + side * g;         // ghost cell
+                const int midx = dom_edge - side * (g - 1);   // its mirror
+                const int eidx = dom_edge;                    // interior edge
 
-            const auto lo = amrex::lbound(gbx);
-            const auto hi = amrex::ubound(gbx);
-            for (int k = lo.z; k <= hi.z; ++k) {
-            for (int j = lo.y; j <= hi.y; ++j) {
-            for (int i = lo.x; i <= hi.x; ++i) {
-                // The interior cell this ghost mirrors.
-                const int ii = (d == 0) ? i - side : i;
-                const int jj = (d == 1) ? j - side : j;
-                const int kk = (d == 2) ? k - side : k;
+                amrex::Box gbx(bx);
+                gbx.setSmall(d, gidx);
+                gbx.setBig(d, gidx);
 
-                switch (m_type[face]) {
+                const auto lo = amrex::lbound(gbx);
+                const auto hi = amrex::ubound(gbx);
+                for (int k = lo.z; k <= hi.z; ++k) {
+                for (int j = lo.y; j <= hi.y; ++j) {
+                for (int i = lo.x; i <= hi.x; ++i) {
+                    // Mirrored interior cell, for the reflecting and
+                    // zero-gradient conditions.
+                    const int mi = (d == 0) ? midx : i;
+                    const int mj = (d == 1) ? midx : j;
+                    const int mk_ = (d == 2) ? midx : k;
+                    // Interior cell adjacent to the face, which owns the
+                    // terrain column this ghost sits over.
+                    const int ei = (d == 0) ? eidx : i;
+                    const int ej = (d == 1) ? eidx : j;
+                    const int ek = (d == 2) ? eidx : k;
 
-                case FaceType::inflow: {
-                    // Dirichlet: the profile evaluated at the ghost cell
-                    // center. Terrain is not defined outside the domain,
-                    // so the height comes from the adjacent interior
-                    // column, which keeps the ghost on the same ground as
-                    // the cell it feeds.
-                    const amrex::Real xq = xlo + (amrex::Real(i) + 0.5) * dx;
-                    const amrex::Real yq = ylo + (amrex::Real(j) + 0.5) * dy;
-                    const amrex::Real zt = h[std::size_t(jj)*nx + ii];
-                    const amrex::Real z_agl = z_cc[kk] - zt;
+                    switch (m_type[face]) {
 
-                    if (mk(ii,jj,kk) == Terrain::kSolid) {
-                        // Terrain blocks the face here. Prescribing the
-                        // profile would drive flow straight into the
-                        // ground; the face is simply shut.
-                        a(i,j,k,0) = 0.0;
-                        a(i,j,k,1) = 0.0;
-                        a(i,j,k,2) = 0.0;
+                    case FaceType::inflow: {
+                        if (mk(ei,ej,ek) == Terrain::kSolid) {
+                            // Terrain blocks the face here. Prescribing the
+                            // profile would drive flow straight into the
+                            // ground; the face is simply shut.
+                            a(i,j,k,0) = 0.0;
+                            a(i,j,k,1) = 0.0;
+                            a(i,j,k,2) = 0.0;
+                            break;
+                        }
+
+                        // The profile at the ghost cell center. Terrain is
+                        // not defined outside the domain, so the height
+                        // comes from the interior column the ghost sits
+                        // over, keeping it on the same ground.
+                        const amrex::Real xq = xlo + (amrex::Real(i) + 0.5) * dx;
+                        const amrex::Real yq = ylo + (amrex::Real(j) + 0.5) * dy;
+                        const amrex::Real zt = h[std::size_t(ej)*nx + ei];
+                        const amrex::Real z_agl = z_cc[ek] - zt;
+
+                        amrex::Real u, v, w;
+                        inflow.VelocityAt(xq, yq, z_agl, u, v, w);
+                        a(i,j,k,0) = u;
+                        a(i,j,k,1) = v;
+                        a(i,j,k,2) = w;
                         break;
                     }
 
-                    amrex::Real u, v, w;
-                    inflow.VelocityAt(xq, yq, z_agl, u, v, w);
-                    a(i,j,k,0) = u;
-                    a(i,j,k,1) = v;
-                    a(i,j,k,2) = w;
-                    break;
-                }
+                    case FaceType::outflow:
+                    case FaceType::tangential:
+                        // Zero gradient: every ghost layer takes the value
+                        // of the interior cell adjacent to the face.
+                        a(i,j,k,0) = a(ei,ej,ek,0);
+                        a(i,j,k,1) = a(ei,ej,ek,1);
+                        a(i,j,k,2) = a(ei,ej,ek,2);
+                        break;
 
-                case FaceType::outflow:
-                case FaceType::tangential:
-                    // Zero gradient: the flow leaves as it arrives.
-                    a(i,j,k,0) = a(ii,jj,kk,0);
-                    a(i,j,k,1) = a(ii,jj,kk,1);
-                    a(i,j,k,2) = a(ii,jj,kk,2);
-                    break;
-
-                case FaceType::noflow:
-                    // Reflect the normal component so it averages to zero
-                    // ON the face, and leave the tangential components
-                    // with zero gradient (free slip).
-                    a(i,j,k,0) = a(ii,jj,kk,0);
-                    a(i,j,k,1) = a(ii,jj,kk,1);
-                    a(i,j,k,2) = -a(ii,jj,kk,2);
-                    break;
-                }
-            }}}
+                    case FaceType::noflow:
+                        // Reflect the normal component about the face so it
+                        // averages to zero ON it, and leave the tangential
+                        // components with zero gradient (free slip).
+                        a(i,j,k,0) = a(mi,mj,mk_,0);
+                        a(i,j,k,1) = a(mi,mj,mk_,1);
+                        a(i,j,k,2) = -a(mi,mj,mk_,2);
+                        break;
+                    }
+                }}}
+            }
         }
     }
 }
@@ -368,11 +377,14 @@ void BoundaryConditions::WriteDump (const std::string& filename,
 
     std::ofstream os(filename);
     os << std::setprecision(std::numeric_limits<amrex::Real>::max_digits10);
-    os << "# face i j k  ghost_u ghost_v ghost_w  int_u int_v int_w\n";
-    os << "# one row per boundary cell; ghost is the cell outside the "
-          "face, int the interior cell it mirrors\n";
+    os << "# face layer i j k  ghost_u ghost_v ghost_w  mirror_u mirror_v "
+          "mirror_w  edge_u edge_v edge_w\n";
+    os << "# one row per boundary ghost cell. layer counts outward from 1;\n";
+    os << "# mirror is the interior cell reflected about the face, edge is\n";
+    os << "# the interior cell adjacent to it (they coincide for layer 1)\n";
 
     const amrex::Box& domain = grid.geom().Domain();
+    const int nghost = vel.nGrow();
 
     for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.validbox();
@@ -386,24 +398,37 @@ void BoundaryConditions::WriteDump (const std::string& filename,
             const int box_edge = (side < 0) ? bx.smallEnd(d) : bx.bigEnd(d);
             if (box_edge != dom_edge) { continue; }
 
-            amrex::Box gbx(bx);
-            gbx.setSmall(d, dom_edge + side);
-            gbx.setBig(d, dom_edge + side);
+            for (int g = 1; g <= nghost; ++g) {
+                const int gidx = dom_edge + side * g;
+                const int midx = dom_edge - side * (g - 1);
+                const int eidx = dom_edge;
 
-            const auto lo = amrex::lbound(gbx);
-            const auto hi = amrex::ubound(gbx);
-            for (int k = lo.z; k <= hi.z; ++k) {
-            for (int j = lo.y; j <= hi.y; ++j) {
-            for (int i = lo.x; i <= hi.x; ++i) {
-                const int ii = (d == 0) ? i - side : i;
-                const int jj = (d == 1) ? j - side : j;
-                const int kk = (d == 2) ? k - side : k;
-                os << FaceName(face) << " " << i << " " << j << " " << k
-                   << " " << a(i,j,k,0) << " " << a(i,j,k,1)
-                   << " " << a(i,j,k,2)
-                   << " " << a(ii,jj,kk,0) << " " << a(ii,jj,kk,1)
-                   << " " << a(ii,jj,kk,2) << "\n";
-            }}}
+                amrex::Box gbx(bx);
+                gbx.setSmall(d, gidx);
+                gbx.setBig(d, gidx);
+
+                const auto lo = amrex::lbound(gbx);
+                const auto hi = amrex::ubound(gbx);
+                for (int k = lo.z; k <= hi.z; ++k) {
+                for (int j = lo.y; j <= hi.y; ++j) {
+                for (int i = lo.x; i <= hi.x; ++i) {
+                    const int mi = (d == 0) ? midx : i;
+                    const int mj = (d == 1) ? midx : j;
+                    const int mk = (d == 2) ? midx : k;
+                    const int ei = (d == 0) ? eidx : i;
+                    const int ej = (d == 1) ? eidx : j;
+                    const int ek = (d == 2) ? eidx : k;
+
+                    os << FaceName(face) << " " << g << " "
+                       << i << " " << j << " " << k
+                       << " " << a(i,j,k,0) << " " << a(i,j,k,1)
+                       << " " << a(i,j,k,2)
+                       << " " << a(mi,mj,mk,0) << " " << a(mi,mj,mk,1)
+                       << " " << a(mi,mj,mk,2)
+                       << " " << a(ei,ej,ek,0) << " " << a(ei,ej,ek,1)
+                       << " " << a(ei,ej,ek,2) << "\n";
+                }}}
+            }
         }
     }
     os.close();

@@ -1,5 +1,6 @@
 add_executable(fastwindterrain
     Grid.cpp
+    Derivatives.cpp
     Terrain.cpp
     Inflow.cpp
     BoundaryConditions.cpp

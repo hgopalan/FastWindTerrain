@@ -1,5 +1,6 @@
 #include "Inflow.H"
 #include "Debug.H"
+#include "Derivatives.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -254,8 +255,10 @@ void Inflow::InterpolateIDW3D (amrex::Real xq, amrex::Real yq, amrex::Real zq,
 
 void Inflow::BuildVelocity (const Grid& grid, const Terrain& terrain)
 {
-    // One ghost layer: the physical boundary conditions live there.
-    m_vel.define(grid.ba(), grid.dm(), 3, 1);
+    // Two ghost layers: the physical boundary conditions live there, and
+    // the upwind derivative stencils reach two cells to the upwind side
+    // (fwt::kStencilRadius).
+    m_vel.define(grid.ba(), grid.dm(), 3, kStencilRadius);
 
     const int nx = grid.nx();
     const int ny = grid.ny();

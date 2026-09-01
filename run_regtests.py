@@ -2,10 +2,10 @@
 """
 FastWindTerrain regtest runner.
 
-Loops over regtests/phase*_*/check.py and invokes each against the
-built executable. Add new phase folders here as they land; each
-folder is self-contained (inputs + check.py, and any auxiliary data
-like terrain.csv or user_profile.txt).
+Loops over regtests/*/check.py and invokes each against the built
+executable. Each folder is self-contained (inputs + check.py, and any
+auxiliary data like terrain.csv or user_profile.txt); a folder counts
+as a test group as soon as it holds a check.py.
 
 Each check.py runs its cases in a scratch work directory
 (<repo>/build/regtests/<phase> by default), so running the tests leaves
@@ -15,7 +15,7 @@ Usage:
     python3 run_regtests.py /path/to/fastwindterrain.exe [phase_name ...]
                             [--workdir DIR]
 
-With no phase_name arguments, all regtests/phase*/check.py are run.
+With no phase_name arguments, every regtests/*/check.py is run.
 --workdir DIR overrides the scratch root; each phase gets DIR/<phase>.
 """
 
@@ -29,7 +29,11 @@ REGTEST_ROOT = os.path.join(ROOT, "regtests")
 
 
 def discover_phase_dirs():
-    return sorted(glob.glob(os.path.join(REGTEST_ROOT, "phase*")))
+    """Every regtest directory holding a check.py. Group names are not
+    required to follow any pattern -- the checker file is what makes a
+    directory a test group."""
+    return sorted(d for d in glob.glob(os.path.join(REGTEST_ROOT, "*"))
+                  if os.path.isfile(os.path.join(d, "check.py")))
 
 
 def main():
