@@ -1,0 +1,17 @@
+# Phase 2 regtest -- the same Gaussian hill sampled at scattered points.
+# terrain_scattered.csv holds the same 2601 samples displaced off the
+# lattice (jitter 0.4 cells, seed 7), so the k-nearest search has to
+# cope with irregular point spacing rather than a regular stencil.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_scattered.csv
+
+grid.output_format    = both
+grid.report_file      = grid_report_scattered.txt
+grid.plot_file        = plt_scattered

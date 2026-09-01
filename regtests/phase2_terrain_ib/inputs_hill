@@ -1,0 +1,23 @@
+# Phase 2 regtest -- single Gaussian hill on a lattice.
+# terrain_hill.csv: 51x51 points over the 1000 x 1000 m footprint
+# (20 m spacing), peak 100 m at (500, 500), sigma 150 m.
+#
+# The grid is 40x40 in x,y (dx = dy = 25 m), so cell centers sit at
+# 12.5, 37.5, ... and never coincide with a terrain point -- the IDW
+# interpolation is genuinely exercised rather than degenerating into a
+# lookup.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_hill.csv
+terrain.idw_n_neighbors = 6
+terrain.idw_exponent    = 2.0
+
+grid.output_format    = both
+grid.report_file      = grid_report_hill.txt
+grid.plot_file        = plt_hill
