@@ -1,4 +1,5 @@
 CEXE_headers += Grid.H
+CEXE_headers += Debug.H
 CEXE_sources += Grid.cpp
 CEXE_sources += main.cpp
 

@@ -106,6 +106,29 @@ Any other value is a fatal error. Because AMReX's `Geometry` is uniform
 in z, the plotfile's own vertical coordinate is only nominal -- the true
 stretched grid is carried in the cell-centered fields `z_cc` and `dz`.
 
+## Debugging
+
+`fwt.debug = 1` turns on verbose diagnostics for the whole run:
+
+- every input that was parsed, with the ones that fell back to a
+  **default** marked as such
+- the domain-height arithmetic (`H_requested`, `H_computed`, relative
+  difference, and which of the three branches was taken)
+- the full `k, z_face, dz, z_cc` table
+- the index domain, `dx/dy`, periodicity, box list with owning rank,
+  and cells per rank
+- every file written
+
+Default is off, and with it off the output is byte-for-byte what it was
+before the switch existed. Debug lines carry a `[debug]` prefix and never
+contain the words `WARNING`/`ERROR`, so they cannot confuse the regtest
+checkers that key on those strings. Tables longer than 200 rows are
+elided in the middle.
+
+```
+./build/fastwindterrain inputs fwt.debug=1
+```
+
 ## Regtests
 
 `regtests/` holds one folder per phase, each with its own `inputs*`
@@ -139,3 +162,5 @@ The same tests are registered with CTest (`ctest --test-dir build`).
 - `inputs_plt` -- `output_format=both` writes both the ascii report and
   a well-formed plotfile (`z_cc`, `dz`)
 - `inputs_badformat` -- an unrecognized `output_format` aborts fatally
+- `inputs_debug` -- `fwt.debug=1` prints the full diagnostics, agrees
+  with the ascii report, and changes no result; the default stays silent

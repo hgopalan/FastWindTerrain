@@ -16,6 +16,8 @@ input files and validates:
                        report and a well-formed AMReX plotfile whose
                        z_cc/dz fields match the ascii report
   inputs_badformat  -> unrecognized grid.output_format aborts fatally
+  inputs_debug      -> fwt.debug = 1 prints the full diagnostics without
+                       changing any result, and stays silent by default
 
 All cases run in a scratch work directory (default
 <repo>/build/regtests/phase1_grid) so no run artifacts land in the
@@ -249,6 +251,55 @@ def check_bad_output_format(exe):
     print(f"[PASS] {name}")
 
 
+def check_debug(exe):
+    """fwt.debug = 1 must print the full diagnostics, agree with the
+    ascii report, and change nothing about the run. With debug off
+    (the default) not a single [debug] line may appear."""
+    name = "inputs_debug"
+    result = run_case(exe, name)
+    assert result.returncode == 0, (
+        f"[{name}] expected success (exit 0), got {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    out = result.stdout
+    assert "[debug]" in out, (
+        f"[{name}] fwt.debug = 1 produced no [debug] output:\n{out}")
+
+    # Every section the diagnostics promise to cover.
+    for section in ("Run configuration", "Grid inputs", "Vertical stretching",
+                    "z table", "AMReX geometry / decomposition", "box list",
+                    "cells per rank", "Output settings"):
+        assert f"=== {section}" in out, (
+            f"[{name}] debug output is missing the '{section}' section")
+
+    # Debug output must not fabricate the strings the other cases key on:
+    # this grid is an exact match, so a WARNING here would be spurious.
+    assert "WARNING" not in out, (
+        f"[{name}] debug output introduced a spurious WARNING:\n{out}")
+
+    # The debug height arithmetic must agree with the report it wrote.
+    report = parse_report(os.path.join(WORKDIR, "grid_report_debug.txt"))
+    nz = report["n_cell"][2]
+    H_expected = analytic_H(2.0, 1.05, nz)
+    assert abs(report["prob_hi"][2] - H_expected) < TOL, (
+        f"[{name}] debug run changed the result: prob_hi[2] = "
+        f"{report['prob_hi'][2]} != analytic H = {H_expected}")
+    assert "height check     = exact match" in out, (
+        f"[{name}] expected the exact-match branch to be reported\n{out}")
+
+    # The z table must list every cell (nz = 66 is under the elision cap).
+    assert out.count("[debug]   ") >= nz, (
+        f"[{name}] z table looks truncated for nz = {nz}")
+
+    # ...and the default must stay silent.
+    quiet = run_case(exe, "inputs_nominal")
+    assert "[debug]" not in quiet.stdout, (
+        "[inputs_nominal] debug output appeared without fwt.debug set; "
+        f"the default must be silent:\n{quiet.stdout}")
+
+    print(f"[PASS] {name}")
+
+
 def main():
     global WORKDIR
 
@@ -268,7 +319,7 @@ def main():
 
     checks = [check_nominal, check_uniform, check_overshoot,
               check_undershoot, check_output_format,
-              check_bad_output_format]
+              check_bad_output_format, check_debug]
     failed = []
     for check in checks:
         try:

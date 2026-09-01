@@ -1,0 +1,15 @@
+# Phase 1 regtest -- fwt.debug = 1 verbose diagnostics.
+# Same grid as inputs_nominal, so the debug output can be cross-checked
+# against the ascii report it writes alongside. Debug output must not
+# change any result, and must not introduce the strings WARNING/ERROR
+# that the other checkers key on.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+grid.report_file      = grid_report_debug.txt
+
+fwt.debug             = 1
