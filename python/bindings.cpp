@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "Error.H"
+#include "FieldIO.H"
 #include "Grid.H"
 #include "Solver.H"
 
@@ -300,6 +301,98 @@ void PythonWarningHandler (const std::string& message)
     }
 }
 
+// -----------------------------------------------------------------------
+// Fields, as numpy
+// -----------------------------------------------------------------------
+
+// Shape for a field: (ncomp, nz, ny, nx), with the leading axis dropped
+// for a single-component field. The counts come from the MultiFab's own
+// index space, so a nodal field is (nz+1, ny+1, nx+1) with no special
+// case.
+//
+// Channels-first is deliberate. It is AMReX's own memory order, so the
+// gather is a memcpy per component rather than a transpose -- and it is
+// what PyTorch's conv3d wants, (N, C, D, H, W), so a dataset generator
+// can hand the array straight over.
+template <typename MF>
+std::vector<py::ssize_t> FieldShape (const MF& mf)
+{
+    const amrex::IntVect len = mf.boxArray().minimalBox().length();
+    std::vector<py::ssize_t> shape;
+    if (mf.nComp() > 1) { shape.push_back(mf.nComp()); }
+    shape.push_back(len[2]);
+    shape.push_back(len[1]);
+    shape.push_back(len[0]);
+    return shape;
+}
+
+// A COPY, not a view. See Source/FieldIO.H for why: a MultiFab is N
+// separate boxes, the velocity carries ghosts, and a view would outlive
+// the Solver that owns it.
+py::array FieldToNumpy (const amrex::MultiFab& mf)
+{
+    const amrex::Vector<amrex::Real> buf = fwt::GatherField(mf);
+    py::array_t<amrex::Real> out(FieldShape(mf));
+    std::copy(buf.begin(), buf.end(), out.mutable_data());
+    return out;
+}
+
+py::array IFieldToNumpy (const amrex::iMultiFab& mf)
+{
+    const amrex::Vector<int> buf = fwt::GatherField(mf);
+    py::array_t<int> out(FieldShape(mf));
+    std::copy(buf.begin(), buf.end(), out.mutable_data());
+    return out;
+}
+
+// numpy -> flat buffer, with the shape checked against the field it is
+// destined for. Silently reshaping or broadcasting here would be a good
+// way to write a transposed velocity field and never find out.
+amrex::Vector<amrex::Real> NumpyToBuffer (const py::array& a,
+                                          const amrex::MultiFab& mf,
+                                          const char* what)
+{
+    auto arr = py::array_t<amrex::Real, py::array::c_style |
+                                        py::array::forcecast>::ensure(a);
+    if (!arr) {
+        throw fwt::InputError(std::string(what) +
+                              " must be an array of numbers");
+    }
+
+    const std::vector<py::ssize_t> want = FieldShape(mf);
+    std::string exp;
+    for (std::size_t k = 0; k < want.size(); ++k) {
+        exp += (k ? ", " : "") + std::to_string(want[k]);
+    }
+
+    bool ok = (std::size_t(arr.ndim()) == want.size());
+    if (ok) {
+        for (std::size_t d = 0; d < want.size(); ++d) {
+            if (arr.shape(py::ssize_t(d)) != want[d]) { ok = false; break; }
+        }
+    }
+    if (!ok) {
+        std::string got;
+        for (py::ssize_t k = 0; k < arr.ndim(); ++k) {
+            got += (k ? ", " : "") + std::to_string(arr.shape(k));
+        }
+        throw fwt::InputError(std::string(what) + " has shape (" + got +
+                              "), expected (" + exp + ")");
+    }
+
+    amrex::Vector<amrex::Real> buf(arr.size());
+    std::copy(arr.data(), arr.data() + arr.size(), buf.begin());
+    return buf;
+}
+
+void RequireSetup (const fwt::Solver& s, const char* what)
+{
+    if (!s.is_setup()) {
+        throw std::runtime_error(
+            std::string(what) + " is not available until setup() has run.");
+    }
+}
+
 } // namespace
 
 PYBIND11_MODULE(_fastwindterrain, m)
@@ -418,5 +511,109 @@ Requires AMReX to be initialized -- use ``fwt.session()``.
                         std::to_string(g.nz()) + ") dz0=" +
                         std::to_string(g.dz0()) + " r=" +
                         std::to_string(g.stretching_ratio()) + ">";
+             });
+
+    py::class_<fwt::Solver>(m, "Solver", R"doc(
+The solver pipeline, as an object -- the same one the executable runs.
+
+Phase 11 exposes ``setup()`` and the fields it builds. The remaining
+stages (``solve()``, ``diagnose()``, ``write_output()``) and dict-based
+configuration arrive in later phases; for now the case is described by
+the inputs file AMReX was initialized with::
+
+    with fwt.session(["inputs"]):
+        s = fwt.Solver()
+        s.setup()
+        u = s.velocity[0]          # numpy, (nz, ny, nx)
+        s.set_velocity(new_field)  # writes back, ghosts refilled
+
+FIELD LAYOUT. Every field comes back as ``(ncomp, nz, ny, nx)``, with
+the leading axis dropped when there is one component -- so ``velocity``
+is ``(3, nz, ny, nx)`` and ``mask`` is ``(nz, ny, nx)``. The nodal
+``lambda_`` is ``(nz+1, ny+1, nx+1)``.
+
+Channels-first is deliberate: it is AMReX's own memory order, so the
+gather is a memcpy per component rather than a transpose, and it is what
+PyTorch's ``conv3d`` wants.
+
+COPIES, NOT VIEWS. A MultiFab is several boxes, the velocity carries two
+ghost layers, and a view would outlive the Solver that owns it. Writing
+into a returned array changes nothing; use ``set_velocity``.
+)doc")
+        .def(py::init([] () {
+                 RequireInitialized("Solver");
+                 return std::make_unique<fwt::Solver>();
+             }))
+        .def("setup", [] (fwt::Solver& s,
+                          const std::vector<std::string>& args) {
+                 RequireInitialized("Solver.setup");
+                 amrex::Vector<std::string> a;
+                 a.reserve(args.size());
+                 for (const std::string& x : args) { a.push_back(x); }
+                 s.Setup(a);
+             }, py::arg("args") = std::vector<std::string>{},
+             "Build every component from the inputs AMReX was initialized\n"
+             "with. args are echoed by fwt.debug and nothing else.")
+        .def_property_readonly("is_setup", &fwt::Solver::is_setup)
+        .def_property_readonly("grid", &fwt::Solver::grid,
+                               py::return_value_policy::reference_internal)
+        .def_property_readonly("shape", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "shape");
+                 return py::make_tuple(s.grid().nz(), s.grid().ny(),
+                                       s.grid().nx());
+             }, "(nz, ny, nx) -- the shape of a scalar cell field.")
+
+        .def_property_readonly("velocity", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "velocity");
+                 return FieldToNumpy(s.velocity());
+             }, "(3, nz, ny, nx) [m/s]. After the projection once it has run.")
+        .def_property_readonly("velocity0", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "velocity0");
+                 return FieldToNumpy(s.velocity0());
+             }, "(3, nz, ny, nx) [m/s] -- the field before any correction.")
+        .def_property_readonly("mask", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "mask");
+                 return IFieldToNumpy(s.terrain().mask());
+             }, "(nz, ny, nx) int32: 1 solid, 0 fluid.")
+        .def_property_readonly("z_terrain", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "z_terrain");
+                 return FieldToNumpy(s.terrain().z_terrain());
+             }, "(nz, ny, nx) [m] -- the surface height of each column.")
+        .def_property_readonly("alpha_h", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "alpha_h");
+                 return FieldToNumpy(s.anisotropy().alpha_h());
+             }, "(nz, ny, nx) -- the horizontal variational weight.")
+        .def_property_readonly("alpha_v", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "alpha_v");
+                 return FieldToNumpy(s.anisotropy().alpha_v());
+             }, "(nz, ny, nx) -- the vertical variational weight.")
+        .def_property_readonly("sigma", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "sigma");
+                 return FieldToNumpy(s.poisson().sigma());
+             }, "(3, nz, ny, nx) -- Poisson coefficients, metric included.")
+        .def_property_readonly("lambda_", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "lambda_");
+                 return FieldToNumpy(s.poisson().lambda());
+             }, "(nz+1, ny+1, nx+1) -- the nodal potential. `lambda` is a\n"
+                "Python keyword, hence the trailing underscore.")
+
+        .def("set_velocity", [] (fwt::Solver& s, const py::array& a) {
+                 RequireSetup(s, "set_velocity");
+                 s.SetVelocity(NumpyToBuffer(a, s.velocity(), "velocity"));
+             }, py::arg("array"),
+             "Overwrite the velocity from a (3, nz, ny, nx) array.\n\n"
+             "The valid region is written and the ghost cells are refilled\n"
+             "through the boundary conditions, so the field is immediately\n"
+             "consistent for anything that reads a stencil near a face.\n"
+             "A mismatched shape raises rather than being broadcast.")
+
+        .def("__repr__", [] (const fwt::Solver& s) {
+                 if (!s.is_setup()) {
+                     return std::string("<fastwindterrain.Solver (not set up)>");
+                 }
+                 return "<fastwindterrain.Solver n_cell=(" +
+                        std::to_string(s.grid().nx()) + ", " +
+                        std::to_string(s.grid().ny()) + ", " +
+                        std::to_string(s.grid().nz()) + ")>";
              });
 }

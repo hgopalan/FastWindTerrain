@@ -43,6 +43,7 @@ from contextlib import contextmanager
 
 from ._fastwindterrain import (      # noqa: F401
     Grid,
+    Solver,
     __version__,
     amrex_version,
     finalize,
@@ -53,6 +54,7 @@ from ._fastwindterrain import (      # noqa: F401
 
 __all__ = [
     "Grid",
+    "Solver",
     "__version__",
     "amrex_version",
     "finalize",

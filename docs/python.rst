@@ -231,11 +231,114 @@ promised otherwise -- stays an assertion: it is a bug in this code, not
 something a caller can provoke, and it should abort loudly wherever it
 happens. Later phases convert their own modules.
 
+Fields as numpy
+===============
+
+.. code-block:: python
+
+    with fwt.session(["inputs"]):
+        s = fwt.Solver()
+        s.setup()
+
+        u = s.velocity[0]           # (nz, ny, nx) [m/s]
+        mask = s.mask               # (nz, ny, nx) int32
+        lam = s.lambda_             # (nz+1, ny+1, nx+1), nodal
+
+        s.set_velocity(new_field)   # writes back, ghosts refilled
+
+.. list-table::
+   :widths: 22 22 44
+   :header-rows: 1
+
+   * - Field
+     - Shape
+     - Meaning
+   * - ``velocity``
+     - ``(3, nz, ny, nx)``
+     - After the projection once it has run
+   * - ``velocity0``
+     - ``(3, nz, ny, nx)``
+     - Before any correction
+   * - ``sigma``
+     - ``(3, nz, ny, nx)``
+     - Poisson coefficients, vertical metric included
+   * - ``mask``
+     - ``(nz, ny, nx)`` int32
+     - 1 solid, 0 fluid
+   * - ``z_terrain``
+     - ``(nz, ny, nx)``
+     - Surface height of the column [m]
+   * - ``alpha_h``, ``alpha_v``
+     - ``(nz, ny, nx)``
+     - Cell-local variational weights
+   * - ``lambda_``
+     - ``(nz+1, ny+1, nx+1)``
+     - The nodal potential. ``lambda`` is a Python keyword
+
+Layout: channels-first
+----------------------
+
+``arr[c, k, j, i]`` is the value the plotfile holds at cell
+``(i, j, k)`` of component ``c``. A regtest compares the two cell by
+cell, because a transposed array passes every other check and would
+quietly ruin a training set.
+
+Channels-first is not arbitrary. It is **AMReX's own memory order** --
+component slowest, ``i`` fastest -- so each component is a contiguous
+slab and the gather is a memcpy rather than a transpose. It is also what
+PyTorch's ``conv3d`` wants, ``(N, C, D, H, W)``, so a dataset generator
+can hand the array straight over.
+
+Copies, not views
+-----------------
+
+Every accessor returns a **copy**, and writing into it changes nothing;
+use ``set_velocity``.
+
+Three reasons, and they compound. A MultiFab is *N separate*
+``FArrayBox`` es -- every case here runs with ``max_grid_size`` below the
+domain width, so there is no single contiguous array to point at. The
+velocity carries two ghost layers, so even a one-box field is not the
+shape a caller expects. And a view would hand Python a pointer that
+outlives the ``Solver`` the moment it goes out of scope.
+
+The cost is nothing next to the solve: one field of a 24x24x40 case is
+184 KB, against four multigrid solves. Zero-copy starts to matter only
+for in-situ GPU coupling, where the right answer is pyAMReX rather than a
+hand-rolled view -- a different build shape, and not one this project
+needs for offline surrogate training.
+
+A regtest builds the same case at ``max_grid_size`` 8 and 64 -- nine
+boxes against one -- and requires the arrays to be identical. That is
+what actually validates the gather.
+
+Writing a field back
+--------------------
+
+``set_velocity`` takes a ``(3, nz, ny, nx)`` array, writes the valid
+region, and **refills the ghost cells** through the boundary conditions.
+
+The refill is why this lives on ``Solver`` rather than being a property
+assignment: only the boundary conditions know what the ghosts should
+hold, and a field written from Python with stale ghosts would give a
+quietly wrong divergence two calls later.
+
+A mismatched shape raises rather than being broadcast or reshaped --
+that is how a transposed velocity field gets written without anyone
+noticing. A ``float32`` array is accepted, since widening to double is a
+conversion rather than a reinterpretation.
+
 Scope
 =====
 
-Phase 9 exposed the process lifecycle and a whole run; Phase 10 adds
-Grid. The narrow surface is deliberate: parity was established and put
-under test before there was a wider API to keep honest, and each new
-piece inherits a guarantee that is already green. Field, terrain and
-solver-driver bindings follow.
+Phase 9 exposed the process lifecycle and a whole run, Phase 10 added
+Grid, Phase 11 adds the fields. The narrow surface is deliberate: parity
+was established and put under test before there was a wider API to keep
+honest, and each new piece inherits a guarantee that is already green.
+
+``Solver`` currently offers ``setup()`` and its fields. The remaining
+stages -- ``solve()``, ``diagnose()``, ``write_output()`` -- and
+dict-based configuration arrive with the terrain and solver-driver
+phases. The ghost refill that follows ``set_velocity`` is not directly
+observable yet, since ghost cells are deliberately not exposed; it
+becomes testable when a solve can follow a write.
