@@ -116,7 +116,7 @@ Z_WINDOW = (20.0, 900.0)
 # Minimum observed order accepted on the finest grid pair, in L2. Set
 # below what the schemes reach but above the next order down, so the
 # check has teeth without being brittle. Calibrated from measurement --
-# see doc/convergence.rst for the numbers this actually produces.
+# see docs/convergence.rst for the numbers this actually produces.
 MIN_ORDER_L2 = {
     "central2": 1.80,
     "upwind2": 1.80,

@@ -1,7 +1,8 @@
 name: Docs
 
 # The docs are part of the deliverable, so a change that breaks them
-# should fail the PR rather than be discovered later.
+# should fail the PR rather than be discovered later. On a push to main
+# the same build is published to GitHub Pages.
 on:
   push:
     branches: [main]
@@ -11,10 +12,15 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
+# Pages allows one deployment at a time, and cancelling a half-finished
+# one can leave the site in an odd state -- so, unlike the build-only
+# workflows, this one queues rather than cancels.
 concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -33,17 +39,60 @@ jobs:
       - name: Install Sphinx
         run: |
           python -m pip install --upgrade pip
-          pip install -r doc/requirements.txt
+          pip install -r docs/requirements.txt
 
-      # -W turns warnings into errors, which is what makes this useful:
-      # a malformed table or a broken cross-reference renders as garbage
-      # rather than failing, so without -W it would pass silently.
+      # docs/Makefile carries -W --keep-going in SPHINXOPTS, so `make
+      # html` is the same strict build here and on a developer's machine.
       - name: Build the docs, treating warnings as errors
-        run: sphinx-build -b html -W --keep-going doc doc/_build
+        run: make -C docs html
 
-      - name: Upload the rendered docs
-        uses: actions/upload-artifact@v4
+      # The Pages artifact is a tarball in the exact shape deploy-pages
+      # expects; it is uploaded on pull requests too, so a PR can be
+      # inspected without deploying anything.
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v5
         with:
-          name: docs-html
-          path: doc/_build
-          retention-days: 14
+          path: docs/_build/html
+
+  linkcheck:
+    name: Link check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Sphinx
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+
+      - name: Check every link resolves
+        run: make -C docs linkcheck
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # Only from main, and only on a real push: a pull request must not be
+    # able to publish to the live site.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Deliberately NOT gated on linkcheck. That job reaches out to
+    # third-party sites, so it fails for reasons that have nothing to do
+    # with this repository, and a journal's server being briefly
+    # unreachable should not stop our own documentation from publishing.
+    # It still runs, and still goes red when a link is genuinely broken.
+    needs: build
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

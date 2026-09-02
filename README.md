@@ -28,30 +28,30 @@ A GNUmake build is also supported (`make -j8`, producing `main3d.gnu.ex`).
 
 ## Documentation
 
-Full documentation lives in [`doc/`](doc/):
+Full documentation lives in [`docs/`](docs/):
 
 | Topic | |
 | --- | --- |
-| [Building](doc/building.rst) | CMake and GNUmake, build options |
-| [Grid](doc/grid.rst) | Vertical stretching and the domain-height policy |
-| [Terrain](doc/terrain.rst) | Terrain files, interpolation, the immersed-boundary mask |
-| [Inflow](doc/inflow.rst) | Wind profiles, AGL anchoring, boundary mass flux |
-| [Boundary conditions](doc/boundary_conditions.rst) | Face classification, ghost values, lambda conditions |
-| [Poisson solver](doc/poisson.rst) | The variational solve, anisotropy, and the stretched grid |
-| [Anisotropy](doc/anisotropy.rst) | Cell-local weights and the O'Brien adjustment |
-| [Numerics](doc/numerics.rst) | Derivative schemes and their verification |
-| [Convergence study](doc/convergence.rst) | Scheme order of accuracy, measured through the solver |
-| [Input reference](doc/parmparse_reference.rst) | Every input in one place; `regtests/inputs_master` is the runnable version |
-| [References](doc/references.rst) | The methods, and where each is used |
-| [Output](doc/output.rst) | Diagnostics, the report, and the plt/ascii field backends |
-| [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |
-| [Tools](doc/tools.rst) | Synthetic terrain generation |
-| [Regtests](doc/regtests.rst) | Test suite and how to run it |
+| [Building](docs/building.rst) | CMake and GNUmake, build options |
+| [Grid](docs/grid.rst) | Vertical stretching and the domain-height policy |
+| [Terrain](docs/terrain.rst) | Terrain files, interpolation, the immersed-boundary mask |
+| [Inflow](docs/inflow.rst) | Wind profiles, AGL anchoring, boundary mass flux |
+| [Boundary conditions](docs/boundary_conditions.rst) | Face classification, ghost values, lambda conditions |
+| [Poisson solver](docs/poisson.rst) | The variational solve, anisotropy, and the stretched grid |
+| [Anisotropy](docs/anisotropy.rst) | Cell-local weights and the O'Brien adjustment |
+| [Numerics](docs/numerics.rst) | Derivative schemes and their verification |
+| [Convergence study](docs/convergence.rst) | Scheme order of accuracy, measured through the solver |
+| [Input reference](docs/parmparse_reference.rst) | Every input in one place; `regtests/inputs_master` is the runnable version |
+| [References](docs/references.rst) | The methods, and where each is used |
+| [Output](docs/output.rst) | Diagnostics, the report, and the plt/ascii field backends |
+| [Debugging](docs/debugging.rst) | The `fwt.debug` diagnostics switch |
+| [Tools](docs/tools.rst) | Synthetic terrain generation |
+| [Regtests](docs/regtests.rst) | Test suite and how to run it |
 
 To build the docs as HTML:
 
 ```
-sphinx-build -b html doc doc/_build
+make -C docs html          # output in docs/_build/html
 ```
 
 ## Continuous integration
@@ -72,7 +72,7 @@ regtest suite:
 
 ```
 Source/      solver source
-doc/         documentation
+docs/        documentation
 regtests/    one directory per test group, each self-contained
 tools/       helper scripts
 external/    AMReX submodule
