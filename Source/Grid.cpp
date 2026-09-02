@@ -288,14 +288,21 @@ void Grid::WriteReport (const std::string& filename) const
     FWT_DEBUG("wrote ascii grid report: " << filename);
 }
 
+// This switch says WHICH outputs the run produces, not what format the
+// field output is written in -- output.format answers that. The two
+// were one thing until the field output gained a plain-text backend, so
+// the original value names survive as aliases: ascii = report, plt =
+// fields. Every input file written before that keeps working, and a new
+// one can say what it means.
 Grid::OutputFormat Grid::ParseOutputFormat (const std::string& s)
 {
-    if (s == "ascii") { return OutputFormat::ascii; }
-    if (s == "plt")   { return OutputFormat::plt;   }
-    if (s == "both")  { return OutputFormat::both;  }
+    if (s == "report" || s == "ascii") { return OutputFormat::ascii; }
+    if (s == "fields" || s == "plt")   { return OutputFormat::plt;   }
+    if (s == "both")                   { return OutputFormat::both;  }
     // Not a debug-only line: an unrecognized format is always fatal.
     amrex::Abort("grid.output_format = '" + s +
-                 "' is not recognized (expected ascii, plt, or both)");
+                 "' is not recognized (expected report, fields, or both; "
+                 "ascii and plt are accepted as aliases for the first two)");
     return OutputFormat::ascii;   // unreachable; silences the compiler
 }
 

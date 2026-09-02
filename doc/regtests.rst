@@ -111,6 +111,34 @@ Cell-local anisotropy and the O'Brien adjustment (see :doc:`anisotropy`).
   values, so the feature cannot change results when switched off
 * ``alpha_h_mode = slope`` must apply the same factor to both weights
 
+``phase8_diagnostics_output``
+-----------------------------
+
+The post-solve diagnostics and the two output backends (see
+:doc:`output`).
+
+* ``inputs_both`` -- a Phase 6/7 case with ``output.format = both``, so
+  the plotfile and the plain-text file are written from the same run.
+  Every component of every cell is then compared between them; on this
+  case they are bit-identical. This is the check that keeps the shared
+  collect routine honest -- two backends that each gathered their own
+  fields would pass everything else here and still drift apart
+* well-formedness: one file, a parseable header, exactly ``nx*ny*nz``
+  rows, the column count the header itself declares, every cell present
+  exactly once, no NaN or infinity, and coordinate columns that really
+  are the cell centres
+* the reported diagnostics are **recomputed from the output rows**:
+  ``max|div|``, the volume-weighted L2, and each of the five boundary
+  face fluxes integrated independently in Python from the velocity and
+  the true ``dz``. The divergence must be exactly zero in every solid
+  cell
+* ``diagnostics.flux_tolerance = 0`` must warn and change nothing -- the
+  imbalance is a measurement, not something the code may quietly fix
+* ``output.format`` really selects: ``plt`` writes no plain-text file,
+  ``ascii`` writes no plotfile, ``grid.output_format = report``
+  suppresses both, the legacy ``ascii``/``plt`` spellings still work,
+  and an unknown value aborts
+
 ``gradient_schemes``
 --------------------
 

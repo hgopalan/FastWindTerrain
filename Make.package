@@ -7,6 +7,7 @@ CEXE_headers += Anisotropy.H
 CEXE_headers += Obrien.H
 CEXE_headers += Poisson.H
 CEXE_headers += Output.H
+CEXE_headers += Diagnostics.H
 CEXE_headers += Debug.H
 CEXE_sources += Grid.cpp
 CEXE_sources += Derivatives.cpp
@@ -17,6 +18,7 @@ CEXE_sources += Anisotropy.cpp
 CEXE_sources += Obrien.cpp
 CEXE_sources += Poisson.cpp
 CEXE_sources += Output.cpp
+CEXE_sources += Diagnostics.cpp
 CEXE_sources += main.cpp
 
 INCLUDE_LOCATIONS += Source

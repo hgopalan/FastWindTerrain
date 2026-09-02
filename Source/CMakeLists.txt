@@ -8,6 +8,7 @@ add_executable(fastwindterrain
     Obrien.cpp
     Poisson.cpp
     Output.cpp
+    Diagnostics.cpp
     main.cpp
 )
 
