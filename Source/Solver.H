@@ -7,6 +7,7 @@
 #include "BoundaryConditions.H"
 #include "Anisotropy.H"
 #include "Obrien.H"
+#include "Surface.H"
 #include "Poisson.H"
 #include "Diagnostics.H"
 #include "Verify.H"
@@ -23,7 +24,8 @@ namespace fwt {
 // Solver: the whole run, as an object.
 //
 // WHY THIS EXISTS. Until now the pipeline lived in main(): the order of
-// Grid -> Terrain -> Inflow -> BC -> Anisotropy -> O'Brien -> Poisson ->
+// Grid -> Terrain -> Inflow -> BC -> Anisotropy -> Surface -> O'Brien ->
+// Poisson ->
 // the projection loop -> diagnostics -> output was a sequence of
 // statements inside the executable, reachable only by running it.
 //
@@ -79,6 +81,7 @@ public:
         Inflow::Params     inflow;
         Anisotropy::Params anisotropy;
         Obrien::Params     obrien;
+        Surface::Params    surface;
         Poisson::Params    poisson;
 
         OutputParams       output;
@@ -138,6 +141,7 @@ public:
     const Inflow&      inflow ()    const { return m_inflow; }
     const Anisotropy&  anisotropy() const { return m_aniso; }
     const Obrien&      obrien ()    const { return m_obrien; }
+    const Surface&     surface ()   const { return m_surface; }
     const Poisson&     poisson ()   const { return m_poisson; }
     const Diagnostics& diagnostics () const { return m_diag; }
 
@@ -194,6 +198,7 @@ private:
     Verify              m_verify;
     Anisotropy          m_aniso;
     Obrien              m_obrien;
+    Surface             m_surface;
     Poisson             m_poisson;
     Diagnostics         m_diag;
 

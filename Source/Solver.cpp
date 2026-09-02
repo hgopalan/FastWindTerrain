@@ -27,6 +27,7 @@ Solver::Params Solver::Params::FromParmParse ()
     p.inflow     = Inflow::Params::FromParmParse();
     p.anisotropy = Anisotropy::Params::FromParmParse();
     p.obrien     = Obrien::Params::FromParmParse();
+    p.surface = Surface::ParseParams();
     p.poisson    = Poisson::Params::FromParmParse();
     p.output     = OutputParams::FromParmParse();
     return p;
@@ -94,6 +95,16 @@ void Solver::Setup (const Params& params,
     aniso_params.alpha_h_base = m_params.poisson.alpha_h;
     aniso_params.alpha_v_base = m_params.poisson.alpha_v;
     m_aniso.Build(m_grid, m_terrain, aniso_params);
+
+    // The condition on the first fluid cell above terrain. It runs BEFORE
+    // O'Brien on purpose: removing the surface-normal component leaves a
+    // vertical velocity satisfying w = u.grad(h), so O'Brien's column
+    // integration starts from the kinematic value instead of from the zero
+    // the profile left there.
+    m_surface.Build(m_grid, m_terrain, m_params.surface, m_inflow.z0());
+    if (m_surface.ApplyTo(m_grid, m_terrain, m_inflow.velocity()) > 0) {
+        m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+    }
 
     // O'Brien runs on u0, BEFORE the projection: it rewrites w from
     // continuity, and doing that afterwards would put back the divergence
@@ -228,6 +239,15 @@ amrex::Real Solver::ProjectOnce ()
     // wind, not from the corrected field.
     m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
 
+    // surface.apply = both re-imposes the surface condition after every
+    // pass. It is off by default because it puts divergence back: the
+    // projection has just removed it, and the caller is choosing to satisfy
+    // the wall exactly rather than continuity exactly.
+    if (m_surface.applies_after()) {
+        m_surface.ApplyTo(m_grid, m_terrain, m_inflow.velocity());
+        m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+    }
+
     ++m_n_proj_done;
     m_solved = true;
     return resid;
@@ -303,6 +323,7 @@ void Solver::WriteReport (const std::string& path) const
     m_bc.AppendReport(path);
     fwt::AppendNumericsReport(path);
     m_aniso.AppendReport(path);
+    m_surface.AppendReport(path);
     m_obrien.AppendReport(path);
     m_poisson.AppendReport(path);
     m_diag.AppendReport(path);

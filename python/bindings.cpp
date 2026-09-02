@@ -634,6 +634,34 @@ fwt::Obrien::Params ObrienParamsFromDict (const py::dict& d)
     return p;
 }
 
+fwt::Surface::Params SurfaceParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"type", "apply", "z0", "kappa"}, "surface");
+    fwt::Surface::Params p;
+    if (d.contains("type")) {
+        p.type = fwt::Surface::TypeFromString(
+            py::cast<std::string>(d["type"]));
+    }
+    if (d.contains("apply")) {
+        const auto a = py::cast<std::string>(d["apply"]);
+        if (a == "initial")   { p.apply = fwt::Surface::Apply::initial; }
+        else if (a == "both") { p.apply = fwt::Surface::Apply::both; }
+        else {
+            throw fwt::InputError("surface.apply must be 'initial' or "
+                                  "'both', got '" + a + "'");
+        }
+    }
+    if (d.contains("z0")) {
+        p.z0 = GetScalar<amrex::Real>(d, "z0", "surface");
+        p.given_z0 = true;
+    }
+    if (d.contains("kappa")) {
+        p.kappa = GetScalar<amrex::Real>(d, "kappa", "surface");
+    }
+    p.Validate();
+    return p;
+}
+
 fwt::Poisson::Params PoissonParamsFromDict (const py::dict& d)
 {
     RejectUnknownKeys(d, {"alpha_h", "alpha_v", "lambda_bc", "rhs_operator",
@@ -719,7 +747,7 @@ fwt::OutputParams OutputParamsFromDict (const py::dict& d)
 fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
 {
     RejectUnknownKeys(d, {"grid", "terrain", "inflow", "anisotropy",
-                          "obrien", "poisson", "numerics", "output"},
+                          "obrien", "surface", "poisson", "numerics", "output"},
                       "solver");
 
     auto section = [&] (const char* key) {
@@ -735,6 +763,7 @@ fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
     p.inflow     = InflowParamsFromDict(section("inflow"));
     p.anisotropy = AnisotropyParamsFromDict(section("anisotropy"), false);
     p.obrien     = ObrienParamsFromDict(section("obrien"));
+    p.surface    = SurfaceParamsFromDict(section("surface"));
     p.poisson    = PoissonParamsFromDict(section("poisson"));
     p.output     = OutputParamsFromDict(section("output"));
 
@@ -1245,6 +1274,23 @@ Requires diagnose(), since the divergence component comes from it.
                  out["max_residual"] = o.max_residual();
                  return out;
              }, "The O'Brien adjustment summary, as a dict.")
+        .def_property_readonly("surface", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "surface");
+                 const auto& sf = s.surface();
+                 py::dict out;
+                 out["type"] = fwt::Surface::TypeToString(sf.type());
+                 out["apply"] = sf.applies_after() ? "both" : "initial";
+                 out["z0"] = sf.z0();
+                 out["kappa"] = sf.kappa();
+                 out["n_columns"] = sf.n_columns();
+                 out["max_ustar"] = sf.max_ustar();
+                 // How much flow was running into the ground before the
+                 // condition removed it -- the size of the defect, which
+                 // is worth seeing rather than only fixing.
+                 out["max_normal_removed"] = sf.max_normal_removed();
+                 out["max_speed_change"] = sf.max_speed_change();
+                 return out;
+             }, "The surface-condition summary, as a dict.")
         .def_property_readonly("diagnostics", [] (const fwt::Solver& s) {
                  if (!s.is_diagnosed()) {
                      throw std::runtime_error(

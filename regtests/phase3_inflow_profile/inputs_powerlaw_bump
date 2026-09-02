@@ -22,3 +22,9 @@ inflow.powerlaw_exponent = 0.14
 grid.output_format    = both
 grid.report_file      = grid_report_bump.txt
 grid.plot_file        = plt_bump
+
+# Phase 3 is about the INFLOW PROFILE, so the surface condition is
+# switched off here: it deliberately rewrites the first fluid cell above
+# terrain, and this checker compares u0 against the analytic profile.
+# The condition itself is tested in phase10_surface_condition.
+surface.type = none

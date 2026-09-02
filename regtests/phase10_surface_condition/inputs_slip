@@ -1,0 +1,38 @@
+# Phase 10 regtest -- the condition on the first fluid cell above terrain.
+#
+# The same steep slope phase 7 uses (150 m over 120 m), because the whole
+# point of the condition is the terrain-normal direction and a flat case
+# cannot exercise it: on flat ground the normal is (0, 0, 1) and every
+# variant below reduces to something much simpler.
+#
+# O'Brien is OFF here so the checker sees the surface condition's own
+# vertical velocity rather than the one the column integration writes over
+# it. The projection is off for the same reason -- this tests the boundary
+# condition, not the solve. The checker overrides terrain.file.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file = terrain_slope.csv
+
+inflow.mode              = powerlaw
+inflow.u_ref             = 8.0
+inflow.v_ref             = 6.0
+inflow.z_ref             = 10.0
+inflow.powerlaw_exponent = 0.14
+inflow.z0                = 0.1
+
+anisotropy.enable = 0
+obrien.enable     = 0
+
+surface.type = slip
+
+poisson.n_projections = 1
+
+grid.output_format = both
+grid.report_file   = grid_report_slip.txt
+grid.plot_file     = plt_slip

@@ -202,6 +202,41 @@ obrien.enable = 0
 
 
 # ---------------------------------------------------------------------
+# surface.  --  the condition on the first fluid cell above terrain
+#
+# Velocity is zeroed INSIDE the terrain, but without this nothing
+# constrains the fluid cell just above it: the flow there has a component
+# running into the surface, and its speed comes from the inflow profile
+# evaluated a metre or two above the ground, inside the roughness
+# sublayer. Both contaminate exactly the near-surface layer that
+# pedestrian and met-mast heights are read from.
+#
+# This is an IMMERSED boundary, not a body-fitted wall: the distance in
+# the log law is perpendicular to the sloped surface, (z_cc - h) * n_z,
+# and the speed it acts on is the surface-parallel one.
+# ---------------------------------------------------------------------
+
+# wall_function  no penetration, and the parallel speed set from the
+#                friction velocity of the second fluid cell (default)
+# slip           no penetration only; tangential flow untouched
+# noslip         u = 0 in the first fluid cell
+# none           the cell is not touched at all
+surface.type = wall_function
+
+# initial  apply once, before O'Brien and the projection (default)
+# both     also after every projection pass, which satisfies the wall
+#          exactly at the cost of putting divergence back
+surface.apply = initial
+
+# Roughness length for the wall function. Unset means "use inflow.z0",
+# so one run cannot have a wall function at one roughness and a profile
+# at another without saying so.
+# surface.z0 = 0.1
+
+surface.kappa = 0.41
+
+
+# ---------------------------------------------------------------------
 # poisson.  --  the variational solve
 # ---------------------------------------------------------------------
 

@@ -65,6 +65,12 @@ def write_inputs(path, extra=()):
         # literally -- "'powerlaw'" is not a mode.
         lines.append(f"inflow.{k} = {v if isinstance(v, str) else repr(v)}")
     lines.append("poisson.n_projections = 1")
+    # u0 in the output is copied AFTER the surface condition and O'Brien
+    # (Solver.cpp), so it is not the raw profile unless both are off. These
+    # tests compare a standalone Inflow against it, and their subject is
+    # that the point cloud and the profile go through one code path -- the
+    # surface condition is phase10_surface_condition's business.
+    lines.append("surface.type = none")
     lines.extend(extra)
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -95,8 +101,9 @@ def test_python_only_case_matches_the_inputs_file(amrex, terrain_points,
     inf = fwt.Inflow(g, t, INFLOW)
 
     pf = Plotfile(str(tmp_path / "plt_ref"))
-    # u0/v0/w0 are the field before any correction, which is what a
-    # standalone Inflow produces.
+    # u0/v0/w0 are the field before any correction -- which is what a
+    # standalone Inflow produces, and why write_inputs turns the surface
+    # condition off.
     pairs = [("u0", inf.velocity[0]), ("v0", inf.velocity[1]),
              ("w0", inf.velocity[2]), ("mask", t.mask),
              ("terrain_z", t.z_terrain)]
