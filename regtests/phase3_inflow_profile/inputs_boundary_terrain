@@ -28,3 +28,9 @@ inflow.z0             = 0.1
 grid.output_format    = both
 grid.report_file      = grid_report_boundary.txt
 grid.plot_file        = plt_boundary
+
+# Phase 3 is about the INFLOW PROFILE, so the surface condition is
+# switched off here: it deliberately rewrites the first fluid cell above
+# terrain, and this checker compares u0 against the analytic profile.
+# The condition itself is tested in phase10_surface_condition.
+surface.type = none

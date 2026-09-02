@@ -204,6 +204,41 @@ See :doc:`anisotropy`.
      - ``0``
      - Vertical-velocity adjustment
 
+``surface.`` -- the first fluid cell above terrain
+==================================================
+
+See :doc:`terrain`.
+
+Velocity is zeroed *inside* the terrain, but without this nothing
+constrains the fluid cell just above it: the flow there has a component
+running into the surface, and its speed comes from the inflow profile
+evaluated a metre or two above ground, inside the roughness sublayer.
+
+This is an **immersed** boundary, not a body-fitted wall, so the distance
+in the log law is perpendicular to the sloped surface --
+``(z_cc - h) * n_z`` -- and the speed it acts on is the surface-parallel
+one, not the horizontal one.
+
+.. list-table::
+   :widths: 30 18 40
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``surface.type``
+     - ``wall_function``
+     - ``wall_function``, ``slip``, ``noslip`` or ``none``
+   * - ``surface.apply``
+     - ``initial``
+     - ``initial``, or ``both`` to re-impose after every projection pass
+   * - ``surface.z0``
+     - ``inflow.z0``
+     - Roughness length for the wall function
+   * - ``surface.kappa``
+     - ``0.41``
+     - von Karman constant
+
 ``poisson.`` -- the solve
 =========================
 

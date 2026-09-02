@@ -15,6 +15,7 @@ add_library(fwt_core STATIC
     BoundaryConditions.cpp
     Anisotropy.cpp
     Obrien.cpp
+    Surface.cpp
     Poisson.cpp
     Output.cpp
     Diagnostics.cpp

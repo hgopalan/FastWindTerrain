@@ -127,6 +127,11 @@ public:
     // |net| / max(|in|, |out|); zero when nothing flows at all.
     amrex::Real flux_imbalance ()    const { return m_flux_imbalance; }
 
+    // The roughness length actually in force. Surface takes its default
+    // from here so a run cannot have a wall function at one roughness and
+    // a profile at another without saying so.
+    amrex::Real z0 ()                const { return m_z0; }
+
     void AppendReport (const std::string& filename) const;
 
     // Speed of the 1D profile at a height above ground. Exposed so the
