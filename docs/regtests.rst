@@ -178,153 +178,29 @@ bindings::
 ``build/fastwindterrain-py`` is argv-compatible with the executable, so
 no checker knows the difference. CI runs both.
 
-``phase10_grid_bindings``
--------------------------
+``tests/`` -- the bindings' own suite
+-------------------------------------
 
-``Grid`` built from Python (see :doc:`python`).
+Everything the bindings do beyond that parity guarantee -- ``Grid`` from
+a dict, fields as numpy, terrain from a point cloud, the stepwise solver,
+anisotropy, in-memory output, dataset generation -- is tested with
+**pytest**, in ``tests/``, not here::
 
-* **no ParmParse leak** -- the point of the phase. The checker
-  initializes from an inputs file setting ``grid.stretching_ratio =
-  1.03``, then builds a Grid from a dict that omits it, and requires the
-  default ``1.0``. The discriminator is chosen so the two cannot be
-  confused: 40 cells of 4 m at ratio 1.0 is exactly 160 m and warns
-  about nothing, while a leaked 1.03 would give 301.6 m, an overshoot
-  and a different ``prob_hi``
-* a grid built from a dict and the same grid built from an inputs file
-  agree **exactly**, face by face -- Phase 9's parity extended to the
-  new entry point
-* eight bad inputs all raise ``ValueError`` -- an unknown key, a
-  negative ``dz0``, a zero ratio, a two-entry triple, a non-number, an
-  inverted domain, an undershoot, a missing required key -- and the
-  interpreter is still usable afterwards, which is why they raise
-  instead of aborting
-* an overshoot is a ``UserWarning``: capturable, and promotable to an
-  exception with ``simplefilter("error")``, which is what a generator
-  needs to reject a silently adjusted domain. A grid that fits exactly
-  stays silent
-* ten grids built and destroyed inside one AMReX initialization, each
-  independent -- dataset generation depends on it
+    pytest tests
 
-``phase11_field_bindings``
---------------------------
+Those were ``regtests/phase10_*`` through ``regtests/phase15_*`` and moved
+in Phase 16. The reason is what each suite is testing. A group in
+``regtests/`` runs a binary on an inputs file and reads its output files
+back, and ``run_regtests.py`` is the right driver for that. The bindings
+tests are testing a Python API, where fixtures, parametrization and
+assertion rewriting are worth having -- and where the old checkers had to
+shell out to a subprocess per case and parse ``::KEY value`` lines back
+out of stdout to say anything at all.
 
-Fields as numpy (see :doc:`python`).
-
-* eight fields with the right shapes and dtypes -- channels-first
-  ``(ncomp, nz, ny, nx)``, the nodal ``lambda_`` one point larger in
-  every direction, the mask as ``int32``
-* **index order** checked cell by cell against the plotfile the C++ run
-  wrote. A transposed array passes every other check in the group and
-  would quietly ruin a training set, so this is the one that matters
-* a write/read round trip that must be **bit-exact**, not close: the
-  values never leave double precision, so any difference would mean the
-  gather or the scatter is doing arithmetic. Also that the array handed
-  back is a copy -- scribbling on it changes nothing
-* **decomposition invariance**: the same case at ``max_grid_size`` 8 and
-  64, nine boxes against one, must give identical arrays. A MultiFab is
-  N separate FArrayBoxes, so this is what actually validates the gather
-* four bad shapes rejected with the field left untouched, ``float32``
-  accepted by widening, and reads before ``setup()`` raising rather than
-  returning something empty
-
-``phase12_terrain_profile_python``
-----------------------------------
-
-Terrain and the inflow profile built from Python (see :doc:`python`).
-
-* **a case with no inputs file at all** -- grid, terrain point cloud and
-  profile, with AMReX initialized with no arguments so ParmParse holds
-  nothing -- reproduces the fields the equivalent inputs file produces,
-  bit for bit across five fields
-* terrain from a numpy ``(n, 3)`` array and terrain from the CSV those
-  numbers were read out of give identical ``z_terrain``, ``mask`` and
-  extrema. The checker also asserts the terrain is not flat, so the
-  comparison is of an interpolation rather than of a constant
-* the same for ``userfile`` mode, where the six-column velocity table is
-  handed in as two ``(n, 3)`` arrays: identical interpolated field and
-  identical flux diagnostics
-* no ParmParse leak: initialized from an inputs file naming a 100 m
-  hill, a Terrain built from a dict that omits ``file`` must be flat
-  ground. Inheriting it would silently swap the terrain under a whole
-  dataset
-* thirteen bad inputs all raise -- ``points`` and ``file`` together, a
-  table in the wrong mode, a flattened point array, an empty one, a
-  missing file, a calm wind, an unknown mode -- with the interpreter
-  usable afterwards
-
-``phase13_solver_driver``
--------------------------
-
-The solver driven from Python (see :doc:`python`).
-
-* **Phase 6's flat-terrain assertions, reproduced from Python**: a
-  uniform profile over flat ground is already solenoidal, so lambda comes
-  out identically zero, the velocity is untouched and ``w`` stays exactly
-  zero. The checker also asserts the profile is not ~zero, so the case
-  proves something
-* four ``project_once()`` passes give a **bit-identical** field and
-  lambda to ``solve()`` with ``n_projections = 4``. They are the same
-  code and this holds them to it
-* over a hill the controlled divergence falls **monotonically** pass
-  after pass, and MLMG's residual and iteration count are both reported
-  -- a count of zero would mean it is not being read, and a count at
-  ``max_iter`` would mean the solve never converged
-* **the ghost refill Phase 11 could not test.** Solver B is handed the
-  field solver A produced, and their scheme divergence -- which reads the
-  ghost cells through a five-point stencil -- must match exactly. The
-  valid regions are equal by construction, so a difference would be the
-  ghosts
-* no ParmParse leak: a dict-configured run ignores an inputs file that
-  sets ``poisson.n_projections = 7``, ``alpha_v = 0.125`` and
-  ``anisotropy.enable = 1``
-
-``phase14_anisotropy_python``
------------------------------
-
-Anisotropy and the O'Brien adjustment from Python (see :doc:`python`) --
-Phase 7's assertions, recomputed in numpy rather than read out of a
-plotfile.
-
-* ``alpha_v`` follows ``clamp(alpha_v_base * exp(-slope_3d /
-  slope_scale))`` cell by cell, with ``|grad z_terrain|`` computed
-  independently from the same central differences: **5.6e-17 over
-  105 600 cells**, suppressed to 0.1045 from a base of 0.5
-* the suppression decays **monotonically** with height above ground. It
-  does not reach base by the domain top -- 961 m over a 500 m decay
-  height is under two e-foldings -- so the check is that it decays, not
-  that it has finished. An earlier version of this checker required the
-  latter and was wrong
-* ``enable`` off and ``source = "none"`` are both inert
-* ``alpha_h_mode = "slope"`` applies the same factor to both weights in
-  every cell, not merely at their minima
-* the O'Brien adjustment leaves ``w`` **exactly** zero at the domain top,
-  in the reported value and in the field, after removing a 9.7 m/s
-  residual over 1600 columns
-* ``alpha_h_base``/``alpha_v_base`` are refused inside a Solver
-  configuration and accepted standalone, and the Poisson section's values
-  really do reach the weight fields
-
-``phase15_output_interop``
---------------------------
-
-In-memory output and the file writers (see :doc:`python`).
-
-* **the cross-check**: the same case written by the C++ ascii backend,
-  written as a plotfile, and read back through ``fields()`` -- all three
-  must agree **exactly**, over all 17 fields. They come from one gather,
-  so a difference would mean a third assembly of "the output fields" had
-  crept in
-* ``write_plotfile`` / ``write_ascii`` / ``write_report`` put files where
-  they are told, with no ParmParse involved, and the report really
-  carries the diagnostics rather than being an empty file with the right
-  name. Writing before ``diagnose()`` raises and creates nothing
-* the ``output`` config section really selects: ``which = both`` with
-  ``format = ascii`` writes the report and the plain-text file and **no**
-  plotfile. A bad value or an unknown key raises at configuration time
-* no ParmParse leak: initialized from an inputs file naming its own
-  report, plotfile and ascii file, a dict-configured run writes only what
-  the dict says. In a generation loop the alternative is case 2
-  overwriting case 1
+The assertions came across unchanged. ``phase9_bindings_parity`` stays
+here, because byte-for-byte parity between the executable and the
+bindings is a property of a build tree rather than of the Python package.
+:doc:`python` has the details.
 
 ``profile_convergence``
 -----------------------

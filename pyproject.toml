@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# FastWindTerrain -- pip-installable Python bindings.
+#
+#     git clone --recursive <repo> && cd FastWindTerrain
+#     pip install .
+#
+# scikit-build-core drives the same CMake build the in-tree path uses,
+# with FWT_PYTHON=ON. There is one solver: the wheel and the executable
+# come from the same sources and the same CMakeLists.
+#
+# BIT-FOR-BIT PARITY IS PER BUILD TREE. The bindings guarantee that the
+# Python path and the executable agree because they link one compiled
+# archive -- see python/CMakeLists.txt. A wheel is a DIFFERENT
+# compilation (its own build directory, whatever flags pip passed,
+# possibly another compiler), so results from a wheel and results from
+# `build/fastwindterrain` are not guaranteed identical to the last bit.
+# They are identical within either one. Generate a dataset with one
+# build, not with a mixture.
+#
+# THE SDIST IS NOT SELF-CONTAINED. AMReX and pybind11 are git submodules;
+# an sdist carries the gitlinks, not the sources. Install from a
+# recursive clone, or configure with -DFWT_USE_INTERNAL_AMREX=OFF against
+# an AMReX you already have. Bundling ~200 MB of AMReX into every sdist
+# is the alternative and is worse.
+# ---------------------------------------------------------------------------
+
+[build-system]
+# numpy is here as well as in `dependencies` for a specific reason:
+# python/CMakeLists.txt checks at CONFIGURE time that the interpreter can
+# import it, so that a missing numpy is a message at the point the choice
+# was made rather than an ImportError inside a property accessor months
+# later. pip installs runtime dependencies AFTER building the wheel, so
+# without this the check fires during an otherwise correct `pip install .`
+# on a clean environment.
+requires = ["scikit-build-core>=0.10", "numpy>=1.21"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "fastwindterrain"
+# Kept in step with the project(... VERSION) in CMakeLists.txt by
+# tests/test_packaging.py, which fails if the two drift apart.
+version = "0.1.0"
+description = "Mass-consistent wind solver on a Cartesian AMReX mesh"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "FastWindTerrain contributors" }]
+keywords = ["wind", "terrain", "mass-consistent", "amrex", "cfd"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+
+# numpy is not optional: every field crosses the boundary as an array.
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+notebook = ["nbclient>=0.7", "nbformat>=5.0", "ipykernel", "matplotlib>=3.5"]
+
+[project.scripts]
+# argv-compatible with the solver executable:
+#     fastwindterrain inputs poisson.alpha_v=0.3
+fastwindterrain = "fastwindterrain.__main__:main"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.25"          # AMReX 26.08's floor
+cmake.build-type = "Release"
+
+# The pure-Python half of the package. The extension module is installed
+# alongside it by python/CMakeLists.txt.
+wheel.packages = ["python/fastwindterrain"]
+
+# Build inside the repo's gitignored build/ rather than a temporary
+# directory, so a second `pip install .` reuses the AMReX objects instead
+# of recompiling all of AMReX. That compile dominates the wall clock.
+build-dir = "build/wheel/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+FWT_PYTHON = "ON"
+# CTest wraps run_regtests.py, which needs the executable and the regtest
+# tree; neither is in a wheel. The wheel's tests are tests/, run with
+# pytest.
+FWT_ENABLE_TESTS = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Keep the reason a test skipped visible: nearly every skip in this suite
+# means the bindings were not built, which is worth seeing rather than
+# reading as a pass.
+addopts = "-ra"
+markers = [
+    "slow: runs a full solve, or several (deselect with -m 'not slow')",
+]

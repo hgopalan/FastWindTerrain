@@ -37,6 +37,41 @@ inside a property accessor. On a system Python that refuses installs
     cmake -S . -B build -DFWT_PYTHON=ON \
         -DPython3_EXECUTABLE=$PWD/build/venv/bin/python
 
+Installing with pip
+-------------------
+
+``pyproject.toml`` drives the same CMake build through scikit-build-core::
+
+    git clone --recursive <repo> && cd FastWindTerrain
+    pip install .
+
+which gives an importable ``fastwindterrain`` and a console script::
+
+    fastwindterrain inputs poisson.alpha_v=0.3
+
+The build directory is ``build/wheel/<tag>`` inside the repository rather
+than a temporary one, so a second ``pip install .`` reuses the AMReX
+objects instead of recompiling all of AMReX. That compile dominates the
+wall clock.
+
+An **sdist is not self-contained**: AMReX and pybind11 are git
+submodules, and an sdist carries the gitlinks rather than the sources.
+Install from a recursive clone, or configure against an AMReX you already
+have with ``-DFWT_USE_INTERNAL_AMREX=OFF``. Bundling ~200 MB of AMReX
+into every sdist is the alternative and is worse.
+
+A conda environment with everything needed -- interpreter, CMake, numpy,
+scikit-build-core, pytest, the notebook stack -- is in
+``environment.yml``::
+
+    conda env create -f environment.yml
+    conda activate fastwindterrain
+
+It deliberately does **not** pin a compiler. AMReX wants a toolchain
+matched to the platform's own headers, and a conda ``cxx-compiler`` on
+macOS routinely half-matches the Xcode SDK and fails in ways that read
+like an AMReX bug.
+
 Using it
 ========
 
@@ -609,6 +644,132 @@ depending on what an earlier run had set. A regtest initializes from an
 inputs file naming its own report, plotfile and ascii file, then runs a
 dict-configured solver and requires none of those three names to appear.
 
+Generating a dataset
+====================
+
+``fastwindterrain.dataset`` is what the whole binding effort was for:
+many cases in one process, on one fixed grid, stacked into an array a
+neural operator can train on.
+
+.. code-block:: python
+
+    import fastwindterrain as fwt
+    from fastwindterrain import dataset
+
+    configs = dataset.sweep(base, {"inflow.u_ref": [4.0, 8.0, 12.0],
+                                   "inflow.v_ref": [0.0, 6.0]})
+
+    dataset.generate(configs, "wind.npz",
+                     fields=["u", "v", "w", "mask", "terrain_z"],
+                     dtype="float32", seed=0)
+
+Six cases, one process, one AMReX initialization, one file. ``generate``
+opens a ``session()`` itself if AMReX is not already up, so a script that
+only generates need not know about the lifecycle at all.
+
+.. list-table::
+   :widths: 30 56
+   :header-rows: 1
+
+   * - Call
+     - Meaning
+   * - ``sweep(base, axes)``
+     - The cartesian product of ``{"section.key": [values]}`` over a copy
+       of ``base``
+   * - ``random_sweep(base, axes, n, seed=None)``
+     - ``n`` configs with each axis drawn uniformly from a ``(lo, hi)``
+       range; an all-integer range is drawn as an integer
+   * - ``iter_samples(configs, fields=None)``
+     - Solve one case at a time, yielding a ``Sample`` -- for datasets
+       larger than memory, or output formats other than ``.npz``
+   * - ``generate(configs, path, ...)``
+     - The loop plus a writer. Returns the manifest
+   * - ``load(path)``
+     - ``(arrays, manifest)`` back, from a single file or a shard
+       directory
+
+The grid is checked, not assumed
+--------------------------------
+
+Sweeping a grid parameter raises, and so does a config whose grid section
+differs from the first one's -- naming the key that moved, because
+"shapes differ" is not a debuggable message.
+
+This is the failure the module exists to prevent. A ragged dataset does
+not surface here. It surfaces hours into a training run, or never,
+because the loader padded.
+
+The stretched ``z`` is harmless under that rule. The spacing is
+non-uniform, but with the grid fixed the index-to-height mapping is one
+constant for every sample, so a network learning in index space is
+learning under a single coordinate system. ``grid_z_cc`` and
+``grid_z_face`` are written into the output so that mapping travels with
+the data.
+
+Provenance, without duplicating the terrain
+-------------------------------------------
+
+The manifest records the config that produced every sample, the
+FastWindTerrain and AMReX versions, the seed, and the MLMG residual and
+iteration count of each solve.
+
+A terrain point cloud is **not** written once per sample -- it is the
+same array in every config of a sweep and would dominate the file. The
+manifest keeps a shape/dtype/SHA-256 stamp instead, which identifies it
+exactly, and the terrain is recoverable from the sample anyway:
+``terrain_z`` and ``mask`` are output fields.
+
+Size
+----
+
+Select the fields you need. All seventeen is usually about three times
+what a surrogate wants, and ``dtype="float32"`` halves it again -- the
+solve is always double, and the cast happens on the way out.
+
+For a dataset larger than memory, ``shard_size=`` writes a directory of
+``shard_*.npz`` and keeps peak memory to one shard; ``load`` reads either
+layout. ``iter_samples`` is the streaming primitive underneath both, for
+when the destination is something other than an ``.npz``.
+
+Generate a whole dataset with **one build** of the bindings. Parity is a
+property of a build tree, so mixing a wheel and an in-tree build is
+mixing two compilations.
+
+The example notebook
+====================
+
+``examples/quickstart.ipynb`` is the tour: grid, terrain, a solve watched
+one projection pass at a time, the fields, and a small dataset. It is
+committed without outputs, and ``tests/test_notebook.py`` executes it top
+to bottom, so it cannot rot quietly behind outputs that still look right.
+
+Running the tests
+=================
+
+::
+
+    pytest tests
+
+The bindings' own tests live in ``tests/`` and are pytest, not
+``run_regtests.py`` groups (see :doc:`regtests`). They run against an
+installed wheel if there is one and fall back to ``build/python``
+otherwise, so ``pip install .`` followed by ``pytest`` tests the wheel.
+
+``-m "not slow"`` skips the tests that run a full solve, or several.
+``--fwt-exe`` points the few executable-comparison tests at a binary
+other than ``build/fastwindterrain``; they skip when there is none, since
+a wheel installed elsewhere has no executable beside it.
+
+**One AMReX per process.** ``initialize``/``finalize`` cannot be
+repeated, so the ``amrex`` fixture is session-scoped: one initialization
+for the whole run. A test that takes it must not open ``fwt.session()``
+as well, and anything needing its own lifecycle -- initializing from an
+inputs file, testing the ordering guards, watching a ParmParse leak --
+runs in a subprocess through the ``run_py`` fixture. That every other
+test shares one initialization is not merely convenient: hundreds of
+independent cases inside one AMReX is exactly what dataset generation
+does.
+
 Scope
 =====
 
@@ -623,9 +784,6 @@ hundred cases in one process safe. The narrow surface is deliberate: parity
 was established and put under test before there was a wider API to keep
 honest, and each new piece inherits a guarantee that is already green.
 
-``Solver`` currently offers ``setup()`` and its fields. The remaining
-stages -- ``solve()``, ``diagnose()``, ``write_output()`` -- and
-dict-based configuration arrive with the terrain and solver-driver
-phases. The ghost refill that follows ``set_velocity`` is not directly
-observable yet, since ghost cells are deliberately not exposed; it
-becomes testable when a solve can follow a write.
+Phase 16 made the package pip-installable, moved the bindings' tests to
+pytest, and added ``fastwindterrain.dataset`` -- the generator the
+previous seven phases were building toward.

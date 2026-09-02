@@ -180,6 +180,103 @@ jobs:
       - name: Regtests through the Python bindings
         run: python3 run_regtests.py build/fastwindterrain-py
 
+      # The bindings' own suite, against the in-tree build. It finds the
+      # module under build/python without an install, so this covers the
+      # path a developer actually uses; the wheel job below covers the
+      # installed one.
+      - name: Install pytest
+        run: python3 -m pip install pytest
+
+      - name: The bindings test suite
+        run: python3 -m pytest tests -v
+
+  # ---------------------------------------------------------------------
+  # The wheel: pip install, then the same test suite against the
+  # INSTALLED package rather than the build tree.
+  #
+  # This is a different thing from the job above. That one imports out of
+  # build/python; this one proves pyproject.toml, scikit-build-core and
+  # the install rules actually produce something importable from
+  # site-packages, with the console script on PATH. Those break
+  # independently of the solver.
+  #
+  # It also executes examples/quickstart.ipynb, which is committed
+  # without outputs and would otherwise rot invisibly behind results
+  # nobody re-ran.
+  # ---------------------------------------------------------------------
+  wheel:
+    name: Wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout (with the AMReX and pybind11 submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja ccache
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-wheel-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-wheel-${{ runner.os }}-
+
+      # scikit-build-core passes CMAKE_ARGS through, which is the only
+      # way to reach the underlying CMake from pip. Without ccache every
+      # install recompiles the whole of AMReX.
+      - name: Build and install the wheel
+        env:
+          CMAKE_ARGS: >-
+            -GNinja
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -v ".[test,notebook]"
+
+      # From a directory with no build tree in it, so an import that only
+      # worked via build/python would fail here.
+      - name: Import the installed package
+        run: |
+          cd "$RUNNER_TEMP"
+          python -c "import fastwindterrain as fwt; print(fwt.__version__, fwt.__file__)"
+          python -c "from fastwindterrain import dataset; print(len(dataset.FIELDS), 'fields')"
+
+      - name: The console script is on PATH
+        run: |
+          cd "$RUNNER_TEMP"
+          fastwindterrain && exit 1 || test $? -eq 2
+
+      # tests/ prefers the installed package over build/python, so this
+      # runs against the wheel. The executable-comparison tests skip:
+      # there is no build tree here, and parity is a property of one.
+      - name: The test suite, against the wheel
+        run: python -m pytest tests -v
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
   # ---------------------------------------------------------------------
   # GPU backends: COMPILE ONLY.
   #
