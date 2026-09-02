@@ -10,6 +10,28 @@
 # and an extension module never needs it.
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 
+# numpy is a RUNTIME requirement, not a build one: pybind11 loads its C
+# API dynamically, so nothing here needs its headers. Checking at
+# configure time anyway turns "ImportError deep inside a property
+# accessor" into a message at the point the choice was made.
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import numpy; print(numpy.__version__)"
+    RESULT_VARIABLE FWT_NUMPY_MISSING
+    OUTPUT_VARIABLE FWT_NUMPY_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(FWT_NUMPY_MISSING)
+    message(FATAL_ERROR
+        "The Python bindings return numpy arrays, and ${Python3_EXECUTABLE} "
+        "cannot import numpy.\n"
+        "Install it for that interpreter, or point CMake at one that has "
+        "it:\n"
+        "  cmake -S . -B build -DFWT_PYTHON=ON "
+        "-DPython3_EXECUTABLE=/path/to/python\n"
+        "A virtual environment is the usual answer on a system Python that "
+        "refuses installs (PEP 668).")
+endif()
+
 # pybind11 comes from the submodule, matching how AMReX is vendored, so a
 # recursive clone needs no network at configure time. An installed
 # pybind11 is used if one is already visible.
@@ -67,6 +89,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fastwindterrain-py.in
                @ONLY)
 
 message(STATUS "Python bindings enabled")
+message(STATUS "  python:  ${Python3_EXECUTABLE} (numpy ${FWT_NUMPY_VERSION})")
 message(STATUS "  module:  ${FWT_PY_DIR}")
 message(STATUS "  shim:    ${CMAKE_BINARY_DIR}/fastwindterrain-py")
 message(STATUS "  use as:  PYTHONPATH=${CMAKE_BINARY_DIR}/python python3 -c "

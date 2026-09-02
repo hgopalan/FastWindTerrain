@@ -178,6 +178,33 @@ bindings::
 ``build/fastwindterrain-py`` is argv-compatible with the executable, so
 no checker knows the difference. CI runs both.
 
+``phase10_grid_bindings``
+-------------------------
+
+``Grid`` built from Python (see :doc:`python`).
+
+* **no ParmParse leak** -- the point of the phase. The checker
+  initializes from an inputs file setting ``grid.stretching_ratio =
+  1.03``, then builds a Grid from a dict that omits it, and requires the
+  default ``1.0``. The discriminator is chosen so the two cannot be
+  confused: 40 cells of 4 m at ratio 1.0 is exactly 160 m and warns
+  about nothing, while a leaked 1.03 would give 301.6 m, an overshoot
+  and a different ``prob_hi``
+* a grid built from a dict and the same grid built from an inputs file
+  agree **exactly**, face by face -- Phase 9's parity extended to the
+  new entry point
+* eight bad inputs all raise ``ValueError`` -- an unknown key, a
+  negative ``dz0``, a zero ratio, a two-entry triple, a non-number, an
+  inverted domain, an undershoot, a missing required key -- and the
+  interpreter is still usable afterwards, which is why they raise
+  instead of aborting
+* an overshoot is a ``UserWarning``: capturable, and promotable to an
+  exception with ``simplefilter("error")``, which is what a generator
+  needs to reject a silently adjusted domain. A grid that fits exactly
+  stays silent
+* ten grids built and destroyed inside one AMReX initialization, each
+  independent -- dataset generation depends on it
+
 ``profile_convergence``
 -----------------------
 

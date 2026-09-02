@@ -18,6 +18,21 @@ or, equivalently, from a shell::
 
     python -m fastwindterrain inputs poisson.alpha_v=0.3
 
+Components can also be built directly from Python, with no inputs file
+anywhere::
+
+    with fwt.session():
+        g = fwt.Grid({"n_cell": (24, 24, 40),
+                      "prob_lo": (0.0, 0.0, 0.0),
+                      "prob_hi": (1000.0, 1000.0, 483.19909696997223),
+                      "dz0": 4.0, "stretching_ratio": 1.05})
+        print(g.z_cc)          # numpy, (nz,)
+
+That path never touches ParmParse, which matters when driving many cases
+in one process: ParmParse persists for the life of an AMReX
+initialization, so a case that omits a parameter would otherwise inherit
+whatever an earlier case set.
+
 AMReX's Initialize/Finalize are process-global, so ``initialize()`` and
 ``finalize()`` are explicit rather than implicit on import, and calling
 either out of order raises rather than crashing the interpreter. Use the
@@ -27,6 +42,7 @@ either out of order raises rather than crashing the interpreter. Use the
 from contextlib import contextmanager
 
 from ._fastwindterrain import (      # noqa: F401
+    Grid,
     __version__,
     amrex_version,
     finalize,
@@ -36,6 +52,7 @@ from ._fastwindterrain import (      # noqa: F401
 )
 
 __all__ = [
+    "Grid",
     "__version__",
     "amrex_version",
     "finalize",

@@ -27,6 +27,16 @@ Use the interpreter CMake found. An extension module is built for exactly
 one minor version of Python, and the ``python3`` on ``PATH`` is often a
 different one; ``build/fastwindterrain-py`` records the right one.
 
+numpy is a runtime requirement. The build checks for it at configure
+time rather than letting the failure surface later as an ImportError
+inside a property accessor. On a system Python that refuses installs
+(PEP 668), point CMake at a virtual environment::
+
+    python3 -m venv build/venv
+    build/venv/bin/pip install numpy
+    cmake -S . -B build -DFWT_PYTHON=ON \
+        -DPython3_EXECUTABLE=$PWD/build/venv/bin/python
+
 Using it
 ========
 
@@ -122,11 +132,110 @@ is a different compilation, and nothing here claims otherwise. The
 guarantee is that the two entry points of a given build cannot diverge,
 because there is only one compiled solver in it.
 
+Building a Grid from Python
+===========================
+
+.. code-block:: python
+
+    with fwt.session():
+        g = fwt.Grid({
+            "n_cell": (24, 24, 40),
+            "prob_lo": (0.0, 0.0, 0.0),
+            "prob_hi": (1000.0, 1000.0, 483.19909696997223),
+            "dz0": 4.0,
+            "stretching_ratio": 1.05,   # optional, default 1.0 (uniform)
+            "max_grid_size": 16,        # optional, default 32
+        })
+        g.z_cc        # numpy, (nz,)
+        g.z_face      # numpy, (nz+1,)
+        g.prob_hi     # as resolved, after any overshoot adjustment
+
+The dict is the real path
+-------------------------
+
+Nothing is written to a temporary inputs file, and nothing is read from
+ParmParse.
+
+That matters more than it sounds. **ParmParse is process-global and
+persists for the life of an AMReX initialization.** A second case in the
+same process inherits every parameter the first one set and the second
+did not override. For a command-line run that never comes up -- one
+process, one case. For a loop generating a few hundred training samples
+it is silent corruption spread across a dataset, with no failure anywhere
+to notice it.
+
+So ``Grid::Params`` holds the inputs as data, ParmParse is one *source*
+of a Params rather than the mechanism, and the defaults live in one place
+both paths use. A regtest initializes from an inputs file setting
+``grid.stretching_ratio = 1.03``, then builds a Grid from a dict that
+omits it, and requires the default ``1.0``.
+
+An unknown key is refused
+-------------------------
+
+.. code-block:: python
+
+    fwt.Grid({..., "stretching_ration": 1.05})
+    # ValueError: unknown grid parameter 'stretching_ration'. Valid keys are: ...
+
+ParmParse accepts a misspelling and mentions it once at finalize, as one
+line in a list of unused variables. That is exactly how a typo produces
+an entire dataset on the wrong grid without a single failure. The dict
+path refuses.
+
+Errors raise, warnings warn
+---------------------------
+
+``amrex::Abort`` kills the process. That is right for a command-line
+tool -- a grid that does not reach the domain top must not quietly
+produce a plotfile -- and wrong inside Python, where it takes the
+interpreter down and loses whatever else the session was holding.
+
+A bad input now throws ``fwt::InputError``, which becomes a
+``ValueError``. The executable catches the same exception in ``main()``
+and aborts with the same message, so its diagnostic, its nonzero exit and
+the absence of a report file are exactly what they were --
+``phase1_grid`` still asserts all three.
+
+A grid that *overshoots* its requested top is not an error: the top moves
+to where the grid reaches. That goes through a warning handler whose
+default prints exactly what the code always printed, and which the
+bindings replace with Python's ``warnings.warn``:
+
+.. code-block:: python
+
+    with warnings.catch_warnings(record=True) as w:
+        g = fwt.Grid(over)          # w[0] is a UserWarning
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fwt.Grid(over)              # raises instead
+
+A dataset generator wants that second form: promoting the warning to an
+error abandons the case rather than quietly adjusting the domain and
+carrying on.
+
+``run()`` is the exception: it restores the stdout handler for its own
+duration. It is documented as behaving exactly as the executable does,
+and where a warning comes out is part of that -- with the Python handler
+in force, an overshoot went to ``warnings.warn`` instead of stdout, and
+``phase1_grid`` failed under the shim while passing under the
+executable. The Python-native API keeps Python-native warnings.
+
+Scope of the migration
+----------------------
+
+Only *user input* moves from abort to exception, and in this phase only
+Grid's. An internal invariant -- a box split in z when the decomposition
+promised otherwise -- stays an assertion: it is a bug in this code, not
+something a caller can provoke, and it should abort loudly wherever it
+happens. Later phases convert their own modules.
+
 Scope
 =====
 
-This phase exposes the process lifecycle and a whole run, and no more.
-The narrow surface is deliberate: the point is to establish parity and
-put it under test before there is a wider API to keep honest. Grid,
-field and solver-driver bindings follow, and each one inherits a
-guarantee that is already green.
+Phase 9 exposed the process lifecycle and a whole run; Phase 10 adds
+Grid. The narrow surface is deliberate: parity was established and put
+under test before there was a wider API to keep honest, and each new
+piece inherits a guarantee that is already green. Field, terrain and
+solver-driver bindings follow.

@@ -10,6 +10,7 @@ CEXE_headers += Output.H
 CEXE_headers += Diagnostics.H
 CEXE_headers += Verify.H
 CEXE_headers += Solver.H
+CEXE_headers += Error.H
 CEXE_headers += Debug.H
 CEXE_sources += Grid.cpp
 CEXE_sources += Derivatives.cpp
@@ -23,6 +24,7 @@ CEXE_sources += Output.cpp
 CEXE_sources += Diagnostics.cpp
 CEXE_sources += Verify.cpp
 CEXE_sources += Solver.cpp
+CEXE_sources += Error.cpp
 CEXE_sources += main.cpp
 
 INCLUDE_LOCATIONS += Source

@@ -146,6 +146,11 @@ jobs:
         with:
           python-version: '3.x'
 
+      # numpy is a runtime requirement of the bindings; CMake checks for
+      # it at configure time, so this has to come first.
+      - name: Install numpy
+        run: python3 -m pip install --upgrade pip numpy
+
       - name: Configure with the bindings on
         run: |
           cmake -S . -B build -G Ninja \
