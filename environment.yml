@@ -75,6 +75,15 @@ dependencies:
   - matplotlib-base>=3.5 # examples/quickstart.ipynb plots
   - jupyterlab           # only to open the notebook by hand
 
+  # --- the real-terrain catalogue (cases/) --------------------------------
+  # Only the SRTM download needs these. conda-forge is the sane way to get
+  # rasterio and pyproj, which drag GDAL and PROJ behind them.
+  - rasterio>=1.3
+  - pyproj>=3.0
+  - scipy>=1.7
+  - pip:
+      - elevation>=1.1   # not on conda-forge
+
   # --- documentation ------------------------------------------------------
   # Mirrors docs/requirements.txt, so `make -C docs html` works in this
   # environment too.
