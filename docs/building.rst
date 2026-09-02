@@ -21,6 +21,16 @@ CMake (recommended)
 
 This produces ``build/fastwindterrain``.
 
+``Source/`` builds as one library, ``fwt_core``, which the executable
+links and -- when ``FWT_PYTHON=ON`` -- the Python extension module links
+too. That is what makes the two entry points bit-for-bit identical: they
+share object files rather than merely source. See :doc:`python`.
+
+``CMAKE_POSITION_INDEPENDENT_CODE`` is on for the whole build, including
+AMReX, since a static archive cannot otherwise be linked into a shared
+module. It is on even in a C++-only build, so that turning the bindings
+on does not change the object code of the solver.
+
 .. list-table::
    :widths: 30 10 45
    :header-rows: 1
@@ -40,6 +50,9 @@ This produces ``build/fastwindterrain``.
    * - ``FWT_ENABLE_TESTS``
      - ``ON``
      - Register the regtests with CTest
+   * - ``FWT_PYTHON``
+     - ``OFF``
+     - Build the pybind11 bindings; see :doc:`python`
 
 To build against an AMReX you already have installed::
 

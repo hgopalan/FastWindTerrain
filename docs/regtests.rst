@@ -146,6 +146,38 @@ The post-solve diagnostics and the two output backends (see
   suppresses both, the legacy ``ascii``/``plt`` spellings still work,
   and an unknown value aborts
 
+``phase9_bindings_parity``
+--------------------------
+
+The Python bindings, and C++/Python parity (see :doc:`python`).
+
+* the module imports, reports its version and the AMReX it was built
+  against, and does **not** initialize AMReX as a side effect of import
+* every lifecycle misuse **raises** rather than aborting: a second
+  ``initialize()``, a stray ``finalize()``, and ``run()`` inside an
+  existing initialization. A guard that segfaults instead of raising
+  loses a notebook session's work, which is the failure this API exists
+  to prevent
+* ``session()`` finalizes even when its block raises
+* five cases -- a flat solve, a hill with anisotropy and O'Brien, the
+  manufactured solution, and the ascii backend -- run through both the
+  executable and the bindings, with every output file compared **byte
+  for byte**, plus stdout. An AMReX plotfile carries no timestamp, so it
+  compares like everything else
+* command-line ``name=value`` overrides reach the solver through the
+  shim and give an identical report
+
+The group SKIPS when the bindings are not built, since a C++-only build
+is supported; CI builds one job with them on.
+
+Beyond this group, the whole suite runs a second time through the
+bindings::
+
+    python3 run_regtests.py build/fastwindterrain-py
+
+``build/fastwindterrain-py`` is argv-compatible with the executable, so
+no checker knows the difference. CI runs both.
+
 ``profile_convergence``
 -----------------------
 

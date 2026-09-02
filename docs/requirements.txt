@@ -1,3 +1,7 @@
 # Documentation build. The docs are plain reStructuredText with no
-# extensions, so Sphinx alone is enough.
+# extensions, so Sphinx plus a theme is enough.
+#
+# sphinx_rtd_theme matches the massconsistent_amr documentation site, so
+# the two projects read as one body of work rather than two.
 sphinx>=7.0
+sphinx_rtd_theme>=1.0
