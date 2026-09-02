@@ -77,9 +77,17 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    # Only from main, and only on a real push: a pull request must not be
-    # able to publish to the live site.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only from main, and never from a pull request: a PR must not be able
+    # to publish to the live site.
+    #
+    # workflow_dispatch is included deliberately. Republishing on demand
+    # is the whole reason that trigger is on this workflow -- after a
+    # Pages settings change, say -- and an earlier version of this
+    # condition tested for a push alone, so a manual run built the docs,
+    # uploaded the artifact, and then silently skipped the deploy.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Deliberately NOT gated on linkcheck. That job reaches out to
     # third-party sites, so it fails for reasons that have nothing to do
