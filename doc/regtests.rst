@@ -23,6 +23,13 @@ The same tests are registered with CTest::
 
     ctest --test-dir build --output-on-failure
 
+The full four-resolution convergence sweep is not part of the suite --
+the ``nz = 512`` runs are slower than a regtest should be. The
+``profile_convergence`` group runs a reduced version of it; the full one
+is::
+
+    python3 convergence/run_convergence.py build/fastwindterrain
+
 Cases run in a scratch work directory (``build/regtests/<group>`` by
 default, overridable with ``--workdir``), so running the tests leaves
 nothing behind in the source tree.
@@ -138,6 +145,48 @@ The post-solve diagnostics and the two output backends (see
   ``ascii`` writes no plotfile, ``grid.output_format = report``
   suppresses both, the legacy ``ascii``/``plt`` spellings still work,
   and an unknown value aborts
+
+``profile_convergence``
+-----------------------
+
+The order of accuracy of the derivative schemes, measured end to end
+through the solver (see :doc:`convergence`).
+
+* a reduced sweep of the convergence driver -- two profiles, three
+  schemes, three resolutions -- asserting the observed L2 order on the
+  finest pair: 2 for ``central2`` and ``upwind2``, 3 for ``weno3js``
+* WENO must also be more *accurate*, not merely higher order: at
+  ``nz = 256`` it is ~25x better than either second-order scheme on the
+  same grid. Order is a claim about the limit; this is the claim a user
+  cares about
+* over flat ground the vertical gradient must not vary horizontally. The
+  runs are decomposed into several boxes, so a spread above round-off
+  would be a decomposition or ghost bug -- exactly what
+  ``numerics.selftest_file`` cannot see, since it never builds a box. It
+  measures **exactly** zero
+* the negative upwind branch converges too. A sign error hides in the
+  branch that is never measured
+
+``master_inputs``
+-----------------
+
+``regtests/inputs_master`` is a runnable input file naming **every**
+input the solver reads, with its default and permitted values.
+
+A reference like that is worth exactly what its accuracy is worth, and
+the usual failure is silent: someone adds a ParmParse query, the
+reference never mentions it, and a year later a user trusts a file that
+is quietly wrong. So the checker does not read it and nod:
+
+* it greps every ParmParse prefix and key out of ``Source/``,
+  reconstructs the full input names, and asserts each appears in the
+  master file -- commented out is fine, absent is not
+* and the reverse, so a renamed or removed input cannot leave a stale
+  entry behind
+* it **runs** the file, so the reference is a working case, and fails if
+  AMReX reports any input the run never read
+* it runs it again under ``fwt.debug = 1`` and requires the report to be
+  byte-identical: documenting a run must not change it
 
 ``gradient_schemes``
 --------------------

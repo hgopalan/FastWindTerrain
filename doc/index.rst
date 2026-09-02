@@ -21,6 +21,7 @@ on this layout.
    poisson
    anisotropy
    numerics
+   convergence
    output
    debugging
    parmparse_reference
@@ -46,6 +47,7 @@ Prefix            Covers
 ``obrien.``       Vertical-velocity adjustment
 ``output.``       Which backend writes the field output
 ``diagnostics.``  Post-solve diagnostic tolerances
+``verify.``       Verification aids for the convergence study
 ``fwt.``          Whole-run switches, currently ``fwt.debug``
 ================  ==========================================================
 
@@ -58,7 +60,12 @@ An unrecognized value for an enumerated input (``grid.output_format``,
 ``output.format``, ``inflow.mode``) is a fatal error rather than a silent
 fallback.
 
-:doc:`parmparse_reference` lists every input in one place.
+:doc:`parmparse_reference` lists every input in one place, and
+``regtests/inputs_master`` is a runnable input file naming every one of
+them with its default and its permitted values. A regtest greps the
+ParmParse calls out of ``Source/`` and asserts that file is neither
+missing an input nor carrying a stale one, so the reference cannot drift
+from the code.
 
 GPU support
 ===========

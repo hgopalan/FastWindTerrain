@@ -16,6 +16,7 @@
 #include "Poisson.H"
 #include "Output.H"
 #include "Diagnostics.H"
+#include "Verify.H"
 #include "Debug.H"
 #include "Derivatives.H"
 
@@ -58,6 +59,13 @@ int main (int argc, char* argv[])
 
         fwt::BoundaryConditions bc;
         bc.Build(grid, terrain, inflow, inflow.velocity());
+
+        // Verification dump, if asked for. It runs HERE, on the raw
+        // profile, before O'Brien and the projection rewrite the field:
+        // the quantity under study is the gradient of the inflow profile,
+        // not of whatever the adjustment left behind.
+        fwt::Verify verify;
+        verify.MaybeWriteGradientDump(grid, terrain, inflow.velocity());
 
         // Cell-local variational weights, from the terrain slope.
         fwt::Anisotropy aniso;

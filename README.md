@@ -40,7 +40,8 @@ Full documentation lives in [`doc/`](doc/):
 | [Poisson solver](doc/poisson.rst) | The variational solve, anisotropy, and the stretched grid |
 | [Anisotropy](doc/anisotropy.rst) | Cell-local weights and the O'Brien adjustment |
 | [Numerics](doc/numerics.rst) | Derivative schemes and their verification |
-| [Input reference](doc/parmparse_reference.rst) | Every input in one place |
+| [Convergence study](doc/convergence.rst) | Scheme order of accuracy, measured through the solver |
+| [Input reference](doc/parmparse_reference.rst) | Every input in one place; `regtests/inputs_master` is the runnable version |
 | [References](doc/references.rst) | The methods, and where each is used |
 | [Output](doc/output.rst) | Diagnostics, the report, and the plt/ascii field backends |
 | [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |

@@ -4,6 +4,7 @@
 #include <AMReX_REAL.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Math.H>
+#include <AMReX_Vector.H>
 
 #include <string>
 
@@ -163,6 +164,15 @@ amrex::Real Derivative (Scheme s,
 // How many cells each scheme reaches to either side. Fields the schemes
 // are applied to need at least this many ghost cells.
 constexpr int kStencilRadius = 2;
+
+// dz/dk at cell centres: the local metric the schemes take as `h` in the
+// stretched direction. One-sided at the two ends, centred inside.
+//
+// Every vertical derivative in the code goes through this, so the
+// divergence diagnostic and the profile-gradient verification cannot end
+// up measuring two slightly different vertical coordinates.
+amrex::Vector<amrex::Real>
+ColumnMetric (const amrex::Vector<amrex::Real>& z_cc);
 
 // Appends the resolved numerics settings to the ascii report.
 void AppendNumericsReport (const std::string& filename);

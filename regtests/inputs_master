@@ -1,0 +1,310 @@
+# =====================================================================
+# FastWindTerrain -- master input file
+#
+# EVERY input the solver reads, with its default and its permitted
+# values. This file is a reference, not a template: most runs should set
+# a handful of these and let the rest default.
+#
+# It is also a live regtest. regtests/master_inputs/check.py greps every
+# ParmParse name out of Source/ and asserts that each one appears here,
+# and that nothing here has gone stale -- then RUNS this file, so the
+# reference cannot drift from the code or quietly stop working.
+#
+# Values shown are the DEFAULTS unless marked "required". Inputs that
+# need an external data file, or that switch the run into a special
+# mode, are commented out; they are still named so the checker sees them
+# and so you can find them.
+#
+# Any input can be overridden on the command line:
+#
+#     ./fastwindterrain inputs_master poisson.alpha_v=0.3 fwt.debug=1
+#
+# An unrecognized value for an enumerated input is always fatal. Nothing
+# here silently falls back to a default.
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# grid.  --  the mesh, and which outputs the run produces
+# ---------------------------------------------------------------------
+
+# REQUIRED. Cell counts nx ny nz.
+grid.n_cell  = 24 24 40
+
+# REQUIRED. Domain corners [m]. prob_hi[2] is the REQUESTED domain top:
+# if the stretched grid overshoots it the code warns and overrides it; if
+# it undershoots, the run aborts, because a grid that does not reach the
+# domain top would silently corrupt the upper boundary.
+grid.prob_lo = 0.0 0.0 0.0
+grid.prob_hi = 1000.0 1000.0 483.19909696997223
+
+# REQUIRED. Thickness of the surface-adjacent cell [m]. Must be > 0.
+grid.dz0 = 4.0
+
+# Geometric vertical stretching: dz(k) = dz0 * r^k. 1.0 is a uniform
+# grid and reproduces one exactly. Must be > 0.
+grid.stretching_ratio = 1.05
+
+# Box size in x and y. The grid is NEVER split in z -- every box spans
+# the full height, because a column integration (O'Brien) cannot be done
+# box by box if a column is cut. Grid asserts that invariant.
+grid.max_grid_size = 16
+
+# Which outputs the run produces:
+#   report  -- the plain-text key/value report only          (default)
+#   fields  -- the per-cell field output only
+#   both    -- both
+# 'ascii' and 'plt' are accepted as aliases for report and fields.
+grid.output_format = both
+
+# Where those go.
+grid.report_file = grid_report_master.txt
+grid.plot_file   = plt_master
+
+
+# ---------------------------------------------------------------------
+# output.  --  which backend writes the field output
+# ---------------------------------------------------------------------
+
+# plt   -- AMReX native plotfile (default, the production path)
+# ascii -- ONE gathered plain-text file, one row per cell. A REGTEST AID:
+#          serial, ~450 bytes per cell, no place in a production case
+# both  -- both, which is what the backend-comparison regtest runs
+output.format = plt
+
+# Destination for the ascii backend. Ignored when format = plt.
+output.ascii_file = fields.txt
+
+
+# ---------------------------------------------------------------------
+# terrain.  --  the surface and the immersed boundary
+# ---------------------------------------------------------------------
+
+# Whitespace- or comma-separated "x y z" point file. Absent means flat
+# ground at flat_elevation. A file that is named but missing is fatal:
+# falling back to flat ground would be a silent change of problem.
+# terrain.file = terrain_hill.csv
+
+# Ground elevation used when no file is given [m].
+terrain.flat_elevation = 0.0
+
+# Inverse-distance interpolation of the terrain onto grid columns:
+# how many nearest points, and the power in 1/d^p.
+terrain.idw_n_neighbors = 6
+terrain.idw_exponent    = 2.0
+
+
+# ---------------------------------------------------------------------
+# inflow.  --  the initial wind field
+# ---------------------------------------------------------------------
+
+# powerlaw | loglaw | userfile
+inflow.mode = powerlaw
+
+# Reference velocity components [m/s]. Both zero is fatal: a calm
+# reference gives no wind direction, so no face can be classified.
+# Ignored in userfile mode.
+inflow.u_ref = 8.0
+inflow.v_ref = 6.0
+
+# Reference height, ABOVE GROUND [m]. Must be > 0. The profile is
+# anchored to height above ground everywhere, which is what makes it
+# terrain aware -- and what makes it non-solenoidal over a hill.
+inflow.z_ref = 10.0
+
+# powerlaw: U(z) = speed_ref * (z_agl / z_ref)^exponent
+inflow.powerlaw_exponent = 0.14
+
+# loglaw: U(z) = speed_ref * ln((z_agl+z0)/z0) / ln((z_ref+z0)/z0)
+# Roughness length [m]. Must be > 0. Also the default for z_agl_min.
+inflow.z0 = 0.1
+
+# Floor on height above ground [m], so the profile stays finite at the
+# surface. Defaults to inflow.z0. Must be > 0.
+inflow.z_agl_min = 0.1
+
+# userfile mode: six-column "x y z u v w" file, interpolated in 3D.
+# Required when mode = userfile, ignored otherwise.
+# inflow.file = user_profile.txt
+
+# The 3D inverse-distance interpolation used by userfile mode.
+inflow.idw_n_neighbors = 6
+inflow.idw_exponent    = 2.0
+
+
+# ---------------------------------------------------------------------
+# bc.  --  boundary conditions
+# ---------------------------------------------------------------------
+
+# Faces are classified from the field's own face fluxes, not from a
+# reference vector, so userfile mode classifies correctly too. There is
+# nothing to configure; this dump writes one row per boundary ghost cell
+# (face, layer, i, j, k, ghost, mirror, edge) so a checker can verify
+# every one of them rather than a sample. A single-rank test aid.
+# bc.dump_file = bc_dump.txt
+
+
+# ---------------------------------------------------------------------
+# numerics.  --  directional derivative schemes
+# ---------------------------------------------------------------------
+
+# weno3js | upwind2 | central2
+# Governs directional derivatives. Which operators the PROJECTION is
+# built from is decided by poisson.rhs_operator / gradient_operator.
+numerics.gradient_scheme = weno3js
+
+# Writes a grid-refinement study of every scheme, on a uniform and a
+# stretched grid, in both norms and for both upwind branches. A test aid
+# that runs on synthetic data and exits through the normal path.
+# See also convergence/run_convergence.py, which measures the same
+# schemes end to end through the solver.
+# numerics.selftest_file = selftest.txt
+
+
+# ---------------------------------------------------------------------
+# anisotropy.  --  cell-local variational weights
+# ---------------------------------------------------------------------
+
+# 0 | 1. Off by default, as in massconsistent_amr. With it off both
+# weights hold their base values everywhere and the operator is exactly
+# the one the earlier phases built.
+anisotropy.enable = 0
+
+# slope | none  -- what drives the variation.
+anisotropy.source = slope
+
+# base  -- alpha_h holds poisson.alpha_h; only alpha_v varies (default,
+#          and what massconsistent_amr does). What the model needs is the
+#          RATIO alpha_v/alpha_h to fall on slopes; scaling both by the
+#          same factor would suppress the vertical adjustment relative to
+#          nothing at all.
+# slope -- the slope factor reaches alpha_h as well.
+anisotropy.alpha_h_mode = base
+
+# f_slope = exp(-slope_3d / slope_scale), where
+# slope_3d = |grad z_terrain| * exp(-z_agl / decay_height).
+anisotropy.slope_scale  = 0.5
+anisotropy.decay_height = 500.0
+
+# Clamps, as factors on the base value.
+anisotropy.min_factor = 0.05
+anisotropy.max_factor = 2.0
+
+
+# ---------------------------------------------------------------------
+# obrien.  --  vertical-velocity adjustment
+# ---------------------------------------------------------------------
+
+# 0 | 1. Integrates horizontal divergence up each column and removes the
+# residual with a quadratic-in-height redistribution, so w = 0 at the
+# domain top EXACTLY. Runs on u0 before the projection.
+obrien.enable = 0
+
+
+# ---------------------------------------------------------------------
+# poisson.  --  the variational solve
+# ---------------------------------------------------------------------
+
+# Transmissivities, NOT penalties: sigma = (alpha_h^2, alpha_h^2,
+# alpha_v^2), and the same alpha multiplies the correction. A smaller
+# alpha_v means LESS vertical adjustment. These are the base values the
+# anisotropy fields are built from.
+poisson.alpha_h = 1.0
+poisson.alpha_v = 0.5
+
+# flowthrough -- all four laterals Dirichlet, ground and top Neumann
+#                (default). Deriving the lambda BCs from the wind
+#                direction instead makes AMReX zero the tangential
+#                velocity at the Neumann faces, which wrecks an oblique
+#                inflow: 6.92 vs 0.113 initial divergence, 34.8 m/s from
+#                an 18.9 m/s profile.
+# directional -- inflow/outflow faces Dirichlet, the rest Neumann.
+poisson.lambda_bc = flowthrough
+
+# Which divergence forms the RHS:
+#   fe     -- AMReX's own nodal divergence, the operator the solve is
+#             built from (default)
+#   scheme -- numerics.gradient_scheme, averaged to nodes
+poisson.rhs_operator = fe
+
+# Which gradient the correction uses:
+#   amrex  -- AMReX's nodal gradient, the one the operator was assembled
+#             from (default)
+#   scheme -- numerics.gradient_scheme applied to lambda averaged to cell
+#             centres
+poisson.gradient_operator = amrex
+
+# AMReX's nodal projection is APPROXIMATE: its divergence and gradient
+# are not an exact factorisation of the operator, so one pass removes
+# only part of the divergence. Repeating drives the remainder down
+# geometrically. Must be >= 1.
+poisson.n_projections = 4
+
+# MLMG controls.
+poisson.max_iter = 200
+poisson.reltol   = 1.0e-11
+poisson.abstol   = 0.0
+poisson.verbose  = 0
+
+# Smoothing sweeps. Multigrid struggles as the cell aspect ratio grows
+# and needs roughly 2x the aspect ratio: 8 at AR 4, 16 at AR 8. Chosen
+# from the grid unless set here.
+# poisson.num_pre_smooth  = 8
+# poisson.num_post_smooth = 8
+
+# 0 | 1. Replaces the run with a manufactured solution: a known analytic
+# lambda on the configured (deliberately stretched) grid, reporting the
+# L2 and Linf error of the solve. This is how the vertical metric is
+# verified rather than assumed -- a wrong metric factor costs an order.
+poisson.manufactured = 0
+
+# 0 | 1. Forces Dirichlet on all six faces. Only meaningful alongside
+# manufactured = 1, whose analytic solution is posed that way.
+poisson.force_all_dirichlet = 0
+
+# One row per node (i, j, k, rhs), so a checker can compare the assembled
+# RHS against an independently computed divergence. A single-rank test
+# aid, not a production output path.
+# poisson.rhs_dump_file = rhs_dump.txt
+
+
+# ---------------------------------------------------------------------
+# diagnostics.  --  post-solve reporting
+# ---------------------------------------------------------------------
+
+# Relative boundary-flux imbalance above which the run WARNS. It is never
+# corrected and never fatal: a mass-consistent adjustment with Dirichlet
+# lambda on the laterals does not enforce a closed budget, and quietly
+# forcing one would hide what this number exists to show. Must be >= 0.
+diagnostics.flux_tolerance = 1.0e-3
+
+
+# ---------------------------------------------------------------------
+# verify.  --  verification aids
+# ---------------------------------------------------------------------
+
+# Writes d(u)/dz and d(v)/dz per level, as the solver computes them, so
+# their ORDER can be measured end to end -- through the real column
+# metric, box decomposition and index clamping, none of which
+# numerics.selftest_file touches. Driven by
+# convergence/run_convergence.py.
+# verify.gradient_dump_file = gradient_dump.txt
+
+# Which upwind branch that dump measures. Nonzero; swept over both signs
+# by the convergence driver. Fixed rather than taken from w, which is
+# identically zero over flat ground. Read only when the dump is on, so
+# it is commented out alongside it -- setting it here without the dump
+# would leave an input the run never reads.
+# verify.gradient_advect = 1.0
+
+
+# ---------------------------------------------------------------------
+# fwt.  --  whole-run switches
+# ---------------------------------------------------------------------
+
+# 0 | 1. Prints every input the run resolved -- INCLUDING the defaults
+# that were never given in the input file -- the arithmetic behind the
+# domain-height check, the full z tables, and the box decomposition.
+# Debug lines carry a "[debug]" prefix and never contain the words
+# WARNING or ERROR, so checkers that key on those are unaffected.
+fwt.debug = 0
