@@ -23,6 +23,9 @@ namespace fwt {
 //   idw_n_neighbors -- k nearest points used by the IDW interpolation
 //                      (default 6, matching massconsistent_amr)
 //   idw_exponent    -- IDW power p; weight = d^-p (default 2)
+//   extrapolation   -- what a column OUTSIDE the point cloud's extent
+//                      gets: "idw" (default, the historical behaviour)
+//                      or "nearest"
 //
 // The file format is the one massconsistent_amr's read_terrain_file
 // accepts: one `x y z` point per line, comma OR whitespace separated,
@@ -40,6 +43,16 @@ namespace fwt {
 // fractions, matching massconsistent_amr's
 //     is_solid = (z_cc - z_terrain <= 0)
 // A cell whose center lies exactly on the terrain surface is solid.
+//
+// COLUMNS THE POINT CLOUD DOES NOT COVER. IDW is an interpolation; asked
+// for a height outside the cloud it still answers, with a distance-
+// weighted average of points that all lie to one side. That is smooth
+// and entirely arbitrary, and because BuildMask only evaluates
+// z_cc <= z_terrain, a wrong elevation there turns a column all-fluid or
+// all-solid with nothing to show for it. `extrapolation = nearest` gives
+// those columns the nearest input point's elevation instead. Either way
+// the count of uncovered columns is reported, so the situation is never
+// silent.
 // -----------------------------------------------------------------------
 class Terrain
 {
@@ -49,6 +62,14 @@ public:
     // is unambiguous at every use site.
     static constexpr int kFluid = 0;
     static constexpr int kSolid = 1;
+
+    // What a column outside the point cloud's extent gets.
+    //   idw     -- the k-nearest IDW average, same as everywhere else.
+    //              The default, so existing cases are unchanged.
+    //   nearest -- the nearest input point's elevation.
+    enum class Extrapolation { idw, nearest };
+
+    static Extrapolation ParseExtrapolation (const std::string& s);
 
     // -------------------------------------------------------------------
     // The inputs, as data. Same shape as Grid::Params and for the same
@@ -69,14 +90,20 @@ public:
         int         idw_n_neighbors = 6;     // massconsistent_amr default
         amrex::Real idw_exponent    = 2.0;
 
+        // "idw" | "nearest". Held as the name rather than the enum for
+        // the same reason inflow.mode is: Params is what ParmParse and
+        // a Python dict both fill in, and both hand over a string.
+        std::string extrapolation = "idw";
+
         // Scattered x,y,z points given directly. When these are set,
         // `file` must be empty: two sources for one thing is a mistake
         // worth reporting rather than a precedence rule to remember.
         std::vector<amrex::Real> xp, yp, zp;
 
-        bool given_flat = false;
-        bool given_k    = false;
-        bool given_p    = false;
+        bool given_flat   = false;
+        bool given_k      = false;
+        bool given_p      = false;
+        bool given_extrap = false;
 
         static Params FromParmParse ();
         void Validate () const;
@@ -110,6 +137,13 @@ public:
     long n_solid ()           const { return m_n_solid; }
     long n_total ()           const { return m_n_total; }
 
+    // Grid columns whose center falls outside the point cloud's x/y
+    // extent -- the columns no input point brackets, and so the ones
+    // whose height is an extrapolation whichever mode is in force.
+    // Zero for flat ground, and zero for any case whose terrain data
+    // carries a margin beyond the domain (cases/casegen.py's HALO_M).
+    long n_columns_outside () const { return m_n_outside; }
+
     // Appends the terrain summary to an existing ascii grid report.
     void AppendReport (const std::string& filename) const;
 
@@ -124,6 +158,16 @@ public:
                                        const std::vector<amrex::Real>& zp,
                                        int k, amrex::Real exponent);
 
+    // Elevation of the input point nearest (xq, yq) in the horizontal.
+    // What `extrapolation = nearest` gives a column the cloud does not
+    // cover: not a fit to the data, just the closest thing measured.
+    // Ties go to the lowest index, so the result does not depend on how
+    // the point list happens to be ordered by the sort.
+    static amrex::Real NearestElevation (amrex::Real xq, amrex::Real yq,
+                                         const std::vector<amrex::Real>& xp,
+                                         const std::vector<amrex::Real>& yp,
+                                         const std::vector<amrex::Real>& zp);
+
     // Reads an x,y,z point file in the format described above. Aborts if
     // the file cannot be opened or contains no parseable point.
     static void ReadPointFile (const std::string& filename,
@@ -135,6 +179,7 @@ private:
 
     void BuildTerrainHeight (const Grid& grid);   // fills m_z_terrain
     void BuildMask (const Grid& grid);            // fills m_mask
+    void ReportCoverage () const;                 // says so if the cloud is short
 
     // --- inputs ---
     Params m_params;
@@ -151,6 +196,12 @@ private:
     amrex::Real m_z_max = 0.0;
     long m_n_solid = 0;
     long m_n_total = 0;
+    long m_n_outside = 0;                // columns outside the cloud
+
+    // Horizontal extent of the point cloud, from the points themselves.
+    // Only meaningful when there are points; left at zero otherwise.
+    amrex::Real m_x_min = 0.0, m_x_max = 0.0;
+    amrex::Real m_y_min = 0.0, m_y_max = 0.0;
 };
 
 } // namespace fwt

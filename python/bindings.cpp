@@ -461,7 +461,8 @@ Columns (const py::object& obj, int ncol, const char* what)
 fwt::Terrain::Params TerrainParamsFromDict (const py::dict& d)
 {
     RejectUnknownKeys(d, {"file", "flat_elevation", "idw_n_neighbors",
-                          "idw_exponent", "points"}, "terrain");
+                          "idw_exponent", "extrapolation", "points"},
+                      "terrain");
 
     fwt::Terrain::Params p;
     if (d.contains("file")) {
@@ -479,6 +480,10 @@ fwt::Terrain::Params TerrainParamsFromDict (const py::dict& d)
     if (d.contains("idw_exponent")) {
         p.idw_exponent = GetScalar<amrex::Real>(d, "idw_exponent", "terrain");
         p.given_p = true;
+    }
+    if (d.contains("extrapolation")) {
+        p.extrapolation = py::cast<std::string>(py::str(d["extrapolation"]));
+        p.given_extrap = true;
     }
     if (d.contains("points")) {
         auto cols = Columns(d["points"], 3, "terrain points");
@@ -903,6 +908,17 @@ is a mistake worth reporting, not a precedence rule to remember.
 The points go through exactly the inverse-distance interpolation the file
 path uses -- there is no second code path -- so a case built this way is
 bit-for-bit the case the CSV would have produced.
+
+A point cloud smaller than the domain leaves columns whose height IDW can
+only extrapolate, from points that all lie to one side.
+``n_columns_outside`` counts them -- worth asserting on before trusting a
+generated case -- and ``{"extrapolation": "nearest"}`` gives them the
+nearest input point's elevation instead::
+
+    t = fwt.Terrain(grid, {"points": pts})
+    assert t.n_columns_outside == 0        # the data covers the domain
+
+    t = fwt.Terrain(grid, {"points": pts, "extrapolation": "nearest"})
 )doc")
         .def(py::init([] (const fwt::Grid& g, const py::dict& d) {
                  RequireInitialized("Terrain");
@@ -921,6 +937,12 @@ bit-for-bit the case the CSV would have produced.
         .def_property_readonly("n_solid", &fwt::Terrain::n_solid)
         .def_property_readonly("n_total", &fwt::Terrain::n_total)
         .def_property_readonly("n_points", &fwt::Terrain::n_points)
+        .def_property_readonly("n_columns_outside",
+                               &fwt::Terrain::n_columns_outside,
+             "Grid columns whose center lies outside the point cloud's x/y\n"
+             "extent, and whose height is therefore an extrapolation. 0 when\n"
+             "the terrain data covers the domain -- which is what to assert\n"
+             "on before trusting a generated case.")
         .def("__repr__", [] (const fwt::Terrain& t) {
                  return "<fastwindterrain.Terrain z in [" +
                         std::to_string(t.z_min()) + ", " +

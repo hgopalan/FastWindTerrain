@@ -1,0 +1,32 @@
+# terrain.extrapolation regtest -- the point cloud is smaller than the
+# domain.
+#
+# terrain_partial.csv is a constant-gradient plane sampled only on
+# [0, 400] x [0, 600] of a 1000 x 1000 m domain, so 1216 of the 1600 grid
+# columns lie outside the cloud's extent and have to be extrapolated. A
+# plane is used rather than a hill because its elevation keeps rising to
+# the edge of the sampled patch: the six nearest points to a far column
+# are then spread over a real range of heights, so the k-nearest average
+# and the single nearest point give visibly different answers, and a
+# fallback that quietly did nothing could not pass.
+#
+# The checker runs this file in both modes. The mode is set on the
+# command line, not here, so the two runs differ in exactly one input.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_partial.csv
+
+grid.output_format    = both
+grid.report_file      = grid_report_partial.txt
+grid.plot_file        = plt_partial
+
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0

@@ -1,0 +1,29 @@
+# terrain.extrapolation regtest -- the covered control.
+#
+# terrain_covered.csv samples a Gaussian hill on [0, 1000] x [0, 1000],
+# which is the whole domain, so no grid column falls outside the point
+# cloud's extent and terrain.extrapolation cannot matter. The checker
+# runs this case in both modes and requires the two to be identical.
+#
+# The grid is the Phase 2 geometry, so the terrain here is directly
+# comparable with the cases over there.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_covered.csv
+
+grid.output_format    = both
+grid.report_file      = grid_report_covered.txt
+grid.plot_file        = plt_covered
+
+# Every run builds an inflow profile; these values do not affect what
+# this case checks.
+inflow.mode  = powerlaw
+inflow.u_ref = 10.0
+inflow.v_ref = 0.0
+inflow.z_ref = 10.0

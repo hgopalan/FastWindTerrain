@@ -244,6 +244,36 @@ is quietly wrong. So the checker does not read it and nod:
 * it runs it again under ``fwt.debug = 1`` and requires the report to be
   byte-identical: documenting a run must not change it
 
+``terrain_extrapolation``
+-------------------------
+
+What a grid column outside the terrain point cloud gets (see
+:doc:`terrain`). The point of the group is that the failure it guards
+against is invisible: IDW answers every query, and the mask is only
+``z_cc <= z_terrain``, so a wrong height out there produces a column
+that is all fluid or all solid rather than anything that looks like an
+error.
+
+* ``inputs_covered`` -- the cloud spans the whole domain, so no column
+  is outside it and the two modes must produce **bit-identical**
+  terrain. That is the guarantee that makes ``idw`` safe to leave as the
+  default: turning the option on cannot disturb a case that did not need
+  it
+* ``inputs_partial`` under ``idw`` -- the cloud covers
+  ``[0, 400] x [0, 600]`` of a 1000 x 1000 m domain, leaving 1216 of the
+  1600 columns outside it. Every column, covered or not, must still be
+  the plain IDW, so the historical behaviour is unchanged -- and the run
+  must now *say* the cloud is short
+* ``inputs_partial`` under ``nearest`` -- the outside columns take the
+  nearest input point's elevation exactly, the inside ones do not move
+  at all, and the surface must actually shift, so a fallback that
+  quietly returned the IDW value could not pass
+* an unrecognized ``terrain.extrapolation`` aborts, naming the value
+
+Both references -- the IDW and the nearest-point lookup -- are recomputed
+in the checker from the point file, and the count of outside columns is
+derived from the cloud's extent rather than read back from the report.
+
 ``gradient_schemes``
 --------------------
 
