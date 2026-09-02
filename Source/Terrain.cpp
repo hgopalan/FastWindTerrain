@@ -1,5 +1,6 @@
 #include "Terrain.H"
 #include "Debug.H"
+#include "Error.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -34,7 +35,7 @@ void Terrain::ReadPointFile (const std::string& filename,
 {
     std::ifstream f(filename);
     if (!f.is_open()) {
-        amrex::Abort("Terrain: cannot open terrain file: " + filename);
+        throw InputError("Terrain: cannot open terrain file: " + filename);
     }
 
     std::string line;
@@ -56,7 +57,8 @@ void Terrain::ReadPointFile (const std::string& filename,
     }
 
     if (xp.empty()) {
-        amrex::Abort("Terrain: no data read from terrain file: " + filename);
+        throw InputError("Terrain: no data read from terrain file: "
+                         + filename);
     }
 }
 
@@ -98,29 +100,39 @@ amrex::Real Terrain::InterpolateIDW (amrex::Real xq, amrex::Real yq,
 // Build
 // ---------------------------------------------------------------------------
 
-void Terrain::ReadParameters ()
+Terrain::Params Terrain::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("terrain");
 
-    const bool got_file = pp.query("file", m_file);
-    const bool got_flat = pp.query("flat_elevation", m_flat_elevation);
-    const bool got_k    = pp.query("idw_n_neighbors", m_idw_k);
-    const bool got_p    = pp.query("idw_exponent", m_idw_exponent);
+    pp.query("file", p.file);
+    p.given_flat = pp.query("flat_elevation", p.flat_elevation);
+    p.given_k    = pp.query("idw_n_neighbors", p.idw_n_neighbors);
+    p.given_p    = pp.query("idw_exponent", p.idw_exponent);
 
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_idw_k > 0,
-        "terrain.idw_n_neighbors must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_idw_exponent > 0.0,
-        "terrain.idw_exponent must be > 0");
+    p.Validate();
+    return p;
+}
 
-    FWT_DEBUG_SECTION("Terrain inputs (terrain.*)");
-    FWT_DEBUG("file             = "
-              << (got_file ? m_file : std::string("<none>  [flat ground]")));
-    FWT_DEBUG("flat_elevation   = " << m_flat_elevation << " m"
-              << (got_flat ? "" : "   [default]")
-              << (got_file ? "   [unused: file given]" : ""));
-    FWT_DEBUG("idw_n_neighbors  = " << m_idw_k << (got_k ? "" : "   [default]"));
-    FWT_DEBUG("idw_exponent     = " << m_idw_exponent
-                                     << (got_p ? "" : "   [default]"));
+void Terrain::Params::Validate () const
+{
+    if (idw_n_neighbors <= 0) {
+        throw InputError("terrain.idw_n_neighbors must be > 0");
+    }
+    if (idw_exponent <= 0.0) {
+        throw InputError("terrain.idw_exponent must be > 0");
+    }
+    if (!xp.empty() && !file.empty()) {
+        throw InputError(
+            "terrain points were given directly AND terrain.file is set; "
+            "use one or the other");
+    }
+    if (xp.size() != yp.size() || xp.size() != zp.size()) {
+        throw InputError(
+            "terrain point arrays have different lengths: x " +
+            std::to_string(xp.size()) + ", y " + std::to_string(yp.size()) +
+            ", z " + std::to_string(zp.size()));
+    }
 }
 
 void Terrain::BuildTerrainHeight (const Grid& grid)
@@ -142,7 +154,7 @@ void Terrain::BuildTerrainHeight (const Grid& grid)
     h.assign(std::size_t(nx) * std::size_t(ny), 0.0);
 
     if (m_xp.empty()) {
-        std::fill(h.begin(), h.end(), m_flat_elevation);
+        std::fill(h.begin(), h.end(), m_params.flat_elevation);
     } else {
         for (int j = 0; j < ny; ++j) {
             const amrex::Real yq = ylo + (amrex::Real(j) + 0.5) * dy;
@@ -150,7 +162,7 @@ void Terrain::BuildTerrainHeight (const Grid& grid)
                 const amrex::Real xq = xlo + (amrex::Real(i) + 0.5) * dx;
                 h[std::size_t(j)*nx + i] =
                     InterpolateIDW(xq, yq, m_xp, m_yp, m_zp,
-                                   m_idw_k, m_idw_exponent);
+                                   m_params.idw_n_neighbors, m_params.idw_exponent);
             }
         }
     }
@@ -212,17 +224,40 @@ void Terrain::BuildMask (const Grid& grid)
     m_n_total = static_cast<long>(grid.nx()) * grid.ny() * grid.nz();
 }
 
-void Terrain::Build (const Grid& grid)
+void Terrain::Build (const Grid& grid, const Params& params)
 {
-    ReadParameters();
+    m_params = params;
+    m_params.Validate();
 
-    if (!m_file.empty()) {
+    const bool got_file = !m_params.file.empty();
+    FWT_DEBUG_SECTION("Terrain inputs (terrain.*)");
+    FWT_DEBUG("file             = "
+              << (got_file ? m_params.file
+                           : std::string("<none>  [flat ground]")));
+    FWT_DEBUG("flat_elevation   = " << m_params.flat_elevation << " m"
+              << (m_params.given_flat ? "" : "   [default]")
+              << (got_file ? "   [unused: file given]" : ""));
+    FWT_DEBUG("idw_n_neighbors  = " << m_params.idw_n_neighbors
+              << (m_params.given_k ? "" : "   [default]"));
+    FWT_DEBUG("idw_exponent     = " << m_params.idw_exponent
+              << (m_params.given_p ? "" : "   [default]"));
+
+    if (m_params.has_points()) {
+        // Handed in directly. They go through the same interpolation the
+        // file path uses -- there is no second code path here, which is
+        // what makes the two agree bit for bit.
+        m_xp = m_params.xp;
+        m_yp = m_params.yp;
+        m_zp = m_params.zp;
+        amrex::Print() << "Terrain: " << m_xp.size()
+                       << " points given directly\n";
+    } else if (got_file) {
         // Every rank reads the file. It is a small ASCII point list and
         // reading it everywhere avoids a broadcast whose only purpose
         // would be to save that read.
-        ReadPointFile(m_file, m_xp, m_yp, m_zp);
+        ReadPointFile(m_params.file, m_xp, m_yp, m_zp);
         amrex::Print() << "Terrain: read " << m_xp.size()
-                       << " points from " << m_file << "\n";
+                       << " points from " << m_params.file << "\n";
     }
 
     BuildTerrainHeight(grid);
@@ -231,7 +266,10 @@ void Terrain::Build (const Grid& grid)
     if (Debug::Enabled()) {
         FWT_DEBUG_SECTION("Terrain");
         FWT_DEBUG("source           = "
-                  << (m_xp.empty() ? "flat (no file)" : m_file));
+                  << (m_xp.empty() ? "flat (no file)"
+                                   : (m_params.file.empty()
+                                          ? std::string("<given directly>")
+                                          : m_params.file)));
         FWT_DEBUG("n_points         = " << m_xp.size());
         if (!m_xp.empty()) {
             const auto xmm = std::minmax_element(m_xp.begin(), m_xp.end());
@@ -259,6 +297,11 @@ void Terrain::Build (const Grid& grid)
     }
 }
 
+void Terrain::Build (const Grid& grid)
+{
+    Build(grid, Params::FromParmParse());
+}
+
 void Terrain::AppendReport (const std::string& filename) const
 {
     if (!amrex::ParallelDescriptor::IOProcessor()) { return; }
@@ -266,10 +309,10 @@ void Terrain::AppendReport (const std::string& filename) const
     std::ofstream os(filename, std::ios::app);
     os << std::setprecision(std::numeric_limits<amrex::Real>::max_digits10);
     os << "# terrain summary (Phase 2)\n";
-    os << "terrain_file " << (m_file.empty() ? "none" : m_file) << "\n";
+    os << "terrain_file " << (m_params.file.empty() ? "none" : m_params.file) << "\n";
     os << "terrain_n_points " << m_xp.size() << "\n";
-    os << "terrain_idw_n_neighbors " << m_idw_k << "\n";
-    os << "terrain_idw_exponent " << m_idw_exponent << "\n";
+    os << "terrain_idw_n_neighbors " << m_params.idw_n_neighbors << "\n";
+    os << "terrain_idw_exponent " << m_params.idw_exponent << "\n";
     os << "terrain_z_min " << m_z_min << "\n";
     os << "terrain_z_max " << m_z_max << "\n";
     os << "terrain_n_solid " << m_n_solid << "\n";

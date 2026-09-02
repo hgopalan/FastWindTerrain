@@ -328,11 +328,77 @@ that is how a transposed velocity field gets written without anyone
 noticing. A ``float32`` array is accepted, since widening to double is a
 conversion rather than a reinterpretation.
 
+Terrain and profile from Python
+===============================
+
+A whole case with no inputs file anywhere:
+
+.. code-block:: python
+
+    import numpy as np, fastwindterrain as fwt
+
+    pts = np.loadtxt("terrain.csv", delimiter=",", skiprows=5)   # (n, 3)
+
+    with fwt.session():                     # no arguments: ParmParse is empty
+        g = fwt.Grid({"n_cell": (24, 24, 40), ...})
+        t = fwt.Terrain(g, {"points": pts})
+        inf = fwt.Inflow(g, t, {"mode": "powerlaw", "u_ref": 8.0,
+                                "v_ref": 6.0, "z_ref": 10.0})
+
+        t.mask          # (nz, ny, nx) int32
+        inf.velocity    # (3, nz, ny, nx) [m/s]
+
+``userfile`` mode takes the six-column table as two ``(n, 3)`` arrays
+instead of a file:
+
+.. code-block:: python
+
+    inf = fwt.Inflow(g, t, {"mode": "userfile",
+                            "points": xyz, "velocity": uvw})
+
+One interpolation, two ways to fill it
+--------------------------------------
+
+The point cloud is part of ``Terrain::Params`` rather than something
+``Build`` fetches. "Read them from a file" and "here they are" fill one
+field; they are not two routes through the interpolation.
+
+That is what makes the two **bit-for-bit** identical rather than merely
+similar, and a regtest holds it: terrain built from a numpy array and
+terrain built from the CSV those numbers came out of give identical
+``z_terrain`` and ``mask``. The same for the userfile table and its 3D
+inverse-distance interpolation.
+
+The stronger version of that test builds an entire case in Python --
+grid, terrain points, profile, with AMReX initialized with **no
+arguments at all**, so ParmParse holds nothing -- and requires every
+field to equal what the equivalent inputs file produces, exactly.
+
+Ambiguity is refused
+--------------------
+
+``points`` and ``file`` together raise, rather than one silently winning:
+two sources for one thing is a mistake worth reporting, not a precedence
+rule to remember. So do a table given in a non-``userfile`` mode, a
+``points`` without its ``velocity``, an ``(n,)`` array where an
+``(n, 3)`` was wanted, and an unknown key.
+
+A point cloud that gets silently reshaped is a whole dataset built on the
+wrong terrain, which is why none of this is forgiving.
+
+More aborts became exceptions
+-----------------------------
+
+Phase 10 converted Grid's. This phase converts Terrain's and Inflow's,
+including the file readers: a missing terrain file is a typo in an inputs
+deck, not a bug in the solver, so it raises ``ValueError`` in Python
+while still aborting the executable through ``main()``'s handler.
+
 Scope
 =====
 
 Phase 9 exposed the process lifecycle and a whole run, Phase 10 added
-Grid, Phase 11 adds the fields. The narrow surface is deliberate: parity
+Grid, Phase 11 the fields, Phase 12 terrain and the profile. The narrow surface is deliberate: parity
 was established and put under test before there was a wider API to keep
 honest, and each new piece inherits a guarantee that is already green.
 

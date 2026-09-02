@@ -3,6 +3,7 @@
 
 #include "Grid.H"
 #include "Terrain.H"
+#include "Error.H"
 
 #include <AMReX_MultiFab.H>
 
@@ -66,6 +67,47 @@ public:
 
     enum class Mode { powerlaw, loglaw, userfile };
 
+    // -------------------------------------------------------------------
+    // The inputs, as data -- same shape and same reason as Grid::Params.
+    //
+    // The userfile table is part of the Params, so "read it from a file"
+    // and "here it is" fill one field rather than taking two routes
+    // through the interpolation. A table handed in from numpy therefore
+    // goes through exactly the 3D IDW the file path uses.
+    // -------------------------------------------------------------------
+    struct Params
+    {
+        std::string mode_name = "powerlaw";   // powerlaw|loglaw|userfile
+        amrex::Real u_ref = 0.0;
+        amrex::Real v_ref = 0.0;
+        amrex::Real z_ref = 10.0;
+        amrex::Real powerlaw_exponent = 0.14;
+        amrex::Real z0 = 0.1;
+        // Negative means "follow z0", which is the documented default.
+        amrex::Real z_agl_min = -1.0;
+        int         idw_n_neighbors = 6;
+        amrex::Real idw_exponent = 2.0;
+
+        std::string file;                     // userfile mode
+        // The table given directly: x,y,z and u,v,w, all the same
+        // length. When set, `file` must be empty.
+        std::vector<amrex::Real> xp, yp, zp, up, vp, wp;
+
+        bool given_z_ref = false;
+        bool given_exponent = false;
+        bool given_z0 = false;
+        bool given_z_agl_min = false;
+        bool given_k = false;
+        bool given_p = false;
+
+        static Params FromParmParse ();
+        void Validate () const;
+
+        bool has_table () const { return !xp.empty(); }
+    };
+
+    void Build (const Grid& grid, const Terrain& terrain,
+                const Params& params);
     void Build (const Grid& grid, const Terrain& terrain);
 
     // --- Read-only accessors --------------------------------------------
@@ -131,13 +173,19 @@ public:
                                   int k, amrex::Real exponent,
                                   amrex::Real& u, amrex::Real& v, amrex::Real& w);
 
+    const Params& params () const { return m_params; }
+    int n_points () const { return static_cast<int>(m_xp.size()); }
+
 private:
 
-    void ReadParameters ();
+    // Copies a validated Params into the individual members and derives
+    // the reference direction and the AGL floor from them.
+    void ApplyParams (const Params& params);
     void BuildVelocity (const Grid& grid, const Terrain& terrain);
     void ComputeBoundaryFlux (const Grid& grid, const Terrain& terrain);
 
     // --- inputs ---
+    Params      m_params;
     Mode        m_mode = Mode::powerlaw;
     std::string m_mode_name = "powerlaw";
     amrex::Real m_u_ref = 0.0;

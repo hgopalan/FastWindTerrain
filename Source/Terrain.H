@@ -2,6 +2,7 @@
 #define FWT_TERRAIN_H_
 
 #include "Grid.H"
+#include "Error.H"
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_iMultiFab.H>
@@ -49,6 +50,41 @@ public:
     static constexpr int kFluid = 0;
     static constexpr int kSolid = 1;
 
+    // -------------------------------------------------------------------
+    // The inputs, as data. Same shape as Grid::Params and for the same
+    // reason: ParmParse is process-global and sticky, so the Python path
+    // has to be able to describe a case without touching it.
+    //
+    // The scattered points are part of the Params rather than something
+    // Build fetches, so "read them from a file" and "here they are" are
+    // two ways of filling one field instead of two code paths through
+    // the interpolation. A point cloud handed in from numpy therefore
+    // goes through exactly the IDW the file path uses -- which is what
+    // makes the two bit-for-bit identical rather than merely similar.
+    // -------------------------------------------------------------------
+    struct Params
+    {
+        std::string file;                    // empty -> flat, or points
+        amrex::Real flat_elevation = 0.0;
+        int         idw_n_neighbors = 6;     // massconsistent_amr default
+        amrex::Real idw_exponent    = 2.0;
+
+        // Scattered x,y,z points given directly. When these are set,
+        // `file` must be empty: two sources for one thing is a mistake
+        // worth reporting rather than a precedence rule to remember.
+        std::vector<amrex::Real> xp, yp, zp;
+
+        bool given_flat = false;
+        bool given_k    = false;
+        bool given_p    = false;
+
+        static Params FromParmParse ();
+        void Validate () const;
+
+        bool has_points () const { return !xp.empty(); }
+    };
+
+    void Build (const Grid& grid, const Params& params);
     void Build (const Grid& grid);
 
     // --- Read-only accessors --------------------------------------------
@@ -63,9 +99,10 @@ public:
     // instead of gathering it back out of the MultiFab.
     const std::vector<amrex::Real>& column_heights () const { return m_h; }
 
-    bool has_file ()          const { return !m_file.empty(); }
-    const std::string& file() const { return m_file; }
+    bool has_file ()          const { return !m_params.file.empty(); }
+    const std::string& file() const { return m_params.file; }
     int  n_points ()          const { return static_cast<int>(m_zp.size()); }
+    const Params& params ()   const { return m_params; }
 
     // Diagnostics filled in by Build(), also written to the grid report.
     amrex::Real z_min ()      const { return m_z_min; }
@@ -96,15 +133,11 @@ public:
 
 private:
 
-    void ReadParameters ();
     void BuildTerrainHeight (const Grid& grid);   // fills m_z_terrain
     void BuildMask (const Grid& grid);            // fills m_mask
 
     // --- inputs ---
-    std::string m_file;
-    amrex::Real m_flat_elevation = 0.0;
-    int         m_idw_k          = 6;      // massconsistent_amr default
-    amrex::Real m_idw_exponent   = 2.0;
+    Params m_params;
 
     // --- scattered input points (empty for the flat case) ---
     std::vector<amrex::Real> m_xp, m_yp, m_zp;
