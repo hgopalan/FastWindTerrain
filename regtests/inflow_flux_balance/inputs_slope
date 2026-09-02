@@ -1,0 +1,33 @@
+# Regtest -- inflow.balance_flux, the boundary mass-flux redistribution.
+#
+# terrain_slope.csv rises 0 -> 100 m across x, so xlo is fully open while
+# xhi is blocked over its bottom 100 m. With the wind along +x the open
+# inflow and outflow areas differ and the raw profile carries an 11%
+# relative boundary flux imbalance -- a large one, which is the point:
+# the checker needs a case where the redistribution has real work to do.
+#
+# The checker runs this file three ways -- the key absent, set to 0, and
+# set to 1 -- and also with the wind reversed, which is the case where
+# the shift points INTO the domain. It overrides terrain.file with an
+# absolute path and sets the report and plot file names per case.
+
+grid.n_cell           = 40 40 66
+grid.prob_lo          = 0.0 0.0 0.0
+grid.prob_hi          = 1000.0 1000.0 961.2758234855
+grid.dz0              = 2.0
+grid.stretching_ratio = 1.05
+grid.max_grid_size    = 32
+
+terrain.file          = terrain_slope.csv
+
+inflow.mode           = loglaw
+inflow.u_ref          = 10.0
+inflow.v_ref          = 0.0
+inflow.z_ref          = 10.0
+inflow.z0             = 0.1
+
+# inflow.balance_flux is deliberately ABSENT here: one of the cases is
+# "the key is not given at all", which has to be the same run as "the key
+# is given as 0". The checker passes it on the command line.
+
+grid.output_format    = both

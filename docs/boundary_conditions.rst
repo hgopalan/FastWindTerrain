@@ -31,6 +31,18 @@ axis-aligned wind gives one of each, plus two tangential faces. **Zero
 inflow faces is a fatal error** -- there would be nowhere for the flow to
 enter.
 
+The flux used is the one the **raw** inflow profile carries
+(``Inflow::flux_prebalance``). That is the same integral of the same
+field unless :doc:`inflow`'s ``balance_flux`` redistributed the net
+boundary flux, and there the distinction matters: the redistribution
+spreads a uniform normal velocity over every lateral face, including the
+tangential ones the wind does not blow through, and classifying from
+that would rename them -- with the shift pointing inward, into three
+inflow faces, which is the case the assertion above refuses. Which face
+the wind enters through is a property of the wind, not of a correction
+applied to it, which is the same reason the projection never
+reclassifies anything either.
+
 The domain top and the ground are always ``noflow``. Terrain inside the
 domain is handled by the immersed-boundary mask rather than by a face
 condition.

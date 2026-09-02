@@ -51,6 +51,7 @@ const char* BoundaryConditions::LambdaName (LambdaBC b)
 // ---------------------------------------------------------------------------
 
 void BoundaryConditions::Classify (const Grid& grid, const Terrain& terrain,
+                                   const Inflow& inflow,
                                    const amrex::MultiFab& vel)
 {
     // Net outward flux through each lateral face, over its open cells
@@ -98,6 +99,25 @@ void BoundaryConditions::Classify (const Grid& grid, const Terrain& terrain,
 
         amrex::ParallelDescriptor::ReduceRealSum(flux);
         m_flux[face] = flux;
+    }
+
+    // With inflow.balance_flux on, the field just read already carries
+    // the redistributed shift in its boundary cells, and classifying
+    // from it would be wrong twice over: a tangential face, which the
+    // wind does not blow through at all, would pick up the shift and be
+    // called inflow or outflow, and if the shift points inward the run
+    // would then have three inflow faces and trip the assertion below.
+    //
+    // Which face the wind enters through is a property of the WIND, so
+    // the classification is made from the flux the raw profile carried
+    // -- the same principle that keeps the projection from reclassifying
+    // anything (see RefillGhosts). With balance_flux off the two are the
+    // same integral of the same field, and this branch is not taken so
+    // that they stay identical to the last bit.
+    if (inflow.flux_balanced()) {
+        for (int face = 0; face < 4; ++face) {
+            m_flux[face] = inflow.flux_prebalance().face_net[face];
+        }
     }
 
     // Tolerance relative to the largest face flux, so "no normal flow"
@@ -192,6 +212,9 @@ void BoundaryConditions::FillGhosts (const Grid& grid, const Terrain& terrain,
     const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
     const std::vector<amrex::Real>& h = terrain.column_heights();
 
+    // Zero unless inflow.balance_flux is on; see the inflow branch below.
+    const amrex::Real balance_shift = inflow.flux_balance_shift();
+
     // The ghost fill evaluates the profile and reads the terrain column
     // array, both host data, so it runs on the host. It touches only the
     // boundary layers, which is a vanishing fraction of the field.
@@ -264,6 +287,19 @@ void BoundaryConditions::FillGhosts (const Grid& grid, const Terrain& terrain,
                         a(i,j,k,0) = u;
                         a(i,j,k,1) = v;
                         a(i,j,k,2) = w;
+
+                        // inflow.balance_flux added a uniform outward
+                        // shift to the open cells of every lateral face,
+                        // this one included. The ghost has to carry it
+                        // too, or the prescribed profile and the
+                        // interior cell it faces would disagree by
+                        // exactly that shift and the redistribution
+                        // would show up as a divergence step across the
+                        // face. Outflow and tangential ghosts inherit it
+                        // already, being copies of the interior.
+                        if (balance_shift != 0.0) {
+                            a(i,j,k,d) += amrex::Real(side) * balance_shift;
+                        }
                         break;
                     }
 
@@ -294,7 +330,7 @@ void BoundaryConditions::FillGhosts (const Grid& grid, const Terrain& terrain,
 void BoundaryConditions::Build (const Grid& grid, const Terrain& terrain,
                                 const Inflow& inflow, amrex::MultiFab& vel)
 {
-    Classify(grid, terrain, vel);
+    Classify(grid, terrain, inflow, vel);
     FillGhosts(grid, terrain, inflow, vel);
 
     amrex::Print() << "Boundary conditions: ";

@@ -4,6 +4,7 @@
 #include "Grid.H"
 #include "Terrain.H"
 #include "Error.H"
+#include "Diagnostics.H"
 
 #include <AMReX_MultiFab.H>
 
@@ -40,26 +41,54 @@ namespace fwt {
 //
 // MASS BALANCE. Because terrain blocks part of a face, the open areas of
 // the inflow and outflow faces generally differ, so the raw profile has
-// a nonzero net boundary flux. That is NOT an error and NOT something
-// this class has to fix: the mass-consistent solve is itself the mass
-// correction, and it is well posed as long as at least one face carries
-// a Dirichlet condition on lambda (Phase 4 guarantees this by refusing
-// to prescribe velocity on all four lateral faces).
+// a nonzero net boundary flux. That is NOT an error: the mass-consistent
+// solve is itself the mass correction, and it is well posed as long as
+// at least one face carries a Dirichlet condition on lambda (Phase 4
+// guarantees this by refusing to prescribe velocity on all four lateral
+// faces). The imbalance is always computed and REPORTED here.
 //
-// The imbalance is therefore computed and REPORTED here, and nothing is
-// rescaled. Two reasons no correction knob lives at this phase:
+// inflow.balance_flux (DEFAULT OFF) additionally REDISTRIBUTES it. The
+// net flux is spread as a single uniform outward-normal velocity
 //
-//   - Scaling the whole field cannot fix it. Multiplying u0 by s scales
-//     inflow and outflow alike, so the net scales by s and only reaches
-//     zero if it was already zero.
-//   - Any correction that COULD work adjusts the outflow faces alone,
-//     and this phase does not yet know which faces those are. Classifying
-//     faces against the wind direction is Phase 4's job, so an outflow
-//     adjustment belongs there, with the classification in hand.
+//   shift = -flux_net / (total open area of xlo, xhi, ylo and yhi)
 //
-// The magnitude is still worth watching: whatever imbalance remains
-// leaves through the lambda = 0 faces, so a large one means a large
-// correction concentrated there.
+// over every open cell of the four lateral faces, so that in and out
+// match to round-off before the Poisson solve ever runs. The top is left
+// alone: it carries w = 0 by boundary condition, and pushing flow
+// through it would contradict that. The ground is closed.
+//
+// Note what this is and is not. It does NOT make the answer more
+// accurate -- on the terrain corpus the projection already drives the
+// post-solve imbalance to between 2e-4 and 3.5e-3 on its own, and as a
+// bulk divergence the initial imbalance is three orders below the local
+// divergence the solve is actually working against. Measured on two
+// corpus windows it moves the projection's divergence sequence by less
+// than a part in a thousand, and leaves the post-solve flux imbalance
+// slightly WORSE. What it buys is one thing only: a starting field that
+// is exactly conservative -- standard practice in urban CFD, and one
+// fewer diagnostic that warns on most real terrain windows and is
+// expected to.
+//
+// A whole-field rescale would not do it: multiplying u0 by s scales
+// inflow and outflow alike, so the net scales by s and only reaches zero
+// if it was already zero. The correction has to be additive and it has
+// to live on the boundary.
+//
+// TWO CONSEQUENCES, both handled rather than hoped about:
+//
+//   - The shift changes the normal velocity in the boundary cell layer,
+//     which is what BoundaryConditions classifies faces from. A face
+//     carrying no through-flow (tangential, for an axis-aligned wind)
+//     would pick up the shift and be reclassified -- and if the shift
+//     points inward, a run with three inflow faces trips Phase 4's
+//     assertion. So the classification is made from flux_prebalance(),
+//     the flux the incoming wind carries: which face is an inflow face
+//     is a property of the wind, not of a correction applied to it --
+//     the same reason the projection never reclassifies either.
+//   - On an inflow face the ghost cells are prescribed from the profile,
+//     so BoundaryConditions adds the same shift there, keeping the ghost
+//     and the interior cell it faces on the same field. On outflow and
+//     tangential faces the zero-gradient ghosts inherit it already.
 // -----------------------------------------------------------------------
 class Inflow
 {
@@ -87,6 +116,10 @@ public:
         amrex::Real z_agl_min = -1.0;
         int         idw_n_neighbors = 6;
         amrex::Real idw_exponent = 2.0;
+        // Redistribute the net boundary flux over the open area of the
+        // four lateral faces. Off by default: with it off the field is
+        // exactly what it has always been.
+        int         balance_flux = 0;
 
         std::string file;                     // userfile mode
         // The table given directly: x,y,z and u,v,w, all the same
@@ -120,12 +153,25 @@ public:
     Mode mode ()                     const { return m_mode; }
     const std::string& mode_name ()  const { return m_mode_name; }
 
-    // Boundary flux diagnostics [m^3/s], over open (fluid) faces only.
-    amrex::Real flux_in ()           const { return m_flux_in; }
-    amrex::Real flux_out ()          const { return m_flux_out; }
-    amrex::Real flux_net ()          const { return m_flux_net; }
+    // Boundary flux diagnostics [m^3/s], over open (fluid) faces only,
+    // of the field this object holds -- so AFTER the redistribution when
+    // inflow.balance_flux = 1.
+    amrex::Real flux_in ()           const { return m_flux.in; }
+    amrex::Real flux_out ()          const { return m_flux.out; }
+    amrex::Real flux_net ()          const { return m_flux.net; }
     // |net| / max(|in|, |out|); zero when nothing flows at all.
-    amrex::Real flux_imbalance ()    const { return m_flux_imbalance; }
+    amrex::Real flux_imbalance ()    const { return m_flux.imbalance; }
+
+    // The same balance for the RAW profile, before any redistribution.
+    // Identical to the above when inflow.balance_flux is off. This is
+    // what the boundary conditions classify the faces from, so that the
+    // redistribution cannot turn a tangential face into an inflow one.
+    const FluxBalance& flux_prebalance () const { return m_flux_raw; }
+
+    bool flux_balanced () const { return m_balance_flux != 0; }
+    // Outward-normal velocity [m/s] added to every open cell of the four
+    // lateral faces. Zero unless inflow.balance_flux is on.
+    amrex::Real flux_balance_shift () const { return m_balance_shift; }
 
     void AppendReport (const std::string& filename) const;
 
@@ -183,6 +229,9 @@ private:
     void ApplyParams (const Params& params);
     void BuildVelocity (const Grid& grid, const Terrain& terrain);
     void ComputeBoundaryFlux (const Grid& grid, const Terrain& terrain);
+    // Spreads m_flux.net over the open area of xlo/xhi/ylo/yhi. Sets
+    // m_balance_shift; the caller recomputes the flux afterwards.
+    void BalanceBoundaryFlux (const Grid& grid, const Terrain& terrain);
 
     // --- inputs ---
     Params      m_params;
@@ -197,6 +246,7 @@ private:
     int         m_idw_k = 6;
     amrex::Real m_idw_exponent = 2.0;
     amrex::Real m_z_agl_min = -1.0;      // < 0 means "default to z0"
+    int         m_balance_flux = 0;
 
     // --- derived ---
     amrex::Real m_speed_ref = 0.0;       // hypot(u_ref, v_ref)
@@ -208,10 +258,12 @@ private:
 
     amrex::MultiFab m_vel;
 
-    amrex::Real m_flux_in = 0.0;
-    amrex::Real m_flux_out = 0.0;
-    amrex::Real m_flux_net = 0.0;
-    amrex::Real m_flux_imbalance = 0.0;
+    // The balance of the field as it stands, and of the raw profile
+    // before any redistribution. The two are the same object when
+    // balancing is off.
+    FluxBalance m_flux;
+    FluxBalance m_flux_raw;
+    amrex::Real m_balance_shift = 0.0;
 };
 
 } // namespace fwt

@@ -501,7 +501,7 @@ fwt::Inflow::Params InflowParamsFromDict (const py::dict& d)
     RejectUnknownKeys(d, {"mode", "u_ref", "v_ref", "z_ref",
                           "powerlaw_exponent", "z0", "z_agl_min",
                           "idw_n_neighbors", "idw_exponent", "file",
-                          "points", "velocity"}, "inflow");
+                          "points", "velocity", "balance_flux"}, "inflow");
 
     fwt::Inflow::Params p;
     if (d.contains("mode")) {
@@ -536,6 +536,9 @@ fwt::Inflow::Params InflowParamsFromDict (const py::dict& d)
     }
     if (d.contains("file")) {
         p.file = py::cast<std::string>(py::str(d["file"]));
+    }
+    if (d.contains("balance_flux")) {
+        p.balance_flux = GetScalar<int>(d, "balance_flux", "inflow");
     }
 
     const bool has_points = d.contains("points");
@@ -1047,6 +1050,17 @@ uses, so the two agree bit for bit.
         .def_property_readonly("flux_out", &fwt::Inflow::flux_out)
         .def_property_readonly("flux_net", &fwt::Inflow::flux_net)
         .def_property_readonly("flux_imbalance", &fwt::Inflow::flux_imbalance)
+        .def_property_readonly("flux_balanced", &fwt::Inflow::flux_balanced,
+             "True when balance_flux redistributed the net boundary flux;\n"
+             "the flux_* above are then the balanced ones.")
+        .def_property_readonly("flux_balance_shift",
+                               &fwt::Inflow::flux_balance_shift,
+             "Outward-normal velocity [m/s] added to every open cell of\n"
+             "xlo/xhi/ylo/yhi. Zero unless balance_flux is on.")
+        .def_property_readonly("flux_imbalance_raw", [] (const fwt::Inflow& i) {
+                 return i.flux_prebalance().imbalance;
+             }, "The relative imbalance of the raw profile, before any\n"
+                "redistribution. Equal to flux_imbalance when off.")
         .def_property_readonly("n_points", &fwt::Inflow::n_points)
         .def("profile_speed", &fwt::Inflow::ProfileSpeed, py::arg("z_agl"),
              "Speed of the 1D law at a height above ground [m/s].\n"

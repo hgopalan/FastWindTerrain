@@ -35,6 +35,14 @@ namespace fwt {
 // inflow faces is an error: there would be nowhere for the wind to
 // enter.
 //
+// The flux classified from is the one the RAW inflow profile carries
+// (Inflow::flux_prebalance). It differs from the field's own only when
+// inflow.balance_flux redistributed the net boundary flux, and there the
+// distinction is what keeps a tangential face -- which the wind does not
+// blow through -- from being reclassified by a correction spread evenly
+// over every lateral face. Which face the wind enters through is a
+// property of the wind, not of a correction applied to it.
+//
 // TANGENTIAL FACES are treated as OPEN (zero-gradient), not sealed.
 // Terrain deflects flow sideways, and that is exactly what a
 // mass-consistent adjustment over complex terrain has to be free to do;
@@ -114,7 +122,7 @@ public:
 private:
 
     void Classify (const Grid& grid, const Terrain& terrain,
-                   const amrex::MultiFab& vel);
+                   const Inflow& inflow, const amrex::MultiFab& vel);
     void FillGhosts (const Grid& grid, const Terrain& terrain,
                      const Inflow& inflow, amrex::MultiFab& vel);
 

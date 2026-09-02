@@ -144,6 +144,17 @@ inflow.z_agl_min = 0.1
 inflow.idw_n_neighbors = 6
 inflow.idw_exponent    = 2.0
 
+# Redistribute the net boundary mass flux, so the initial field is
+# exactly conservative before the Poisson solve runs. 0 (default) reports
+# the imbalance and leaves the field alone; 1 spreads flux_net as one
+# uniform outward-normal velocity over the open cells of xlo, xhi, ylo
+# and yhi -- not the top, which carries w = 0 by boundary condition.
+#
+# This is a cleaner starting point, not an accuracy fix: the projection
+# already drives the imbalance to ~1e-3 relative on real terrain. Off by
+# default so existing results stay bit for bit identical.
+inflow.balance_flux = 0
+
 
 # ---------------------------------------------------------------------
 # bc.  --  boundary conditions
