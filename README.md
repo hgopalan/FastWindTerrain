@@ -60,6 +60,34 @@ executable, so the entire regtest suite runs through Python unchanged:
 python3 run_regtests.py build/fastwindterrain-py
 ```
 
+Components can also be built directly from Python, with no inputs file:
+
+```python
+import fastwindterrain as fwt
+
+with fwt.session():
+    g = fwt.Grid({"n_cell": (24, 24, 40),
+                  "prob_lo": (0.0, 0.0, 0.0),
+                  "prob_hi": (1000.0, 1000.0, 483.19909696997223),
+                  "dz0": 4.0, "stretching_ratio": 1.05})
+    print(g.z_cc)          # numpy, (nz,)
+```
+
+That path never touches ParmParse, which matters when driving many cases
+in one process: ParmParse persists for the life of an AMReX
+initialization, so a case that omits a parameter would otherwise inherit
+whatever an earlier case set. An unknown key raises rather than being
+ignored, a bad input raises instead of aborting the interpreter, and a
+domain-height overshoot is a `UserWarning`.
+
+numpy is a runtime requirement of the bindings. On a system Python that
+refuses installs (PEP 668), point CMake at a virtual environment:
+
+```
+python3 -m venv build/venv && build/venv/bin/pip install numpy
+cmake -S . -B build -DFWT_PYTHON=ON -DPython3_EXECUTABLE=$PWD/build/venv/bin/python
+```
+
 See [Python bindings](docs/python.rst) for the API and what parity does
 and does not cover.
 

@@ -7,6 +7,8 @@
 #include <AMReX_Vector.H>
 #include <AMReX_ParmParse.H>
 
+#include "Error.H"
+
 namespace fwt {
 
 // -----------------------------------------------------------------------
@@ -38,6 +40,47 @@ class Grid
 {
 public:
 
+    // -------------------------------------------------------------------
+    // The inputs, as data.
+    //
+    // ParmParse is one SOURCE of a Params, not the mechanism. That
+    // distinction is the whole point: ParmParse is process-global and
+    // persists for the life of an AMReX initialization, so a second case
+    // in the same process inherits every parameter the first one set and
+    // the second did not override. For a command-line run that never
+    // comes up -- one process, one case. For a Python loop generating a
+    // few hundred cases it is silent corruption spread across a dataset.
+    //
+    // So the Python path builds a Params directly and never touches the
+    // global. Defaults live here, in one place, and apply identically to
+    // both paths.
+    // -------------------------------------------------------------------
+    struct Params
+    {
+        amrex::Vector<int>         n_cell   {{0, 0, 0}};
+        amrex::Vector<amrex::Real> prob_lo  {{0., 0., 0.}};
+        amrex::Vector<amrex::Real> prob_hi  {{0., 0., 0.}};
+        amrex::Real dz0             = 0.0;    // required, > 0
+        amrex::Real stretching_ratio = 1.0;   // 1.0 is a uniform grid
+        int         max_grid_size    = 32;
+
+        // Which of the optional ones were given, purely so the debug
+        // echo can mark the rest as defaults.
+        bool given_stretching_ratio = false;
+        bool given_max_grid_size    = false;
+
+        // Reads grid.* out of ParmParse. Throws InputError on a missing
+        // required input or an out-of-range value.
+        static Params FromParmParse ();
+
+        // Throws InputError if anything is out of range. Called by
+        // Build, so neither path can skip it.
+        void Validate () const;
+    };
+
+    // Builds from an explicit Params. This is the real entry point;
+    // Build() is the convenience that reads ParmParse first.
+    void Build (const Params& params);
     void Build ();
 
     // Read-only accessors -------------------------------------------------
@@ -45,9 +88,9 @@ public:
     const amrex::BoxArray&            ba ()     const { return m_ba; }
     const amrex::DistributionMapping& dm ()     const { return m_dm; }
 
-    int nx () const { return m_n_cell[0]; }
-    int ny () const { return m_n_cell[1]; }
-    int nz () const { return m_n_cell[2]; }
+    int nx () const { return m_params.n_cell[0]; }
+    int ny () const { return m_params.n_cell[1]; }
+    int nz () const { return m_params.n_cell[2]; }
 
     // z_face has nz+1 entries (cell faces, k=0..nz), z_cc has nz entries
     // (cell centers). Both are measured from prob_lo_z. x,y are uniform
@@ -55,9 +98,17 @@ public:
     const amrex::Vector<amrex::Real>& z_face () const { return m_z_face; }
     const amrex::Vector<amrex::Real>& z_cc   () const { return m_z_cc; }
 
-    int max_grid_size ()             const { return m_max_grid_size; }
-    amrex::Real dz0 ()               const { return m_dz0; }
-    amrex::Real stretching_ratio ()  const { return m_stretch_ratio; }
+    int max_grid_size ()             const { return m_params.max_grid_size; }
+    amrex::Real dz0 ()               const { return m_params.dz0; }
+    amrex::Real stretching_ratio ()  const
+        { return m_params.stretching_ratio; }
+
+    // prob_lo/prob_hi as resolved: prob_hi[2] reflects any overshoot
+    // adjustment, so it is the domain the grid actually spans.
+    const amrex::Vector<amrex::Real>& prob_lo () const
+        { return m_params.prob_lo; }
+    const amrex::Vector<amrex::Real>& prob_hi () const
+        { return m_params.prob_hi; }
 
     // Output (selected by grid.output_format = report | fields | both;
     // see Grid::OutputFormat / main.cpp):
@@ -80,20 +131,22 @@ public:
     static bool WantsAscii (OutputFormat f) { return f != OutputFormat::plt; }
     static bool WantsPlt   (OutputFormat f) { return f != OutputFormat::ascii; }
 
+    // The resolved inputs this grid was built from, after any
+    // overshoot adjustment to prob_hi.
+    const Params& params () const { return m_params; }
+
 private:
 
-    void ReadParameters ();
     void BuildVerticalStretching ();   // fills m_z_face, m_z_cc; may
                                         // adjust m_prob_hi[2]
     void BuildAMReXGeometry ();        // constructs m_ba, m_dm, m_geom
 
     // --- inputs ---
-    amrex::Vector<int>  m_n_cell   {{0,0,0}};
-    amrex::Vector<amrex::Real> m_prob_lo {{0.,0.,0.}};
-    amrex::Vector<amrex::Real> m_prob_hi {{0.,0.,0.}};
-    amrex::Real m_dz0            = 0.0;
-    amrex::Real m_stretch_ratio  = 1.0;
-    int         m_max_grid_size  = 32;
+    // Held as a Params so that whichever path filled it, the build sees
+    // exactly one thing. The individual members below are references
+    // into it in spirit; they are kept as accessors rather than copies
+    // so there is one place a value can live.
+    Params m_params;
 
     // --- derived ---
     amrex::Vector<amrex::Real> m_z_face;

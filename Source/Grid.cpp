@@ -1,5 +1,6 @@
 #include "Grid.H"
 #include "Debug.H"
+#include "Error.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <cmath>
+#include <sstream>
 #include <limits>
 
 namespace fwt {
@@ -17,66 +19,81 @@ namespace {
     constexpr amrex::Real kHeightMatchRelTol = 1.0e-8;
 }
 
-void Grid::ReadParameters ()
+Grid::Params Grid::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("grid");
 
-    pp.getarr("n_cell", m_n_cell);
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_n_cell.size() == 3,
-        "grid.n_cell must have 3 entries (nx ny nz)");
+    if (!pp.queryarr("n_cell", p.n_cell)) {
+        throw InputError("grid.n_cell is required (nx ny nz)");
+    }
+    if (!pp.queryarr("prob_lo", p.prob_lo) ||
+        !pp.queryarr("prob_hi", p.prob_hi)) {
+        throw InputError("grid.prob_lo and grid.prob_hi are both required");
+    }
+    if (!pp.query("dz0", p.dz0)) {
+        throw InputError("grid.dz0 is required");
+    }
 
-    pp.getarr("prob_lo", m_prob_lo);
-    pp.getarr("prob_hi", m_prob_hi);
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_prob_lo.size() == 3 && m_prob_hi.size() == 3,
-        "grid.prob_lo / grid.prob_hi must each have 3 entries");
+    // Default 1.0 reproduces a uniform z grid exactly.
+    p.given_stretching_ratio = pp.query("stretching_ratio",
+                                        p.stretching_ratio);
+    p.given_max_grid_size = pp.query("max_grid_size", p.max_grid_size);
 
-    pp.get("dz0", m_dz0);
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_dz0 > 0.0, "grid.dz0 must be > 0");
+    p.Validate();
+    return p;
+}
 
-    // Default 1.0 reproduces a uniform z grid exactly (backward compatible).
-    const bool got_ratio = pp.query("stretching_ratio", m_stretch_ratio);
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_stretch_ratio > 0.0,
-        "grid.stretching_ratio must be > 0");
-
-    const bool got_mgs = pp.query("max_grid_size", m_max_grid_size);
-
-    // Echo the resolved inputs, marking the ones that fell back to a
-    // default -- an unspecified default is exactly what tends to be
-    // missed when a run does not do what the input file suggests.
-    FWT_DEBUG_SECTION("Grid inputs (grid.*)");
-    FWT_DEBUG("n_cell           = " << m_n_cell[0] << " " << m_n_cell[1]
-                                     << " " << m_n_cell[2]);
-    FWT_DEBUG("prob_lo          = " << m_prob_lo[0] << " " << m_prob_lo[1]
-                                     << " " << m_prob_lo[2] << " m");
-    FWT_DEBUG("prob_hi          = " << m_prob_hi[0] << " " << m_prob_hi[1]
-                                     << " " << m_prob_hi[2] << " m  (as requested)");
-    FWT_DEBUG("dz0              = " << m_dz0 << " m");
-    FWT_DEBUG("stretching_ratio = " << m_stretch_ratio
-                                     << (got_ratio ? "" : "   [default]"));
-    FWT_DEBUG("max_grid_size    = " << m_max_grid_size
-                                     << (got_mgs ? "" : "   [default]"));
+// Every range check in one place, so the ParmParse path and the Python
+// path cannot end up enforcing different rules. Throws rather than
+// asserts: these are things a caller got wrong, not things this code
+// got wrong.
+void Grid::Params::Validate () const
+{
+    if (n_cell.size() != 3) {
+        throw InputError("grid.n_cell must have 3 entries (nx ny nz)");
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (n_cell[d] <= 0) {
+            throw InputError("grid.n_cell entries must all be > 0");
+        }
+    }
+    if (prob_lo.size() != 3 || prob_hi.size() != 3) {
+        throw InputError(
+            "grid.prob_lo / grid.prob_hi must each have 3 entries");
+    }
+    if (dz0 <= 0.0) { throw InputError("grid.dz0 must be > 0"); }
+    if (stretching_ratio <= 0.0) {
+        throw InputError("grid.stretching_ratio must be > 0");
+    }
+    if (max_grid_size <= 0) {
+        throw InputError("grid.max_grid_size must be > 0");
+    }
+    if (prob_hi[2] <= prob_lo[2]) {
+        throw InputError(
+            "grid.prob_hi[2] must be greater than grid.prob_lo[2]");
+    }
 }
 
 void Grid::BuildVerticalStretching ()
 {
-    const int nz = m_n_cell[2];
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nz > 0, "grid.n_cell[2] must be > 0");
+    // n_cell, dz0, the ratio and prob_hi[2] > prob_lo[2] were all
+    // checked by Params::Validate before this ran.
+    const int nz = m_params.n_cell[2];
 
-    const amrex::Real r = m_stretch_ratio;
+    const amrex::Real r = m_params.stretching_ratio;
 
     // dz(k) = dz0 * r^k,  k = 0 .. nz-1  (k=0 is the surface-adjacent cell)
     amrex::Vector<amrex::Real> dz(nz);
     amrex::Real H_computed = 0.0;
     amrex::Real rk = 1.0;
     for (int k = 0; k < nz; ++k) {
-        dz[k] = m_dz0 * rk;
+        dz[k] = m_params.dz0 * rk;
         H_computed += dz[k];
         rk *= r;
     }
 
-    const amrex::Real H_requested = m_prob_hi[2] - m_prob_lo[2];
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(H_requested > 0.0,
-        "grid.prob_hi[2] must be greater than grid.prob_lo[2]");
+    const amrex::Real H_requested = m_params.prob_hi[2] - m_params.prob_lo[2];
 
     const amrex::Real rel_diff = (H_computed - H_requested) / H_requested;
 
@@ -99,30 +116,49 @@ void Grid::BuildVerticalStretching ()
     if (rel_diff > kHeightMatchRelTol) {
         // Overshoot: non-fatal. Warn and adjust the domain top so the
         // Geometry and the stretched grid agree exactly.
-        amrex::Print() << "WARNING [Grid]: stretched grid overshoots the "
-            "requested domain height.\n"
+        // Through the warning handler rather than straight to stdout:
+        // the default handler prints exactly this, so the executable is
+        // unchanged, while Python turns it into a warnings.warn a
+        // notebook can filter or promote to an error.
+        std::ostringstream msg;
+        msg << std::setprecision(
+                   std::numeric_limits<amrex::Real>::max_digits10 - 1);
+        msg << "WARNING [Grid]: stretched grid overshoots the "
+               "requested domain height.\n"
             << "  requested H (grid.prob_hi[2]-grid.prob_lo[2]) = "
             << H_requested << " m\n"
             << "  computed H  (sum of dz0*r^k, k=0.." << nz-1 << ")   = "
             << H_computed  << " m\n"
             << "  --> overriding grid.prob_hi[2] to "
-            << (m_prob_lo[2] + H_computed)
+            << (m_params.prob_lo[2] + H_computed)
             << " m so the grid and domain top agree exactly.\n";
-        m_prob_hi[2] = m_prob_lo[2] + H_computed;
+        Warn(msg.str());
+        m_params.prob_hi[2] = m_params.prob_lo[2] + H_computed;
 
     } else if (rel_diff < -kHeightMatchRelTol) {
         // Undershoot: fatal. The grid does not reach the requested domain
         // top; proceeding would silently corrupt the top BC / mass balance.
-        amrex::Print() << "ERROR [Grid]: stretched grid does not reach the "
-            "requested domain height.\n"
+        // Thrown rather than aborted. main() catches it, prints this
+        // same text and aborts, so the executable's behaviour -- the
+        // diagnostic, the nonzero exit, the absence of a report -- is
+        // what it always was. Python gets a catchable exception instead
+        // of a dead interpreter.
+        //
+        // Every rank evaluates the same inputs and so throws together;
+        // an input error cannot leave one rank in the handler and the
+        // rest waiting.
+        std::ostringstream msg;
+        msg << std::setprecision(
+                   std::numeric_limits<amrex::Real>::max_digits10 - 1);
+        msg << "ERROR [Grid]: stretched grid does not reach the "
+               "requested domain height.\n"
             << "  requested H (grid.prob_hi[2]-grid.prob_lo[2]) = "
             << H_requested << " m\n"
             << "  computed H  (sum of dz0*r^k, k=0.." << nz-1 << ")   = "
             << H_computed  << " m\n"
             << "  Increase grid.n_cell[2], grid.dz0, or "
                "grid.stretching_ratio.\n";
-        amrex::Abort("Grid::BuildVerticalStretching: undershoot of "
-                      "requested domain height (fatal, see message above).");
+        throw InputError(msg.str());
     }
     // else: match within tolerance, proceed with no adjustment.
 
@@ -130,7 +166,7 @@ void Grid::BuildVerticalStretching ()
     m_z_face.resize(nz + 1);
     m_z_cc.resize(nz);
 
-    m_z_face[0] = m_prob_lo[2];
+    m_z_face[0] = m_params.prob_lo[2];
     for (int k = 0; k < nz; ++k) {
         m_z_face[k+1] = m_z_face[k] + dz[k];
         m_z_cc[k]     = 0.5 * (m_z_face[k] + m_z_face[k+1]);
@@ -157,7 +193,7 @@ void Grid::BuildVerticalStretching ()
 void Grid::BuildAMReXGeometry ()
 {
     amrex::IntVect dom_lo(0, 0, 0);
-    amrex::IntVect dom_hi(m_n_cell[0]-1, m_n_cell[1]-1, m_n_cell[2]-1);
+    amrex::IntVect dom_hi(m_params.n_cell[0]-1, m_params.n_cell[1]-1, m_params.n_cell[2]-1);
     amrex::Box domain(dom_lo, dom_hi);
 
     m_ba.define(domain);
@@ -173,7 +209,7 @@ void Grid::BuildAMReXGeometry ()
     // The cost is nothing in practice. Atmospheric domains have
     // nx, ny >> nz, so the horizontal split is what carries the
     // parallelism anyway.
-    m_ba.maxSize(amrex::IntVect(m_max_grid_size, m_max_grid_size,
+    m_ba.maxSize(amrex::IntVect(m_params.max_grid_size, m_params.max_grid_size,
                                 domain.length(2)));
 
     // Hold the invariant explicitly rather than trusting maxSize: a
@@ -197,8 +233,8 @@ void Grid::BuildAMReXGeometry ()
     // and must be used instead of geom().CellSize(2) anywhere a physical
     // z spacing is needed (Phase 5 Poisson stencil, Phase 7 vertical
     // integrals, Phase 8 output).
-    amrex::RealBox real_box({AMREX_D_DECL(m_prob_lo[0], m_prob_lo[1], m_prob_lo[2])},
-                             {AMREX_D_DECL(m_prob_hi[0], m_prob_hi[1], m_prob_hi[2])});
+    amrex::RealBox real_box({AMREX_D_DECL(m_params.prob_lo[0], m_params.prob_lo[1], m_params.prob_lo[2])},
+                             {AMREX_D_DECL(m_params.prob_hi[0], m_params.prob_hi[1], m_params.prob_hi[2])});
 
     amrex::Array<int,3> is_periodic {0, 0, 0}; // all physical BCs (Phase 4)
 
@@ -207,10 +243,10 @@ void Grid::BuildAMReXGeometry ()
     if (Debug::Enabled()) {
         FWT_DEBUG_SECTION("AMReX geometry / decomposition");
         FWT_DEBUG("index domain     = " << domain);
-        FWT_DEBUG("prob_lo          = " << m_prob_lo[0] << " " << m_prob_lo[1]
-                                         << " " << m_prob_lo[2] << " m");
-        FWT_DEBUG("prob_hi          = " << m_prob_hi[0] << " " << m_prob_hi[1]
-                                         << " " << m_prob_hi[2]
+        FWT_DEBUG("prob_lo          = " << m_params.prob_lo[0] << " " << m_params.prob_lo[1]
+                                         << " " << m_params.prob_lo[2] << " m");
+        FWT_DEBUG("prob_hi          = " << m_params.prob_hi[0] << " " << m_params.prob_hi[1]
+                                         << " " << m_params.prob_hi[2]
                                          << " m  (post height check)");
         FWT_DEBUG("dx, dy           = " << m_geom.CellSize(0) << ", "
                                          << m_geom.CellSize(1) << " m");
@@ -221,7 +257,7 @@ void Grid::BuildAMReXGeometry ()
                                          << is_periodic[1] << " "
                                          << is_periodic[2]
                                          << "   (all physical BCs)");
-        FWT_DEBUG("max_grid_size    = " << m_max_grid_size);
+        FWT_DEBUG("max_grid_size    = " << m_params.max_grid_size);
         FWT_DEBUG("n_boxes          = " << m_ba.size());
         FWT_DEBUG("n_ranks          = "
                   << amrex::ParallelDescriptor::NProcs());
@@ -252,11 +288,36 @@ void Grid::BuildAMReXGeometry ()
     }
 }
 
+void Grid::Build (const Params& params)
+{
+    m_params = params;
+    m_params.Validate();
+
+    // Echo the resolved inputs, marking the ones that fell back to a
+    // default -- an unspecified default is exactly what tends to be
+    // missed when a run does not do what the input file suggests.
+    FWT_DEBUG_SECTION("Grid inputs (grid.*)");
+    FWT_DEBUG("n_cell           = " << m_params.n_cell[0] << " "
+              << m_params.n_cell[1] << " " << m_params.n_cell[2]);
+    FWT_DEBUG("prob_lo          = " << m_params.prob_lo[0] << " "
+              << m_params.prob_lo[1] << " " << m_params.prob_lo[2] << " m");
+    FWT_DEBUG("prob_hi          = " << m_params.prob_hi[0] << " "
+              << m_params.prob_hi[1] << " " << m_params.prob_hi[2]
+              << " m  (as requested)");
+    FWT_DEBUG("dz0              = " << m_params.dz0 << " m");
+    FWT_DEBUG("stretching_ratio = " << m_params.stretching_ratio
+              << (m_params.given_stretching_ratio ? "" : "   [default]"));
+    FWT_DEBUG("max_grid_size    = " << m_params.max_grid_size
+              << (m_params.given_max_grid_size ? "" : "   [default]"));
+
+    BuildVerticalStretching();  // throws on undershoot, or adjusts
+                                // prob_hi[2] on overshoot
+    BuildAMReXGeometry();       // uses the possibly-adjusted prob_hi[2]
+}
+
 void Grid::Build ()
 {
-    ReadParameters();
-    BuildVerticalStretching();  // may abort (undershoot) or adjust prob_hi[2] (overshoot)
-    BuildAMReXGeometry();       // uses the possibly-adjusted prob_hi[2]
+    Build(Params::FromParmParse());
 }
 
 void Grid::WriteReport (const std::string& filename) const
@@ -268,11 +329,11 @@ void Grid::WriteReport (const std::string& filename) const
         // heights at 1e-6 m, which default 6-digit output cannot satisfy.
         os << std::setprecision(std::numeric_limits<amrex::Real>::max_digits10);
         os << "# FastWindTerrain Phase 1 grid report\n";
-        os << "n_cell " << m_n_cell[0] << " " << m_n_cell[1] << " " << m_n_cell[2] << "\n";
-        os << "prob_lo " << m_prob_lo[0] << " " << m_prob_lo[1] << " " << m_prob_lo[2] << "\n";
-        os << "prob_hi " << m_prob_hi[0] << " " << m_prob_hi[1] << " " << m_prob_hi[2] << "\n";
-        os << "dz0 " << m_dz0 << "\n";
-        os << "stretching_ratio " << m_stretch_ratio << "\n";
+        os << "n_cell " << m_params.n_cell[0] << " " << m_params.n_cell[1] << " " << m_params.n_cell[2] << "\n";
+        os << "prob_lo " << m_params.prob_lo[0] << " " << m_params.prob_lo[1] << " " << m_params.prob_lo[2] << "\n";
+        os << "prob_hi " << m_params.prob_hi[0] << " " << m_params.prob_hi[1] << " " << m_params.prob_hi[2] << "\n";
+        os << "dz0 " << m_params.dz0 << "\n";
+        os << "stretching_ratio " << m_params.stretching_ratio << "\n";
         os << "dx " << m_geom.CellSize(0) << "\n";
         os << "dy " << m_geom.CellSize(1) << "\n";
         os << "n_boxes " << m_ba.size() << "\n";
@@ -300,10 +361,11 @@ Grid::OutputFormat Grid::ParseOutputFormat (const std::string& s)
     if (s == "fields" || s == "plt")   { return OutputFormat::plt;   }
     if (s == "both")                   { return OutputFormat::both;  }
     // Not a debug-only line: an unrecognized format is always fatal.
-    amrex::Abort("grid.output_format = '" + s +
-                 "' is not recognized (expected report, fields, or both; "
-                 "ascii and plt are accepted as aliases for the first two)");
-    return OutputFormat::ascii;   // unreachable; silences the compiler
+    // Thrown for the same reason the height check throws -- it is a bad
+    // input, and Python should be able to catch it.
+    throw InputError("grid.output_format = '" + s +
+                     "' is not recognized (expected report, fields, or both; "
+                     "ascii and plt are accepted as aliases for the first two)");
 }
 
 } // namespace fwt
