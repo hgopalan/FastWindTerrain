@@ -172,10 +172,35 @@ the vendored reader's, unchanged.
 Cost
 ====
 
-A case is one download of a few seconds and one solve. The solve is
-dominated by the terrain interpolation, not the Poisson solve:
-``InterpolateIDW`` is O(columns × points) with no spatial index, so
-10 000 columns against 40 000 SRTM points is about 50 s on a laptop
-against 5 MLMG iterations that take no time at all.
-``prepare.py --subsample 2`` cuts the point count fourfold; SRTM's 30 m
-posts are oversampled under a 50 m grid anyway.
+A case is one download of a few seconds and one solve. Measured on the
+Creek Fire case (100 × 100 × 60, 71 % solid, 40 000 terrain points):
+
+.. list-table::
+   :widths: 40 20 40
+   :header-rows: 1
+
+   * - Stage
+     - Time
+     - Note
+   * - ``setup`` (terrain IDW included)
+     - 0.8 s
+     - the interpolation is 2 % of a sample, not the cost
+   * - ``solve``, 4 projection passes
+     - 52 s
+     - **this is the whole cost**, and it is linear in the pass count
+   * - ``diagnose`` + ``fields``
+     - 0.04 s
+     - negligible
+
+So the lever for a large sweep is ``poisson.n_projections``, not terrain
+subsampling: 1 pass is 12.8 s, 2 is 25.8 s, 4 is 52.2 s.
+
+Be aware of what that trades. Over this terrain the extra passes barely
+move the divergence -- ``max|div|`` goes 0.1153 → 0.1139 → 0.1018 from
+one pass to four -- but they move the *field* a great deal, by 71 % of
+``max|u|`` between one pass and four. The projection is approximate and,
+on steep partly-blocked terrain, has not converged in the field even
+where the residual norm suggests little is left to do. **Fix
+``n_projections`` across a dataset and treat it as part of the operator
+definition**, because a surrogate trained on such a dataset learns "N
+passes of this projection", not "the mass-consistent solution".
