@@ -1,8 +1,10 @@
 #include "Output.H"
 #include "Debug.H"
+#include "Error.H"
 
 #include <AMReX.H>
 #include <AMReX_MultiFab.H>
+#include <AMReX_ParmParse.H>
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_GpuContainers.H>
 #include <AMReX_ParallelDescriptor.H>
@@ -22,9 +24,37 @@ FieldFormat ParseFieldFormat (const std::string& s)
     if (s == "plt")   { return FieldFormat::plt; }
     if (s == "ascii") { return FieldFormat::ascii; }
     if (s == "both")  { return FieldFormat::both; }
-    amrex::Abort("ERROR: unrecognized output.format = '" + s +
-                 "'. Valid values are plt, ascii, both.");
-    return FieldFormat::plt;
+    // Thrown rather than aborted, like every other bad input: Python
+    // raises, the executable still aborts through main()'s handler.
+    throw InputError("output.format = '" + s +
+                     "' is not recognized (expected plt, ascii, or both)");
+}
+
+OutputParams OutputParams::FromParmParse ()
+{
+    OutputParams p;
+    {
+        amrex::ParmParse pp("grid");
+        pp.query("output_format", p.which);
+        pp.query("report_file", p.report_file);
+        pp.query("plot_file", p.plot_file);
+    }
+    {
+        amrex::ParmParse pp("output");
+        pp.query("format", p.format);
+        pp.query("ascii_file", p.ascii_file);
+    }
+    p.Validate();
+    return p;
+}
+
+void OutputParams::Validate () const
+{
+    // Both parsers throw on an unrecognized value, so calling them here
+    // is the validation -- and it happens at configuration time rather
+    // than after a solve has already run.
+    (void) Grid::ParseOutputFormat(which);
+    (void) ParseFieldFormat(format);
 }
 
 OutputFields CollectOutputFields (const Grid& grid,

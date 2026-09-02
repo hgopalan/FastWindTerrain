@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -695,12 +696,31 @@ fwt::Poisson::Params PoissonParamsFromDict (const py::dict& d)
     return p;
 }
 
+fwt::OutputParams OutputParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"which", "format", "report_file", "plot_file",
+                          "ascii_file"}, "output");
+    fwt::OutputParams p;
+    for (auto kv : std::initializer_list<std::pair<const char*,
+                                                   std::string*>>{
+             {"which", &p.which}, {"format", &p.format},
+             {"report_file", &p.report_file}, {"plot_file", &p.plot_file},
+             {"ascii_file", &p.ascii_file}}) {
+        if (d.contains(kv.first)) {
+            *kv.second = py::cast<std::string>(py::str(d[kv.first]));
+        }
+    }
+    p.Validate();
+    return p;
+}
+
 // The whole case, as one nested dict. An absent section means "use the
 // defaults", not "use whatever ParmParse happens to hold".
 fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
 {
     RejectUnknownKeys(d, {"grid", "terrain", "inflow", "anisotropy",
-                          "obrien", "poisson", "numerics"}, "solver");
+                          "obrien", "poisson", "numerics", "output"},
+                      "solver");
 
     auto section = [&] (const char* key) {
         return d.contains(key) ? py::cast<py::dict>(d[key]) : py::dict();
@@ -716,6 +736,7 @@ fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
     p.anisotropy = AnisotropyParamsFromDict(section("anisotropy"), false);
     p.obrien     = ObrienParamsFromDict(section("obrien"));
     p.poisson    = PoissonParamsFromDict(section("poisson"));
+    p.output     = OutputParamsFromDict(section("output"));
 
     if (d.contains("numerics")) {
         py::dict n = section("numerics");
@@ -1145,6 +1166,59 @@ into a returned array changes nothing; use ``set_velocity``.
                  }
                  return FieldToNumpy(s.divergence());
              }, "(nz, ny, nx) [1/s] -- div(u) per cell, zero in solid cells.")
+        .def("fields", [] (const fwt::Solver& s) {
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "fields() is not available until diagnose() has "
+                         "run: the divergence component comes from it.");
+                 }
+                 const fwt::OutputFields f = s.CollectOutput();
+                 py::dict out;
+                 for (int c = 0; c < f.ncomp(); ++c) {
+                     amrex::MultiFab one(f.mf.boxArray(),
+                                         f.mf.DistributionMap(), 1, 0);
+                     amrex::MultiFab::Copy(one, f.mf, c, 0, 1, 0);
+                     out[py::str(f.names[c])] = FieldToNumpy(one);
+                 }
+                 return out;
+             }, R"doc(
+Every output field, as a dict of numpy arrays, with no file involved.
+
+The SAME object the plotfile and ascii backends are handed -- one
+gather, three consumers. A dataset generator gets exactly the array the
+file would have contained, and a regtest requires the two to agree value
+for value.
+
+Requires diagnose(), since the divergence component comes from it.
+)doc")
+        .def("write_plotfile", [] (const fwt::Solver& s,
+                                   const std::string& path) {
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "write_plotfile() requires diagnose() first.");
+                 }
+                 s.WritePlotfile(path);
+             }, py::arg("path"),
+             "Write an AMReX plotfile -- the production path, still there\n"
+             "so results stay viewable in VisIt, ParaView and yt.")
+        .def("write_ascii", [] (const fwt::Solver& s,
+                                const std::string& path) {
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "write_ascii() requires diagnose() first.");
+                 }
+                 s.WriteAscii(path);
+             }, py::arg("path"),
+             "Write the gathered plain-text field file. A regtest aid.")
+        .def("write_report", [] (const fwt::Solver& s,
+                                 const std::string& path) {
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "write_report() requires diagnose() first.");
+                 }
+                 s.WriteReport(path);
+             }, py::arg("path"),
+             "Write the plain-text key/value report.")
         .def_property_readonly("anisotropy", [] (const fwt::Solver& s) {
                  RequireSetup(s, "anisotropy");
                  const auto& a = s.anisotropy();

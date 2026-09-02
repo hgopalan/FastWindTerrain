@@ -28,6 +28,7 @@ Solver::Params Solver::Params::FromParmParse ()
     p.anisotropy = Anisotropy::Params::FromParmParse();
     p.obrien     = Obrien::Params::FromParmParse();
     p.poisson    = Poisson::Params::FromParmParse();
+    p.output     = OutputParams::FromParmParse();
     return p;
 }
 
@@ -271,83 +272,93 @@ void Solver::Diagnose ()
     m_diagnosed = true;
 }
 
+OutputFields Solver::CollectOutput () const
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_diagnosed,
+        "Solver::CollectOutput called before Diagnose");
+    return CollectOutputFields(m_grid, m_terrain, m_inflow, m_poisson,
+                               m_vel0, m_aniso, m_divergence);
+}
+
+void Solver::WritePlotfile (const std::string& path) const
+{
+    fwt::WritePlotfile(path, m_grid, CollectOutput());
+    amrex::Print() << "Wrote plotfile to " << path << "\n";
+}
+
+void Solver::WriteAscii (const std::string& path) const
+{
+    fwt::WriteAscii(path, m_grid, CollectOutput());
+    amrex::Print() << "Wrote ascii field output to " << path << "\n";
+}
+
+void Solver::WriteReport (const std::string& path) const
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_diagnosed,
+        "Solver::WriteReport called before Diagnose");
+
+    m_grid.WriteReport(path);
+    m_terrain.AppendReport(path);
+    m_inflow.AppendReport(path);
+    m_bc.AppendReport(path);
+    fwt::AppendNumericsReport(path);
+    m_aniso.AppendReport(path);
+    m_obrien.AppendReport(path);
+    m_poisson.AppendReport(path);
+    m_diag.AppendReport(path);
+    if (m_manufactured) {
+        std::ofstream os(path, std::ios::app);
+        os << std::setprecision(17);
+        os << "poisson_mms_l2 " << m_mms_err.l2 << "\n";
+        os << "poisson_mms_linf " << m_mms_err.linf << "\n";
+    }
+    amrex::Print() << "Wrote grid report to " << path << "\n";
+}
+
 void Solver::WriteOutput () const
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_diagnosed,
         "Solver::WriteOutput called before Diagnose");
 
-    // Two independent switches:
-    //   grid.output_format -- WHICH outputs the run produces: the
-    //                         plain-text report, the field output, or
-    //                         both. report is the default, so the Phase 1
-    //                         checkers keep working.
-    //   output.format      -- which backend writes the field output: plt
-    //                         (default, production) or ascii (one
-    //                         gathered plain-text file, a regtest aid).
-    std::string report_file   = "grid_report.txt";
-    std::string plot_file     = "plt_grid";
-    std::string output_format = "report";
-    std::string ascii_file    = "fields.txt";
-    std::string field_format  = "plt";
-
-    amrex::ParmParse pp("grid");
-    pp.query("report_file", report_file);
-    pp.query("plot_file", plot_file);
-    pp.query("output_format", output_format);
-    {
-        amrex::ParmParse ppo("output");
-        ppo.query("format", field_format);
-        ppo.query("ascii_file", ascii_file);
-    }
-
-    const auto fmt  = fwt::Grid::ParseOutputFormat(output_format);
-    const auto ffmt = fwt::ParseFieldFormat(field_format);
+    // Two independent switches, both now held as data:
+    //   which  -- WHICH outputs the run produces: the plain-text report,
+    //             the field output, or both
+    //   format -- which backend writes the field output: plt (default,
+    //             production) or ascii (one gathered plain-text file, a
+    //             regtest aid)
+    const OutputParams& o = m_params.output;
+    const auto fmt  = fwt::Grid::ParseOutputFormat(o.which);
+    const auto ffmt = fwt::ParseFieldFormat(o.format);
 
     FWT_DEBUG_SECTION("Output settings");
-    FWT_DEBUG("grid.output_format = " << output_format);
-    FWT_DEBUG("output.format      = " << field_format
+    FWT_DEBUG("grid.output_format = " << o.which);
+    FWT_DEBUG("output.format      = " << o.format
               << (fwt::Grid::WantsPlt(fmt) ? "" : "   [no field output]"));
-    FWT_DEBUG("report_file      = " << report_file
+    FWT_DEBUG("report_file      = " << o.report_file
               << (fwt::Grid::WantsAscii(fmt) ? "" : "   [not written]"));
-    FWT_DEBUG("plot_file        = " << plot_file
+    FWT_DEBUG("plot_file        = " << o.plot_file
               << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldPlt(ffmt))
                   ? "" : "   [not written]"));
-    FWT_DEBUG("ascii_file       = " << ascii_file
+    FWT_DEBUG("ascii_file       = " << o.ascii_file
               << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldAscii(ffmt))
                   ? "" : "   [not written]"));
 
     if (fwt::Grid::WantsAscii(fmt)) {
-        m_grid.WriteReport(report_file);
-        m_terrain.AppendReport(report_file);
-        m_inflow.AppendReport(report_file);
-        m_bc.AppendReport(report_file);
-        fwt::AppendNumericsReport(report_file);
-        m_aniso.AppendReport(report_file);
-        m_obrien.AppendReport(report_file);
-        m_poisson.AppendReport(report_file);
-        m_diag.AppendReport(report_file);
-        if (m_manufactured) {
-            std::ofstream os(report_file, std::ios::app);
-            os << std::setprecision(17);
-            os << "poisson_mms_l2 " << m_mms_err.l2 << "\n";
-            os << "poisson_mms_linf " << m_mms_err.linf << "\n";
-        }
-        amrex::Print() << "Wrote grid report to " << report_file << "\n";
+        WriteReport(o.report_file);
     }
     if (fwt::Grid::WantsPlt(fmt)) {
-        // One gather, both backends. Neither assembles its own idea of
-        // what the fields are, so they cannot drift apart.
-        const fwt::OutputFields fields =
-            fwt::CollectOutputFields(m_grid, m_terrain, m_inflow, m_poisson,
-                                     m_vel0, m_aniso, m_divergence);
+        // One gather, both backends -- and the same one CollectOutput
+        // hands to Python. Neither assembles its own idea of what the
+        // fields are, so they cannot drift apart.
+        const OutputFields fields = CollectOutput();
         if (fwt::WantsFieldPlt(ffmt)) {
-            fwt::WritePlotfile(plot_file, m_grid, fields);
-            amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
+            fwt::WritePlotfile(o.plot_file, m_grid, fields);
+            amrex::Print() << "Wrote plotfile to " << o.plot_file << "\n";
         }
         if (fwt::WantsFieldAscii(ffmt)) {
-            fwt::WriteAscii(ascii_file, m_grid, fields);
+            fwt::WriteAscii(o.ascii_file, m_grid, fields);
             amrex::Print() << "Wrote ascii field output to "
-                           << ascii_file << "\n";
+                           << o.ascii_file << "\n";
         }
     }
 }

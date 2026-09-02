@@ -90,6 +90,29 @@ void WriteAscii (const std::string& filename,
                  const Grid& grid,
                  const OutputFields& fields);
 
+// -----------------------------------------------------------------------
+// Where the output goes, as data -- the last module to stop reading
+// ParmParse directly.
+//
+// It matters for the same reason the others did: a dataset generator
+// that let ParmParse decide would have case 2 write over case 1's
+// plotfile, or write nothing, depending on what an earlier run had set.
+// -----------------------------------------------------------------------
+struct OutputParams
+{
+    // grid.output_format: which outputs the run produces.
+    std::string which = "report";        // report | fields | both
+    // output.format: which backend writes the field output.
+    std::string format = "plt";          // plt | ascii | both
+
+    std::string report_file = "grid_report.txt";
+    std::string plot_file   = "plt_grid";
+    std::string ascii_file  = "fields.txt";
+
+    static OutputParams FromParmParse ();
+    void Validate () const;
+};
+
 // output.format
 enum class FieldFormat { plt, ascii, both };
 FieldFormat ParseFieldFormat (const std::string& s);
