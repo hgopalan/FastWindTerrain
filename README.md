@@ -85,6 +85,21 @@ with fwt.session():                       # no arguments: ParmParse is empty
     inf = fwt.Inflow(g, t, {"mode": "powerlaw", "u_ref": 8.0, "v_ref": 6.0})
 ```
 
+A whole case can be handed to the solver as one nested dict, and driven
+a step at a time:
+
+```python
+with fwt.session():
+    s = fwt.Solver({"grid": {...}, "terrain": {"points": pts},
+                    "inflow": {"u_ref": 8.0, "v_ref": 6.0},
+                    "poisson": {"alpha_v": 0.5, "n_projections": 4}})
+    s.setup()
+    for _ in range(4):
+        s.project_once()
+        print(s.max_divergence_fe, s.solve_iterations)
+    s.diagnose()
+```
+
 Fields come back as numpy, channels-first, so they hand straight to
 PyTorch:
 

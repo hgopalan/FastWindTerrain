@@ -15,10 +15,34 @@
 
 namespace fwt {
 
+Solver::Params Solver::Params::FromParmParse ()
+{
+    Params p;
+    {
+        amrex::ParmParse pp("numerics");
+        pp.query("gradient_scheme", p.gradient_scheme);
+    }
+    p.grid       = Grid::Params::FromParmParse();
+    p.terrain    = Terrain::Params::FromParmParse();
+    p.inflow     = Inflow::Params::FromParmParse();
+    p.anisotropy = Anisotropy::Params::FromParmParse();
+    p.obrien     = Obrien::Params::FromParmParse();
+    p.poisson    = Poisson::Params::FromParmParse();
+    return p;
+}
+
 void Solver::Setup (const amrex::Vector<std::string>& args)
+{
+    Setup(Params::FromParmParse(), args);
+}
+
+void Solver::Setup (const Params& params,
+                    const amrex::Vector<std::string>& args)
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!m_setup_done,
         "Solver::Setup called twice on the same solver");
+
+    m_params = params;
 
     amrex::Print() << "FastWindTerrain -- mass-consistent wind solver\n";
 
@@ -32,8 +56,14 @@ void Solver::Setup (const amrex::Vector<std::string>& args)
         FWT_DEBUG("argv[" << (i + 1) << "]         = " << args[i]);
     }
 
-    // Directional-derivative scheme (numerics.gradient_scheme).
-    fwt::Numerics::Init();
+    // Directional-derivative scheme. An empty name leaves whatever is
+    // already in force, which for the ParmParse path is what
+    // FromParmParse just read.
+    if (m_params.gradient_scheme.empty()) {
+        fwt::Numerics::Init();
+    } else {
+        fwt::Numerics::Set(m_params.gradient_scheme);
+    }
 
     std::string selftest_file;
     {
@@ -44,9 +74,9 @@ void Solver::Setup (const amrex::Vector<std::string>& args)
         fwt::RunGradientSelfTest(selftest_file);
     }
 
-    m_grid.Build();   // aborts on undershoot (see Grid::BuildVerticalStretching)
-    m_terrain.Build(m_grid);
-    m_inflow.Build(m_grid, m_terrain);
+    m_grid.Build(m_params.grid);   // throws on undershoot
+    m_terrain.Build(m_grid, m_params.terrain);
+    m_inflow.Build(m_grid, m_terrain, m_params.inflow);
     m_bc.Build(m_grid, m_terrain, m_inflow, m_inflow.velocity());
 
     // Verification dump, if asked for. It runs HERE, on the raw profile,
@@ -56,17 +86,24 @@ void Solver::Setup (const amrex::Vector<std::string>& args)
     m_verify.MaybeWriteGradientDump(m_grid, m_terrain, m_inflow.velocity());
 
     // Cell-local variational weights, from the terrain slope.
-    m_aniso.Build(m_grid, m_terrain);
+    // The base weights live with the operator they feed, so the
+    // anisotropy takes them from the Poisson parameters rather than
+    // keeping a second copy that could disagree.
+    Anisotropy::Params aniso_params = m_params.anisotropy;
+    aniso_params.alpha_h_base = m_params.poisson.alpha_h;
+    aniso_params.alpha_v_base = m_params.poisson.alpha_v;
+    m_aniso.Build(m_grid, m_terrain, aniso_params);
 
     // O'Brien runs on u0, BEFORE the projection: it rewrites w from
     // continuity, and doing that afterwards would put back the divergence
     // the solve had just removed. massconsistent_amr applies it at the
     // same point.
-    if (m_obrien.Apply(m_grid, m_terrain, m_inflow.velocity()) > 0) {
+    if (m_obrien.Apply(m_grid, m_terrain, m_inflow.velocity(),
+                       m_params.obrien) > 0) {
         m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
     }
 
-    m_poisson.Build(m_grid, m_terrain, m_bc, m_aniso);
+    m_poisson.Build(m_grid, m_terrain, m_bc, m_aniso, m_params.poisson);
 
     // Keep the initial field: the projection corrects in place, and both
     // are worth having in the output -- the checkers compare against u0,
@@ -75,10 +112,7 @@ void Solver::Setup (const amrex::Vector<std::string>& args)
     amrex::MultiFab::Copy(m_vel0, m_inflow.velocity(), 0, 0, 3,
                           m_inflow.velocity().nGrow());
 
-    {
-        amrex::ParmParse pp("poisson");
-        pp.query("manufactured", m_manufactured);
-    }
+    m_manufactured = m_params.poisson.manufactured;
 
     m_setup_done = true;
 }
@@ -112,26 +146,21 @@ void Solver::Solve ()
     // gradient are not an exact factorisation of the operator, so one
     // pass removes only part of the divergence. Repeating the projection
     // drives the remainder down geometrically.
-    int n_proj = 4;
-    {
-        amrex::ParmParse pp("poisson");
-        pp.query("n_projections", n_proj);
-    }
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(n_proj >= 1,
-        "poisson.n_projections must be >= 1");
+    const int n_proj = m_params.poisson.n_projections;
 
     for (int ip = 0; ip < n_proj; ++ip) {
-        if (ip > 0) {
-            m_poisson.ComputeRHS(m_grid, m_terrain, m_inflow.velocity());
+        // The first pass reuses the RHS Solve() computed above; the rest
+        // rebuild it from the corrected field, which ProjectOnce does.
+        if (ip == 0) {
+            m_poisson.Solve();
+            m_poisson.ApplyCorrection(m_grid, m_terrain,
+                                      m_inflow.velocity());
+            m_bc.RefillGhosts(m_grid, m_terrain, m_inflow,
+                              m_inflow.velocity());
+            ++m_n_proj_done;
+        } else {
+            ProjectOnce();
         }
-        m_poisson.Solve();
-        m_poisson.ApplyCorrection(m_grid, m_terrain, m_inflow.velocity());
-
-        // The correction changed the interior, so the ghosts are
-        // refreshed before anything reads a stencil near a face. The
-        // classification is NOT redone: which face is an inflow face
-        // follows from the incoming wind, not from the corrected field.
-        m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
 
         if (n_proj > 1) {
             amrex::Print() << "  projection pass " << (ip + 1)
@@ -169,6 +198,40 @@ void Solver::Solve ()
     m_solved = true;
 }
 
+amrex::Real Solver::MaxDivergenceFE ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_setup_done,
+        "Solver::MaxDivergenceFE called before Setup");
+    return m_poisson.MaxDivergenceFE(m_grid, m_terrain, m_inflow.velocity());
+}
+
+amrex::Real Solver::MaxDivergence () const
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_setup_done,
+        "Solver::MaxDivergence called before Setup");
+    return m_poisson.MaxDivergence(m_grid, m_terrain, m_inflow.velocity());
+}
+
+amrex::Real Solver::ProjectOnce ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_setup_done,
+        "Solver::ProjectOnce called before Setup");
+
+    m_poisson.ComputeRHS(m_grid, m_terrain, m_inflow.velocity());
+    const amrex::Real resid = m_poisson.Solve();
+    m_poisson.ApplyCorrection(m_grid, m_terrain, m_inflow.velocity());
+
+    // The correction changed the interior, so the ghosts are refreshed
+    // before anything reads a stencil near a face. The classification is
+    // NOT redone: which face is an inflow face follows from the incoming
+    // wind, not from the corrected field.
+    m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+
+    ++m_n_proj_done;
+    m_solved = true;
+    return resid;
+}
+
 void Solver::Diagnose ()
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_solved,
@@ -185,12 +248,8 @@ void Solver::Diagnose ()
     m_diag.Compute(m_grid, m_terrain, m_inflow.velocity(), m_divergence);
     m_diag.Print();
 
-    {
-        amrex::ParmParse pp("poisson");
-        std::string rhs_dump;
-        if (pp.query("rhs_dump_file", rhs_dump) && !rhs_dump.empty()) {
-            m_poisson.WriteRHSDump(rhs_dump);
-        }
+    if (!m_params.poisson.rhs_dump_file.empty()) {
+        m_poisson.WriteRHSDump(m_params.poisson.rhs_dump_file);
     }
 
     amrex::Print() << "Grid built: n_cell = ("
@@ -304,7 +363,13 @@ void Solver::SetVelocity (const amrex::Vector<amrex::Real>& buffer)
 
 void Solver::Run (const amrex::Vector<std::string>& args)
 {
-    Setup(args);
+    Run(Params::FromParmParse(), args);
+}
+
+void Solver::Run (const Params& params,
+                  const amrex::Vector<std::string>& args)
+{
+    Setup(params, args);
     Solve();
     Diagnose();
     WriteOutput();

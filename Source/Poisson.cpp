@@ -1,5 +1,6 @@
 #include "Poisson.H"
 #include "Debug.H"
+#include "Error.H"
 #include "Derivatives.H"
 
 #include <AMReX.H>
@@ -56,41 +57,77 @@ amrex::LinOpBCType ToLinOpBC (BoundaryConditions::LambdaBC b)
 // Inputs
 // ---------------------------------------------------------------------------
 
-void Poisson::ReadParameters ()
+Poisson::Params Poisson::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("poisson");
 
-    const bool got_ah = pp.query("alpha_h", m_alpha_h);
-    const bool got_av = pp.query("alpha_v", m_alpha_v);
-    pp.query("max_iter", m_max_iter);
-    pp.query("verbose", m_verbose);
-    pp.query("reltol", m_reltol);
-    pp.query("abstol", m_abstol);
-    pp.query("num_pre_smooth", m_pre_smooth);
-    pp.query("num_post_smooth", m_post_smooth);
-    pp.query("rhs_operator", m_rhs_operator);
-    pp.query("lambda_bc", m_lambda_bc);
-    pp.query("gradient_operator", m_gradient_operator);
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_gradient_operator == "amrex" || m_gradient_operator == "scheme",
-        "poisson.gradient_operator must be 'amrex' or 'scheme'");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_lambda_bc == "flowthrough" || m_lambda_bc == "directional",
-        "poisson.lambda_bc must be 'flowthrough' or 'directional'");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_rhs_operator == "fe" || m_rhs_operator == "scheme",
-        "poisson.rhs_operator must be 'fe' or 'scheme'");
+    p.given_alpha_h = pp.query("alpha_h", p.alpha_h);
+    p.given_alpha_v = pp.query("alpha_v", p.alpha_v);
+    pp.query("max_iter", p.max_iter);
+    pp.query("verbose", p.verbose);
+    pp.query("reltol", p.reltol);
+    pp.query("abstol", p.abstol);
+    pp.query("num_pre_smooth", p.num_pre_smooth);
+    pp.query("num_post_smooth", p.num_post_smooth);
+    pp.query("rhs_operator", p.rhs_operator);
+    pp.query("lambda_bc", p.lambda_bc);
+    pp.query("gradient_operator", p.gradient_operator);
+    pp.query("n_projections", p.n_projections);
+    pp.query("manufactured", p.manufactured);
+    pp.query("force_all_dirichlet", p.force_all_dirichlet);
+    pp.query("rhs_dump_file", p.rhs_dump_file);
 
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_alpha_h > 0.0,
-        "poisson.alpha_h must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_alpha_v > 0.0,
-        "poisson.alpha_v must be > 0");
+    p.Validate();
+    return p;
+}
+
+void Poisson::Params::Validate () const
+{
+    if (gradient_operator != "amrex" && gradient_operator != "scheme") {
+        throw InputError(
+            "poisson.gradient_operator must be 'amrex' or 'scheme'");
+    }
+    if (lambda_bc != "flowthrough" && lambda_bc != "directional") {
+        throw InputError(
+            "poisson.lambda_bc must be 'flowthrough' or 'directional'");
+    }
+    if (rhs_operator != "fe" && rhs_operator != "scheme") {
+        throw InputError("poisson.rhs_operator must be 'fe' or 'scheme'");
+    }
+    if (alpha_h <= 0.0) { throw InputError("poisson.alpha_h must be > 0"); }
+    if (alpha_v <= 0.0) { throw InputError("poisson.alpha_v must be > 0"); }
+    if (n_projections < 1) {
+        throw InputError("poisson.n_projections must be >= 1");
+    }
+    if (max_iter < 1) { throw InputError("poisson.max_iter must be >= 1"); }
+    if (reltol < 0.0 || abstol < 0.0) {
+        throw InputError("poisson.reltol and poisson.abstol must be >= 0");
+    }
+}
+
+void Poisson::ApplyParams (const Params& params)
+{
+    m_params = params;
+    m_params.Validate();
+
+    m_alpha_h = m_params.alpha_h;
+    m_alpha_v = m_params.alpha_v;
+    m_max_iter = m_params.max_iter;
+    m_verbose = m_params.verbose;
+    m_reltol = m_params.reltol;
+    m_abstol = m_params.abstol;
+    m_pre_smooth = m_params.num_pre_smooth;
+    m_post_smooth = m_params.num_post_smooth;
+    m_rhs_operator = m_params.rhs_operator;
+    m_lambda_bc = m_params.lambda_bc;
+    m_gradient_operator = m_params.gradient_operator;
 
     FWT_DEBUG_SECTION("Poisson inputs (poisson.*)");
     FWT_DEBUG("alpha_h          = " << m_alpha_h
-                                     << (got_ah ? "" : "   [default]"));
+              << (m_params.given_alpha_h ? "" : "   [default]"));
     FWT_DEBUG("alpha_v          = " << m_alpha_v
-                                     << (got_av ? "" : "   [default]"));
+              << (m_params.given_alpha_v ? "" : "   [default]"));
     FWT_DEBUG("alpha is a transmissivity: the correction multiplies "
               "grad(lambda) by alpha^2, so a smaller alpha_v means less "
               "vertical adjustment");
@@ -224,17 +261,21 @@ void Poisson::BuildOperator (const Grid& grid, const Terrain& terrain,
 void Poisson::Build (const Grid& grid, const Terrain& terrain,
                      const BoundaryConditions& bc, const Anisotropy& aniso)
 {
-    ReadParameters();
+    Build(grid, terrain, bc, aniso, Params::FromParmParse());
+}
+
+void Poisson::Build (const Grid& grid, const Terrain& terrain,
+                     const BoundaryConditions& bc, const Anisotropy& aniso,
+                     const Params& params)
+{
+    ApplyParams(params);
     m_aniso = &aniso;
 
-    {
-        amrex::ParmParse pp("poisson");
-        int mms = 0;
-        pp.query("manufactured", mms);
-        int forced = 0;
-        pp.query("force_all_dirichlet", forced);
-        m_all_dirichlet = (mms != 0) || (forced != 0);
-    }
+    // The manufactured solution is posed with Dirichlet on all six
+    // faces, so it forces them; force_all_dirichlet asks for the same
+    // thing on its own.
+    m_all_dirichlet = (m_params.manufactured != 0) ||
+                      (m_params.force_all_dirichlet != 0);
 
     m_ba = grid.ba();
     m_dm = grid.dm();
@@ -444,6 +485,7 @@ amrex::Real Poisson::Solve ()
 
     const amrex::Real resid = mlmg.solve(sol, rhs, m_reltol, m_abstol);
     m_resid = resid;
+    m_iters = mlmg.getNumIters();
     m_lambda.FillBoundary(m_geom.periodicity());
     FWT_DEBUG("MLMG solve: residual " << resid
               << ", lambda in [" << m_lambda.min(0) << ", "

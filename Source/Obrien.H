@@ -45,8 +45,16 @@ class Obrien
 {
 public:
 
+    struct Params
+    {
+        int enable = 0;
+        static Params FromParmParse ();
+    };
+
     // Modifies the velocity in place. Returns the number of columns
     // adjusted.
+    long Apply (const Grid& grid, const Terrain& terrain,
+                amrex::MultiFab& vel, const Params& params);
     long Apply (const Grid& grid, const Terrain& terrain,
                 amrex::MultiFab& vel);
 
@@ -59,8 +67,6 @@ public:
     void AppendReport (const std::string& filename) const;
 
 private:
-
-    void ReadParameters ();
 
     int m_enable = 0;
     long m_n_columns = 0;

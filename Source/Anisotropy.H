@@ -3,6 +3,7 @@
 
 #include "Grid.H"
 #include "Terrain.H"
+#include "Error.H"
 
 #include <AMReX_MultiFab.H>
 
@@ -54,6 +55,29 @@ class Anisotropy
 {
 public:
 
+    struct Params
+    {
+        int enable = 0;
+        std::string source = "slope";
+        std::string alpha_h_mode = "base";
+        amrex::Real slope_scale = 0.5;
+        amrex::Real decay_height = 500.0;
+        amrex::Real min_factor = 0.05;
+        amrex::Real max_factor = 2.0;
+
+        // The base values live with the operator they feed, so they come
+        // from the Poisson parameters rather than being duplicated here.
+        // FromParmParse reads them out of poisson.*; the dict path is
+        // handed them by Solver, which has both in hand.
+        amrex::Real alpha_h_base = 1.0;
+        amrex::Real alpha_v_base = 1.0;
+
+        static Params FromParmParse ();
+        void Validate () const;
+    };
+
+    void Build (const Grid& grid, const Terrain& terrain,
+                const Params& params);
     void Build (const Grid& grid, const Terrain& terrain);
 
     // Cell-centered, one component each.
@@ -63,6 +87,7 @@ public:
     bool enabled ()             const { return m_enable != 0; }
     amrex::Real alpha_h_base () const { return m_alpha_h_base; }
     amrex::Real alpha_v_base () const { return m_alpha_v_base; }
+    const Params& params () const { return m_params; }
 
     // Extrema over fluid cells, for the report.
     amrex::Real alpha_v_min () const { return m_av_min; }
@@ -75,8 +100,8 @@ public:
 
 private:
 
-    void ReadParameters ();
 
+    Params      m_params;
     int         m_enable = 0;
     std::string m_source = "slope";
     std::string m_alpha_h_mode = "base";

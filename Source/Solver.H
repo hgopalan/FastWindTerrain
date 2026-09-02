@@ -59,11 +59,54 @@ class Solver
 {
 public:
 
+    // -------------------------------------------------------------------
+    // A whole case, as data.
+    //
+    // Every module's Params in one place, so a caller can describe a run
+    // without ParmParse being involved anywhere. That is what dataset
+    // generation needs: ParmParse persists for the life of an AMReX
+    // initialization, so a loop that configured through it would have
+    // each case inherit whatever the last one set.
+    //
+    // FromParmParse builds one from an inputs deck, which is what the
+    // executable does. The two paths meet immediately afterwards.
+    // -------------------------------------------------------------------
+    struct Params
+    {
+        Grid::Params       grid;
+        Terrain::Params    terrain;
+        Inflow::Params     inflow;
+        Anisotropy::Params anisotropy;
+        Obrien::Params     obrien;
+        Poisson::Params    poisson;
+
+        // numerics.gradient_scheme. Empty leaves the current setting,
+        // which is what the ParmParse path has already established.
+        std::string gradient_scheme;
+
+        static Params FromParmParse ();
+    };
+
+    void Setup (const Params& params,
+                const amrex::Vector<std::string>& args = {});
     void Setup (const amrex::Vector<std::string>& args = {});
+
+    // One projection pass: rebuild the RHS from the current velocity,
+    // solve for lambda, correct, refill the ghosts. Returns the MLMG
+    // residual.
+    //
+    // Solve() is this in a loop. It is a named thing so a notebook can
+    // step through the projection one pass at a time and look at lambda
+    // in between -- which is the only way to see an approximate
+    // projection converging rather than being told that it did.
+    amrex::Real ProjectOnce ();
+
     void Solve ();
     void Diagnose ();
     void WriteOutput () const;
 
+    void Run (const Params& params,
+              const amrex::Vector<std::string>& args = {});
     void Run (const amrex::Vector<std::string>& args = {});
 
     // Read-only access to the components, for the bindings and for any
@@ -97,7 +140,27 @@ public:
     const amrex::MultiFab& velocity0 () const { return m_vel0; }
     const amrex::MultiFab& divergence () const { return m_divergence; }
 
+    const Params& params () const { return m_params; }
+
+    // A configuration held before Setup runs, so a caller can describe
+    // the case at construction and build it later.
+    void set_config (const Params& p) { m_config = p; m_has_config = true; }
+    bool has_config () const { return m_has_config; }
+    const Params& config () const { return m_config; }
+
+    // max|div(u)| in the norm the projection controls, for the current
+    // velocity. Non-const because AMReX's compDivergence is.
+    amrex::Real MaxDivergenceFE ();
+
+    // max|div(u)| computed with the configured derivative scheme. Unlike
+    // the FE norm this reads the velocity's GHOST cells through a
+    // five-point stencil, which makes it the probe for whether they hold
+    // what they should.
+    amrex::Real MaxDivergence () const;
     bool manufactured () const { return m_manufactured != 0; }
+    // Projection passes actually run, so a caller stepping through with
+    // ProjectOnce can see how many it has done.
+    int n_projections_done () const { return m_n_proj_done; }
     Poisson::Error mms_error () const { return m_mms_err; }
 
 private:
@@ -115,7 +178,11 @@ private:
     amrex::MultiFab m_vel0;         // the field before the correction
     amrex::MultiFab m_divergence;   // per-cell div(u) after it
 
+    Params m_params;
+    Params m_config;
+    bool m_has_config = false;
     int m_manufactured = 0;
+    int m_n_proj_done = 0;
     Poisson::Error m_mms_err {0.0, 0.0};
 
     bool m_setup_done = false;
