@@ -59,16 +59,19 @@ public:
     amrex::Real dz0 ()               const { return m_dz0; }
     amrex::Real stretching_ratio ()  const { return m_stretch_ratio; }
 
-    // Output (selected by grid.output_format = ascii | plt | both;
+    // Output (selected by grid.output_format = report | fields | both;
     // see Grid::OutputFormat / main.cpp):
     //
-    //   ascii -- plain-text summary of the grid (parameters + full
-    //            z_face/z_cc arrays). Used directly by the Phase 1
-    //            regtest checker, so it stays the default.
-    //   plt   -- AMReX native plotfile carrying the true stretched
-    //            vertical coordinate and the terrain fields.
-    // The plotfile is written by fwt::WritePlotfile (Output.H), which
-    // combines the grid fields with the terrain fields into one file.
+    //   report -- plain-text summary of the run: the grid parameters,
+    //             the full z_face/z_cc arrays, and one key/value line
+    //             per diagnostic from every module. Used directly by the
+    //             regtest checkers, so it stays the default.
+    //   fields -- the per-cell field output, written by Output.H in
+    //             whichever backend output.format selects.
+    //
+    // ascii and plt are accepted as aliases for report and fields: this
+    // switch predates the field output having two formats of its own,
+    // and every input file written before that keeps working.
     void WriteReport (const std::string& filename) const;
 
     // Parses grid.output_format; aborts on an unrecognized value.

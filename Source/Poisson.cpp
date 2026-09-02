@@ -761,14 +761,26 @@ amrex::Real Poisson::MaxDivergenceFE (const Grid& grid,
     return std::max(std::abs(d.min(0)), std::abs(d.max(0)));
 }
 
-amrex::Real Poisson::MaxDivergence (const Grid& grid, const Terrain& terrain,
-                                    const amrex::MultiFab& vel) const
+// The discrete divergence as a FIELD, one value per cell, computed with
+// the configured scheme -- the same discretization MaxDivergence reduces
+// and, when rhs_operator = scheme, the same one the RHS was built from.
+// The scalar diagnostic and the plotted field come from here so they
+// cannot drift apart. Solid cells are set to zero, not left undefined:
+// they are written out, and a stale value there reads as a real one.
+void Poisson::ComputeDivergenceField (const Grid& grid,
+                                      const Terrain& terrain,
+                                      const amrex::MultiFab& vel,
+                                      amrex::MultiFab& div) const
 {
+    AMREX_ALWAYS_ASSERT(div.nComp() >= 1);
+
     const amrex::Real dx = grid.geom().CellSize(0);
     const amrex::Real dy = grid.geom().CellSize(1);
     const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
     const int nz = grid.nz();
 
+    // d(z)/d(k) at cell centres: one-sided at the ends, centred inside,
+    // so the vertical derivative sees the true stretched spacing.
     amrex::Vector<amrex::Real> dzdk(nz);
     for (int k = 0; k < nz; ++k) {
         if (k == 0)           { dzdk[k] = z_cc[1] - z_cc[0]; }
@@ -786,30 +798,39 @@ amrex::Real Poisson::MaxDivergence (const Grid& grid, const Terrain& terrain,
     const amrex::Box& dom = m_geom.Domain();
     const int klo = dom.smallEnd(2), khi = dom.bigEnd(2);
 
-    amrex::Real worst = 0.0;
-    for (amrex::MFIter mfi(vel); mfi.isValid(); ++mfi) {
+    div.setVal(0.0);
+    for (amrex::MFIter mfi(div); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.validbox();
+        auto const& d  = div.array(mfi);
         auto const& v  = vel.const_array(mfi);
         auto const& mk = terrain.mask().const_array(mfi);
 
-        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
-            if (mk(i,j,k) == solid) { return; }
+            if (mk(i,j,k) == solid) { d(i,j,k) = amrex::Real(0.0); return; }
             const int km2 = amrex::max(k-2, klo), km1 = amrex::max(k-1, klo);
             const int kp1 = amrex::min(k+1, khi), kp2 = amrex::min(k+2, khi);
 
-            const amrex::Real d =
+            d(i,j,k) =
                 Derivative(scheme, v(i-2,j,k,0), v(i-1,j,k,0), v(i,j,k,0),
                            v(i+1,j,k,0), v(i+2,j,k,0), v(i,j,k,0), dx)
               + Derivative(scheme, v(i,j-2,k,1), v(i,j-1,k,1), v(i,j,k,1),
                            v(i,j+1,k,1), v(i,j+2,k,1), v(i,j,k,1), dy)
               + Derivative(scheme, v(i,j,km2,2), v(i,j,km1,2), v(i,j,k,2),
                            v(i,j,kp1,2), v(i,j,kp2,2), v(i,j,k,2), pdzdk[k]);
-            worst = std::max(worst, std::abs(d));
         });
     }
-    amrex::ParallelDescriptor::ReduceRealMax(worst);
-    return worst;
+}
+
+amrex::Real Poisson::MaxDivergence (const Grid& grid, const Terrain& terrain,
+                                    const amrex::MultiFab& vel) const
+{
+    amrex::MultiFab div(vel.boxArray(), vel.DistributionMap(), 1, 0);
+    ComputeDivergenceField(grid, terrain, vel, div);
+    // Solid cells hold exactly zero, so they can never set the maximum
+    // unless the field is zero everywhere.
+    return std::max(std::abs(div.min(0)), std::abs(div.max(0)));
 }
 
 // ---------------------------------------------------------------------------

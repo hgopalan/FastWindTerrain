@@ -42,7 +42,7 @@ Full documentation lives in [`doc/`](doc/):
 | [Numerics](doc/numerics.rst) | Derivative schemes and their verification |
 | [Input reference](doc/parmparse_reference.rst) | Every input in one place |
 | [References](doc/references.rst) | The methods, and where each is used |
-| [Output](doc/output.rst) | Report and plotfile formats |
+| [Output](doc/output.rst) | Diagnostics, the report, and the plt/ascii field backends |
 | [Debugging](doc/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](doc/tools.rst) | Synthetic terrain generation |
 | [Regtests](doc/regtests.rst) | Test suite and how to run it |

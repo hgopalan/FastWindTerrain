@@ -44,14 +44,39 @@ See :doc:`grid` and :doc:`output`.
      - ``32``
      - Box size in x and y. The grid is never split in z
    * - ``grid.output_format``
-     - ``ascii``
-     - ``ascii``, ``plt`` or ``both``
+     - ``report``
+     - ``report``, ``fields`` or ``both`` (``ascii``/``plt`` are aliases
+       for the first two)
    * - ``grid.report_file``
      - ``grid_report.txt``
      - Plain-text report
    * - ``grid.plot_file``
      - ``plt_grid``
      - AMReX plotfile
+
+``output.`` and ``diagnostics.``
+================================
+
+See :doc:`output`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``output.format``
+     - ``plt``
+     - Which backend writes the field output: ``plt``, ``ascii`` or
+       ``both``
+   * - ``output.ascii_file``
+     - ``fields.txt``
+     - One gathered plain-text file. A regtest aid
+   * - ``diagnostics.flux_tolerance``
+     - ``1e-3``
+     - Relative boundary-flux imbalance above which the run warns. Never
+       corrected, never fatal
 
 ``terrain.`` -- surface and immersed boundary
 =============================================

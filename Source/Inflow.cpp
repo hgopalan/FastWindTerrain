@@ -1,6 +1,7 @@
 #include "Inflow.H"
 #include "Debug.H"
 #include "Derivatives.H"
+#include "Diagnostics.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -331,83 +332,15 @@ void Inflow::BuildVelocity (const Grid& grid, const Terrain& terrain)
 
 void Inflow::ComputeBoundaryFlux (const Grid& grid, const Terrain& terrain)
 {
-    // Outward flux through every open (fluid) boundary face, using the
-    // stretched dz(k). The lateral faces plus the domain top can carry
-    // flux; the bottom is ground.
-    const amrex::Box& domain = grid.geom().Domain();
-    const amrex::Real dx = grid.geom().CellSize(0);
-    const amrex::Real dy = grid.geom().CellSize(1);
+    // The same routine the post-solve diagnostics use, so the before and
+    // after numbers cannot come from two subtly different definitions of
+    // "boundary flux".
+    const FluxBalance fb = ComputeFluxBalance(grid, terrain, m_vel);
 
-    const amrex::Vector<amrex::Real>& z_face = grid.z_face();
-    amrex::Gpu::DeviceVector<amrex::Real> d_zf(z_face.size());
-    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, z_face.begin(),
-                          z_face.end(), d_zf.begin());
-    amrex::Gpu::streamSynchronize();
-    const amrex::Real* zf = d_zf.data();
-
-    struct Face { int dir; int side; amrex::Real fac; bool use_dz; };
-    const Face faces[5] = {
-        {0, -1, dy,      true },   // xlo
-        {0, +1, dy,      true },   // xhi
-        {1, -1, dx,      true },   // ylo
-        {1, +1, dx,      true },   // yhi
-        {2, +1, dx * dy, false},   // top
-    };
-
-    const int solid = Terrain::kSolid;
-    amrex::Real flux_out = 0.0;
-    amrex::Real flux_in  = 0.0;
-
-    for (const Face& f : faces) {
-        amrex::Box layer(domain);
-        if (f.side < 0) {
-            layer.setBig(f.dir, domain.smallEnd(f.dir));
-        } else {
-            layer.setSmall(f.dir, domain.bigEnd(f.dir));
-        }
-
-        amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_op;
-        amrex::ReduceData<amrex::Real, amrex::Real> reduce_data(reduce_op);
-        using ReduceTuple = typename decltype(reduce_data)::Type;
-
-        const int dir = f.dir;
-        const amrex::Real sign = amrex::Real(f.side);
-        const amrex::Real fac = f.fac;
-        const bool use_dz = f.use_dz;
-
-        for (amrex::MFIter mfi(m_vel); mfi.isValid(); ++mfi) {
-            const amrex::Box sect = mfi.tilebox() & layer;
-            if (!sect.ok()) { continue; }
-
-            auto const& vel = m_vel.const_array(mfi);
-            auto const& mk  = terrain.mask().const_array(mfi);
-
-            reduce_op.eval(sect, reduce_data,
-            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
-            {
-                if (mk(i,j,k) == solid) { return {0.0, 0.0}; }
-                const amrex::Real area =
-                    fac * (use_dz ? (zf[k+1] - zf[k]) : amrex::Real(1.0));
-                const amrex::Real flux = sign * vel(i,j,k,dir) * area;
-                return {amrex::max(flux, amrex::Real(0.0)),
-                        amrex::min(flux, amrex::Real(0.0))};
-            });
-        }
-
-        ReduceTuple hv = reduce_data.value(reduce_op);
-        flux_out += amrex::get<0>(hv);
-        flux_in  -= amrex::get<1>(hv);      // stored negative; report as +
-    }
-
-    amrex::ParallelDescriptor::ReduceRealSum(flux_out);
-    amrex::ParallelDescriptor::ReduceRealSum(flux_in);
-
-    m_flux_out = flux_out;
-    m_flux_in  = flux_in;
-    m_flux_net = flux_out - flux_in;
-
-    const amrex::Real scale = std::max(std::abs(flux_in), std::abs(flux_out));
-    m_flux_imbalance = (scale > 0.0) ? std::abs(m_flux_net) / scale : 0.0;
+    m_flux_out       = fb.out;
+    m_flux_in        = fb.in;
+    m_flux_net       = fb.net;
+    m_flux_imbalance = fb.imbalance;
 }
 
 void Inflow::Build (const Grid& grid, const Terrain& terrain)

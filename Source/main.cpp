@@ -15,6 +15,7 @@
 #include "Obrien.H"
 #include "Poisson.H"
 #include "Output.H"
+#include "Diagnostics.H"
 #include "Debug.H"
 #include "Derivatives.H"
 
@@ -166,6 +167,18 @@ int main (int argc, char* argv[])
                            << "]  |U|max " << vr.speed_max << " m/s\n";
         }
 
+        // Post-solve diagnostics. The divergence field is computed once
+        // and then used everywhere: the scalar in the report, the norms,
+        // and the component in the output file are all reductions or
+        // copies of this one array, so they cannot disagree.
+        amrex::MultiFab divergence(grid.ba(), grid.dm(), 1, 0);
+        poisson.ComputeDivergenceField(grid, terrain, inflow.velocity(),
+                                       divergence);
+
+        fwt::Diagnostics diag;
+        diag.Compute(grid, terrain, inflow.velocity(), divergence);
+        diag.Print();
+
         {
             amrex::ParmParse pp("poisson");
             std::string rhs_dump;
@@ -189,26 +202,46 @@ int main (int argc, char* argv[])
                        << " m^3/s, relative imbalance = "
                        << inflow.flux_imbalance() << "\n";
 
-        // Output is user-selectable: ascii (plain-text grid report),
-        // plt (AMReX native plotfile), or both. ascii is the default
-        // so the Phase 1 regtest checkers keep working unchanged.
+        // Two independent switches:
+        //   grid.output_format -- WHICH outputs the run produces: the
+        //                         plain-text report, the field output,
+        //                         or both. report is the default, so the
+        //                         Phase 1 checkers keep working.
+        //   output.format      -- which backend writes the field output:
+        //                         plt (default, production) or ascii
+        //                         (one gathered plain-text file, a
+        //                         regtest aid).
         std::string report_file   = "grid_report.txt";
         std::string plot_file     = "plt_grid";
-        std::string output_format = "ascii";
+        std::string output_format = "report";
+        std::string ascii_file    = "fields.txt";
+        std::string field_format  = "plt";
 
         amrex::ParmParse pp("grid");
         pp.query("report_file", report_file);
         pp.query("plot_file", plot_file);
         pp.query("output_format", output_format);
+        {
+            amrex::ParmParse ppo("output");
+            ppo.query("format", field_format);
+            ppo.query("ascii_file", ascii_file);
+        }
 
-        const auto fmt = fwt::Grid::ParseOutputFormat(output_format);
+        const auto fmt  = fwt::Grid::ParseOutputFormat(output_format);
+        const auto ffmt = fwt::ParseFieldFormat(field_format);
 
         FWT_DEBUG_SECTION("Output settings");
-        FWT_DEBUG("output_format    = " << output_format);
+        FWT_DEBUG("grid.output_format = " << output_format);
+        FWT_DEBUG("output.format      = " << field_format
+                  << (fwt::Grid::WantsPlt(fmt) ? "" : "   [no field output]"));
         FWT_DEBUG("report_file      = " << report_file
                   << (fwt::Grid::WantsAscii(fmt) ? "" : "   [not written]"));
         FWT_DEBUG("plot_file        = " << plot_file
-                  << (fwt::Grid::WantsPlt(fmt) ? "" : "   [not written]"));
+                  << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldPlt(ffmt))
+                      ? "" : "   [not written]"));
+        FWT_DEBUG("ascii_file       = " << ascii_file
+                  << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldAscii(ffmt))
+                      ? "" : "   [not written]"));
 
         if (fwt::Grid::WantsAscii(fmt)) {
             grid.WriteReport(report_file);
@@ -219,6 +252,7 @@ int main (int argc, char* argv[])
             aniso.AppendReport(report_file);
             obrien.AppendReport(report_file);
             poisson.AppendReport(report_file);
+            diag.AppendReport(report_file);
             if (manufactured) {
                 std::ofstream os(report_file, std::ios::app);
                 os << std::setprecision(17);
@@ -228,9 +262,20 @@ int main (int argc, char* argv[])
             amrex::Print() << "Wrote grid report to " << report_file << "\n";
         }
         if (fwt::Grid::WantsPlt(fmt)) {
-            fwt::WritePlotfile(plot_file, grid, terrain, inflow, poisson,
-                               vel0, aniso);
-            amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
+            // One gather, both backends. Neither assembles its own idea
+            // of what the fields are, so they cannot drift apart.
+            const fwt::OutputFields fields =
+                fwt::CollectOutputFields(grid, terrain, inflow, poisson,
+                                         vel0, aniso, divergence);
+            if (fwt::WantsFieldPlt(ffmt)) {
+                fwt::WritePlotfile(plot_file, grid, fields);
+                amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
+            }
+            if (fwt::WantsFieldAscii(ffmt)) {
+                fwt::WriteAscii(ascii_file, grid, fields);
+                amrex::Print() << "Wrote ascii field output to "
+                               << ascii_file << "\n";
+            }
         }
     }
     amrex::Finalize();

@@ -111,6 +111,14 @@ public:
     amrex::Real MaxDivergence (const Grid& grid, const Terrain& terrain,
                                const amrex::MultiFab& vel) const;
 
+    // The same divergence as a field, one value per cell, for the
+    // diagnostics and the output. MaxDivergence is a reduction of
+    // exactly this, so the number in the report and the field in the
+    // plotfile can never disagree. Solid cells are set to zero.
+    void ComputeDivergenceField (const Grid& grid, const Terrain& terrain,
+                                 const amrex::MultiFab& vel,
+                                 amrex::MultiFab& div) const;
+
     // The divergence in the norm the projection actually controls, using
     // AMReX's own nodal divergence rather than a hand-rolled stand-in.
     amrex::Real MaxDivergenceFE (const Grid& grid, const Terrain& terrain,
