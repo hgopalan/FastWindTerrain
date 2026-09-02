@@ -292,3 +292,23 @@ def test_surface_kinematic_w_is_zero_over_flat_ground():
     zt = np.zeros((2, 2))
     mask = np.zeros((4, 2, 2), dtype=np.int32)
     assert np.all(lv.surface_kinematic_w(u, v, zt, 50.0, 50.0, mask) == 0.0)
+
+
+def test_recommended_band_levels_are_octaves():
+    """The placement study's outcome, asserted so it cannot drift: five
+    levels octave-spaced across 10-160 m, then log-spaced aloft."""
+    band = np.array(lv.RECOMMENDED_LEVELS[:5])
+    assert band[0] == 10.0 and band[-1] == 160.0
+    assert np.allclose(band[1:] / band[:-1], 2.0)
+    # And it still contains the engineering heights that survive octave
+    # spacing, which is why it is usable without interpolating to them.
+    assert {10.0, 80.0, 160.0}.issubset(set(lv.RECOMMENDED_LEVELS))
+
+
+def test_recommended_levels_span_more_than_the_engineering_band():
+    """The failure mode the study found: five levels covering only
+    10-160 m leave 20% error over the column, because on this grid that
+    is its bottom third."""
+    # Exactly a decade above the top engineering height, as it happens.
+    assert max(lv.RECOMMENDED_LEVELS) >= 10.0 * max(lv.ENGINEERING_LEVELS)
+    assert sorted(lv.RECOMMENDED_LEVELS) == list(lv.RECOMMENDED_LEVELS)

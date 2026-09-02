@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      2700.6677030948895
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      1367.6741993368337
+    ],
+    "stretching_ratio": 1.0485289638428625
+  },
+  "halo_m": 250.0,
+  "lat": 40.8521,
+  "lon": -121.2334,
+  "n_points": 41874,
+  "name": "Dixie Fire",
+  "relief": 332.99350375805625,
+  "slug": "dixie_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 1700.66770309489,
+  "z_mean": 1545.9647131029437,
+  "z_min": 1367.6741993368337
+}

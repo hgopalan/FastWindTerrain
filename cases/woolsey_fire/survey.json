@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      1409.0000000000025
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      199.0
+    ],
+    "stretching_ratio": 1.0461068896866683
+  },
+  "halo_m": 250.0,
+  "lat": 34.2667,
+  "lon": -118.7833,
+  "n_points": 38372,
+  "name": "Woolsey Fire",
+  "relief": 210.0,
+  "slug": "woolsey_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 409.0,
+  "z_mean": 265.44048151660496,
+  "z_min": 199.0
+}

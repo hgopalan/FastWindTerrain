@@ -178,6 +178,137 @@ def run_case(case, stream=sys.stdout):
     return rows, div_truth
 
 
+# ---------------------------------------------------------------------------
+# Where to put the levels, at a fixed count
+# ---------------------------------------------------------------------------
+
+#: The nominal top of the band worth resolving, in metres above ground.
+#: The catalogue's domains reach 1000 m above their highest terrain, so
+#: this spans essentially the whole column without depending on a
+#: particular case's relief.
+PLACEMENT_TOP = 1600.0
+PLACEMENT_BASE = 10.0          # the lowest resolvable level on a 4 m grid
+
+
+def placements(k):
+    """Level sets of the same size, distributed by different rules.
+
+    The count is what a paper usually reports and the placement is what
+    actually has to be reproduced, so at fixed k these are the choice a
+    reader has to make. A rule that transfers is worth more than a list
+    that does not.
+    """
+    lo, hi = PLACEMENT_BASE, PLACEMENT_TOP
+    out = {
+        "uniform": tuple(np.linspace(lo, hi, k)),
+        "log": tuple(np.geomspace(lo, hi, k)),
+        "quadratic": tuple(lo + (hi - lo) * (np.linspace(0, 1, k) ** 2)),
+    }
+    # Anchored on the heights people actually ask for, with whatever is
+    # left log-spaced above them. This is the practical option: it keeps
+    # the engineering levels exact instead of landing near them.
+    eng = list(lv.ENGINEERING_LEVELS)
+    if k >= len(eng):
+        extra = k - len(eng)
+        fill = (list(np.geomspace(eng[-1] * 1.6, hi, extra))
+                if extra else [])
+        out["engineering-anchored"] = tuple(eng + fill)
+    return out
+
+
+def splits(k):
+    """Level sets that divide a fixed budget between the band and aloft.
+
+    The engineering band is where the answer is wanted and the column
+    above is what has to be spanned for a 3D reconstruction, so a fixed
+    number of levels has to be shared between them. This is that trade-off
+    made explicit: n_band log-spaced across 10-160 m, the rest log-spaced
+    from there to the top.
+
+    Stated as a split rather than as a list, because the split is the
+    part that transfers to a different grid.
+    """
+    out = {}
+    for n_band in range(2, k):
+        n_aloft = k - n_band
+        band = list(np.geomspace(PLACEMENT_BASE, 160.0, n_band))
+        aloft = list(np.geomspace(160.0, PLACEMENT_TOP, n_aloft + 1))[1:]
+        out[f"{n_band} band + {n_aloft} aloft"] = tuple(band + aloft)
+    out["pure log 10-1600"] = tuple(np.geomspace(PLACEMENT_BASE,
+                                                 PLACEMENT_TOP, k))
+    return out
+
+
+def split_case(case, stream=sys.stdout):
+    """How to divide k levels between 10-160 m and the column above."""
+    cfg = case.config(wind_speed=WIND_SPEED, wind_direction=WIND_DIRECTION,
+                      n_projections=N_PROJECTIONS)
+    s = fwt.Solver(cfg)
+    s.setup(); s.solve(); s.diagnose()
+
+    g = s.grid
+    z_cc = np.asarray(g.z_cc)
+    geom = (z_cc, s.z_terrain, s.mask, np.diff(np.asarray(g.z_face)),
+            (g.prob_hi[0] - g.prob_lo[0]) / g.nx,
+            (g.prob_hi[1] - g.prob_lo[1]) / g.ny)
+    truth = np.stack(s.velocity)
+    agl = lv.height_above_ground(z_cc, s.z_terrain)
+    eng_k = ((agl >= lv.ENGINEERING_LEVELS[0])
+             & (agl <= lv.ENGINEERING_LEVELS[-1]))
+
+    print(f"\n=== {case.name} -- how to split the level budget ===",
+          file=stream)
+    for k in (8, 12):
+        rows = []
+        for name, levels in splits(k).items():
+            e = errors(reconstruct(truth, geom, level_set=levels),
+                       truth, s.mask, eng_k)
+            rows.append((name, e["rmse_speed"], e["rmse_uv_eng"], levels))
+        best_col = min(rows, key=lambda r: r[1])[0]
+        best_band = min(rows, key=lambda r: r[2])[0]
+        print(f"\n  k = {k}", file=stream)
+        for name, col, band, levels in rows:
+            marks = ("<- best column" if name == best_col else "") + \
+                    (" <- best band" if name == best_band else "")
+            print(f"    {name:22s} rmse|U| {col:.4f}   uv@eng {band:.4f} "
+                  f"  {marks}", file=stream)
+        print(f"    best column: {best_col};  best band: {best_band}",
+              file=stream)
+    return None
+
+
+def placement_case(case, stream=sys.stdout):
+    """Same k, different placements, on one solved field."""
+    cfg = case.config(wind_speed=WIND_SPEED, wind_direction=WIND_DIRECTION,
+                      n_projections=N_PROJECTIONS)
+    s = fwt.Solver(cfg)
+    s.setup(); s.solve(); s.diagnose()
+
+    g = s.grid
+    z_cc = np.asarray(g.z_cc)
+    geom = (z_cc, s.z_terrain, s.mask, np.diff(np.asarray(g.z_face)),
+            (g.prob_hi[0] - g.prob_lo[0]) / g.nx,
+            (g.prob_hi[1] - g.prob_lo[1]) / g.ny)
+    truth = np.stack(s.velocity)
+    agl = lv.height_above_ground(z_cc, s.z_terrain)
+    eng_k = ((agl >= lv.ENGINEERING_LEVELS[0])
+             & (agl <= lv.ENGINEERING_LEVELS[-1]))
+
+    print(f"\n=== {case.name} -- placement at fixed level count ===",
+          file=stream)
+    results = {}
+    for k in (5, 8, 12):
+        print(f"\n  k = {k}", file=stream)
+        for name, levels in placements(k).items():
+            r = reconstruct(truth, geom, level_set=levels)
+            e = errors(r, truth, s.mask, eng_k)
+            results[(k, name)] = e
+            shown = ", ".join(f"{x:.0f}" for x in levels)
+            print(f"    {name:22s} rmse|U| {e['rmse_speed']:.4f}   "
+                  f"uv@eng {e['rmse_uv_eng']:.4f}   [{shown}]", file=stream)
+    return results
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -185,6 +316,11 @@ def main():
                    help="case to study (repeatable); default: every prepared one")
     p.add_argument("--figure", default=None, metavar="PATH",
                    help="write an error-vs-levels figure here")
+    p.add_argument("--placement", action="store_true",
+                   help="sweep level PLACEMENT at fixed count instead")
+    p.add_argument("--split", action="store_true",
+                   help="sweep how a fixed level budget divides between the "
+                        "10-160 m band and the column above")
     args = p.parse_args()
 
     wanted = args.case or [c.slug for c in casegen.catalogue()]
@@ -203,7 +339,14 @@ def main():
     results = {}
     with fwt.session():
         for c in cases:
-            results[c.name] = run_case(c)
+            if args.split:
+                split_case(c)
+            elif args.placement:
+                placement_case(c)
+            else:
+                results[c.name] = run_case(c)
+    if args.placement or args.split:
+        return 0
 
     if args.figure:
         plot(results, args.figure)

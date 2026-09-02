@@ -41,6 +41,7 @@ import numpy as np
 __all__ = [
     "ALOFT_LEVELS",
     "DEFAULT_LEVELS",
+    "RECOMMENDED_LEVELS",
     "DIAGNOSTIC_LEVEL",
     "ENGINEERING_LEVELS",
     "extract_levels",
@@ -62,7 +63,24 @@ ENGINEERING_LEVELS = (10.0, 80.0, 100.0, 120.0, 160.0)
 #: rather than an interpolation.
 ALOFT_LEVELS = (300.0, 600.0, 1200.0)
 
+#: The obvious set: the requested heights plus something aloft. Kept
+#: because the placement study compares against it, and because it is what
+#: anyone would reach for first -- but see RECOMMENDED_LEVELS, which beats
+#: it on both the column and the band.
 DEFAULT_LEVELS = ENGINEERING_LEVELS + ALOFT_LEVELS
+
+#: What the placement and split studies actually land on, and the set to
+#: use: five levels octave-spaced across 10-160 m, three log-spaced above.
+#:
+#: The band levels are exact octaves -- ``geomspace(10, 160, 5)`` has a
+#: ratio of 2 -- and the set still contains 10, 80 and 160 m outright.
+#:
+#: It beats DEFAULT_LEVELS on the band by roughly two to one, because
+#: anchoring on 80/100/120/160 leaves nothing between 10 and 80 m, which
+#: is where the shear is. The heights an answer is wanted at are not the
+#: heights samples should be taken at. See docs/surrogate.rst for the
+#: measurements behind that.
+RECOMMENDED_LEVELS = (10.0, 20.0, 40.0, 80.0, 160.0, 345.0, 743.0, 1600.0)
 
 #: Pedestrian height. Sub-grid, so it is diagnosed from a log law and is
 #: deliberately not part of the level set the surrogate predicts.

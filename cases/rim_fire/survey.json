@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      3089.829939512547
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      1295.1890357018872
+    ],
+    "stretching_ratio": 1.0558384998071393
+  },
+  "halo_m": 250.0,
+  "lat": 38.3333,
+  "lon": -120.1667,
+  "n_points": 40364,
+  "name": "Rim Fire",
+  "relief": 794.6409038106633,
+  "slug": "rim_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 2089.8299395125505,
+  "z_mean": 1781.7963598870363,
+  "z_min": 1295.1890357018872
+}
