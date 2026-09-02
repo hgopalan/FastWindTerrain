@@ -42,6 +42,7 @@ either out of order raises rather than crashing the interpreter. Use the
 from contextlib import contextmanager
 
 from ._fastwindterrain import (      # noqa: F401
+    Anisotropy,
     Grid,
     Inflow,
     Solver,
@@ -55,6 +56,7 @@ from ._fastwindterrain import (      # noqa: F401
 )
 
 __all__ = [
+    "Anisotropy",
     "Grid",
     "Inflow",
     "Solver",
