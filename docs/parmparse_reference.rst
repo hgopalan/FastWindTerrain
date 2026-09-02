@@ -106,6 +106,10 @@ See :doc:`terrain`.
    * - ``terrain.idw_exponent``
      - ``2.0``
      - IDW power
+   * - ``terrain.extrapolation``
+     - ``idw``
+     - Height of a column outside the point cloud's extent: ``idw`` or
+       ``nearest``
 
 ``inflow.`` -- the initial wind field
 =====================================

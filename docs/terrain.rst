@@ -28,6 +28,9 @@ Inputs
    * - ``terrain.idw_exponent``
      - ``2.0``
      - IDW power ``p``; weight ``= d^-p``
+   * - ``terrain.extrapolation``
+     - ``idw``
+     - What a column outside the point cloud gets: ``idw`` or ``nearest``
 
 File format
 ===========
@@ -73,6 +76,63 @@ cell-centered ``MultiFab`` replicated along ``k``. That costs ``nz``
 times more memory than a column array and buys two things worth more at
 this scale: direct plotfile output, and uniform ``(i,j,k)`` indexing in
 every kernel with no special-cased ``k``.
+
+Columns the point cloud does not cover
+======================================
+
+IDW is an interpolation. Asked for a height at a column that no input
+point brackets it still answers, with a distance-weighted average of
+points that all lie to one side -- a smooth surface, and an arbitrary
+one. Because the mask below is only ``z_cc <= z_terrain``, a wrong
+elevation out there does not look wrong: the column simply comes out all
+fluid or all solid, with nothing to say why.
+
+``terrain.extrapolation`` chooses what those columns get:
+
+.. list-table::
+   :widths: 16 74
+   :header-rows: 1
+
+   * - Value
+     - Height at a column outside the cloud
+   * - ``idw``
+     - The same ``k``-nearest average as everywhere else. The
+       **default**, so existing cases are bit-for-bit unchanged
+   * - ``nearest``
+     - The elevation of the single nearest input point
+
+"Outside" means outside the **axis-aligned extent** of the points --
+``x < x_min``, ``x > x_max``, ``y < y_min`` or ``y > y_max``, computed
+from the cloud itself. That test, rather than "no point within radius
+``R``", for three reasons:
+
+* it needs no length scale from the user, and so cannot be set wrong;
+* the bounding box contains the convex hull, so a column it calls
+  outside really is being extrapolated -- the fallback never replaces a
+  genuine interpolation;
+* a radius test would fire wherever the cloud is merely *sparse*,
+  quietly turning good interior data into a nearest-point staircase,
+  while still missing the column just past the edge of a dense cloud,
+  which is where extrapolation goes worst.
+
+The comparison is strict, so a column sitting exactly on the extent is
+interpolated.
+
+Either way the run reports how many columns fell outside, as
+``terrain_n_columns_outside`` in the report and as
+``Terrain.n_columns_outside`` from Python. Under ``idw`` a non-zero count
+also raises a warning naming this input; under ``nearest`` it prints a
+note. A case whose terrain data carries a margin past the domain has no
+such column and is unaffected by any of this -- ``cases/casegen.py`` and
+``cases/corpus.py`` keep 250 m of points beyond the domain for exactly
+that reason.
+
+``nearest`` extends the surface as a piecewise-constant (Voronoi) fill
+of the boundary elevations, so it is not smooth out there. It is not
+meant to be: it is the nearest thing actually measured, which is a
+defensible answer where an average of one-sided points is not. Terrain
+data that reaches past the domain is still the right fix; this is the
+guard for when it does not.
 
 The immersed-boundary mask
 ==========================

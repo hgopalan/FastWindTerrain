@@ -93,6 +93,19 @@ terrain.flat_elevation = 0.0
 terrain.idw_n_neighbors = 6
 terrain.idw_exponent    = 2.0
 
+# What a column OUTSIDE the point cloud's x/y extent gets:
+#   idw     -- the same k-nearest average as everywhere else. Over a
+#              cloud that lies entirely to one side that is a smooth but
+#              arbitrary surface, and since the mask is just
+#              z_cc <= z_terrain, a wrong height there silently makes
+#              the column all fluid or all solid       (default)
+#   nearest -- the nearest input point's elevation
+# The default is idw because it is what the code has always done; a case
+# whose terrain data carries a margin past the domain (cases/casegen.py
+# keeps 250 m) has no such column and is unaffected either way. The run
+# says how many columns fell outside, in both modes.
+terrain.extrapolation   = idw
+
 
 # ---------------------------------------------------------------------
 # inflow.  --  the initial wind field

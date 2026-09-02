@@ -96,9 +96,45 @@ amrex::Real Terrain::InterpolateIDW (amrex::Real xq, amrex::Real yq,
     return zval / wsum;
 }
 
+amrex::Real Terrain::NearestElevation (amrex::Real xq, amrex::Real yq,
+                                       const std::vector<amrex::Real>& xp,
+                                       const std::vector<amrex::Real>& yp,
+                                       const std::vector<amrex::Real>& zp)
+{
+    const int n = static_cast<int>(xp.size());
+    // Build() only reaches this with points in hand, but the function is
+    // public; an empty cloud here would otherwise index past the end.
+    if (n == 0) {
+        throw InputError("Terrain::NearestElevation: no terrain points");
+    }
+
+    int best = 0;
+    amrex::Real best_d2 = std::numeric_limits<amrex::Real>::max();
+    for (int i = 0; i < n; ++i) {
+        const amrex::Real dx = xp[i] - xq;
+        const amrex::Real dy = yp[i] - yq;
+        const amrex::Real d2 = dx*dx + dy*dy;
+        if (d2 < best_d2) { best_d2 = d2; best = i; }   // strict: ties -> lowest i
+    }
+    return zp[best];
+}
+
 // ---------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------
+
+// The choice is deliberately between two named behaviours rather than a
+// bool: "extrapolation = nearest" says at the call site what it does,
+// and leaves room for a third rule later without another input.
+Terrain::Extrapolation Terrain::ParseExtrapolation (const std::string& s)
+{
+    if (s == "idw")     { return Extrapolation::idw; }
+    if (s == "nearest") { return Extrapolation::nearest; }
+    // Thrown, not aborted: Python catches it, the executable still dies
+    // through main()'s handler. An unrecognized value is never a default.
+    throw InputError("terrain.extrapolation = '" + s +
+                     "' is not recognized (expected idw or nearest)");
+}
 
 Terrain::Params Terrain::Params::FromParmParse ()
 {
@@ -106,9 +142,10 @@ Terrain::Params Terrain::Params::FromParmParse ()
     amrex::ParmParse pp("terrain");
 
     pp.query("file", p.file);
-    p.given_flat = pp.query("flat_elevation", p.flat_elevation);
-    p.given_k    = pp.query("idw_n_neighbors", p.idw_n_neighbors);
-    p.given_p    = pp.query("idw_exponent", p.idw_exponent);
+    p.given_flat   = pp.query("flat_elevation", p.flat_elevation);
+    p.given_k      = pp.query("idw_n_neighbors", p.idw_n_neighbors);
+    p.given_p      = pp.query("idw_exponent", p.idw_exponent);
+    p.given_extrap = pp.query("extrapolation", p.extrapolation);
 
     p.Validate();
     return p;
@@ -122,6 +159,7 @@ void Terrain::Params::Validate () const
     if (idw_exponent <= 0.0) {
         throw InputError("terrain.idw_exponent must be > 0");
     }
+    (void) ParseExtrapolation(extrapolation);   // throws on an unknown name
     if (!xp.empty() && !file.empty()) {
         throw InputError(
             "terrain points were given directly AND terrain.file is set; "
@@ -153,16 +191,48 @@ void Terrain::BuildTerrainHeight (const Grid& grid)
     std::vector<amrex::Real>& h = m_h;
     h.assign(std::size_t(nx) * std::size_t(ny), 0.0);
 
+    m_n_outside = 0;
+
     if (m_xp.empty()) {
         std::fill(h.begin(), h.end(), m_params.flat_elevation);
     } else {
+        // The cloud's axis-aligned extent, computed once. "Outside" is
+        // measured against THIS and not against a search radius, for two
+        // reasons. It needs no length scale from the user, and it is the
+        // conservative test: the bounding box contains the convex hull,
+        // so a column it calls outside is outside the hull too and its
+        // height really is an extrapolation. A radius test would instead
+        // fire wherever the cloud is merely sparse -- turning genuine
+        // interpolation into a nearest-point staircase in the interior,
+        // which is a quiet loss of accuracy where the data was fine --
+        // and would still miss a column just past the edge of a dense
+        // cloud, which is exactly where extrapolation goes worst.
+        const auto xmm = std::minmax_element(m_xp.begin(), m_xp.end());
+        const auto ymm = std::minmax_element(m_yp.begin(), m_yp.end());
+        m_x_min = *xmm.first;  m_x_max = *xmm.second;
+        m_y_min = *ymm.first;  m_y_max = *ymm.second;
+
+        const bool nearest =
+            (ParseExtrapolation(m_params.extrapolation) == Extrapolation::nearest);
+
         for (int j = 0; j < ny; ++j) {
             const amrex::Real yq = ylo + (amrex::Real(j) + 0.5) * dy;
             for (int i = 0; i < nx; ++i) {
                 const amrex::Real xq = xlo + (amrex::Real(i) + 0.5) * dx;
+
+                // Strict: a column exactly on the extent is bracketed by
+                // real data in that direction and is interpolated, so the
+                // covered case stays bit-for-bit what it was.
+                const bool outside = (xq < m_x_min) || (xq > m_x_max)
+                                  || (yq < m_y_min) || (yq > m_y_max);
+                if (outside) { ++m_n_outside; }
+
                 h[std::size_t(j)*nx + i] =
-                    InterpolateIDW(xq, yq, m_xp, m_yp, m_zp,
-                                   m_params.idw_n_neighbors, m_params.idw_exponent);
+                    (outside && nearest)
+                        ? NearestElevation(xq, yq, m_xp, m_yp, m_zp)
+                        : InterpolateIDW(xq, yq, m_xp, m_yp, m_zp,
+                                         m_params.idw_n_neighbors,
+                                         m_params.idw_exponent);
             }
         }
     }
@@ -188,6 +258,36 @@ void Terrain::BuildTerrainHeight (const Grid& grid)
             amrex::ignore_unused(k);
             a(i,j,k) = ph[std::size_t(j)*nx + i];
         });
+    }
+}
+
+// A point cloud that does not reach across the domain is the failure
+// this whole option exists for, and its symptom -- a column that is
+// suddenly all fluid or all solid -- looks nothing like its cause. So it
+// is said out loud in both modes: as a warning under `idw`, where the
+// heights out there are an arbitrary average of one-sided points, and as
+// a plain note under `nearest`, where the user has already chosen what
+// happens and only needs to know how much of the domain it covers.
+void Terrain::ReportCoverage () const
+{
+    if (m_n_outside == 0) { return; }
+
+    std::ostringstream msg;
+    msg << "terrain point cloud does not cover the domain: " << m_n_outside
+        << " grid column(s) lie outside its extent x ["
+        << m_x_min << ", " << m_x_max << "] m, y ["
+        << m_y_min << ", " << m_y_max << "] m.\n";
+
+    if (ParseExtrapolation(m_params.extrapolation) == Extrapolation::nearest) {
+        msg << "  terrain.extrapolation = nearest: those columns take the "
+               "nearest input point's elevation.\n";
+        amrex::Print() << "  NOTE [Terrain]: " << msg.str();
+    } else {
+        msg << "  Their height is an IDW average of points that all lie to "
+               "one side -- smooth, but not a measurement.\n"
+            << "  Extend the terrain data past the domain, or set "
+               "terrain.extrapolation = nearest.\n";
+        Warn("WARNING [Terrain]: " + msg.str());
     }
 }
 
@@ -241,6 +341,8 @@ void Terrain::Build (const Grid& grid, const Params& params)
               << (m_params.given_k ? "" : "   [default]"));
     FWT_DEBUG("idw_exponent     = " << m_params.idw_exponent
               << (m_params.given_p ? "" : "   [default]"));
+    FWT_DEBUG("extrapolation    = " << m_params.extrapolation
+              << (m_params.given_extrap ? "" : "   [default]"));
 
     if (m_params.has_points()) {
         // Handed in directly. They go through the same interpolation the
@@ -261,6 +363,7 @@ void Terrain::Build (const Grid& grid, const Params& params)
     }
 
     BuildTerrainHeight(grid);
+    ReportCoverage();
     BuildMask(grid);
 
     if (Debug::Enabled()) {
@@ -281,6 +384,9 @@ void Terrain::Build (const Grid& grid, const Params& params)
                                               << *ymm.second << "] m");
             FWT_DEBUG("point z range    = [" << *zmm.first << ", "
                                               << *zmm.second << "] m");
+            FWT_DEBUG("columns outside  = " << m_n_outside << " of "
+                      << m_h.size() << "   (extent not covered by the cloud; "
+                      << "extrapolation = " << m_params.extrapolation << ")");
         }
         FWT_DEBUG("z_terrain range  = [" << m_z_min << ", " << m_z_max
                                           << "] m   (interpolated to cell columns)");
@@ -313,6 +419,8 @@ void Terrain::AppendReport (const std::string& filename) const
     os << "terrain_n_points " << m_xp.size() << "\n";
     os << "terrain_idw_n_neighbors " << m_params.idw_n_neighbors << "\n";
     os << "terrain_idw_exponent " << m_params.idw_exponent << "\n";
+    os << "terrain_extrapolation " << m_params.extrapolation << "\n";
+    os << "terrain_n_columns_outside " << m_n_outside << "\n";
     os << "terrain_z_min " << m_z_min << "\n";
     os << "terrain_z_max " << m_z_max << "\n";
     os << "terrain_n_solid " << m_n_solid << "\n";
