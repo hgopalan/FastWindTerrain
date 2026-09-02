@@ -63,6 +63,10 @@ class Numerics
 {
 public:
     static void Init ();
+    // Sets the scheme directly, for a caller configuring a run without
+    // ParmParse. Throws InputError on an unrecognized name, exactly as
+    // the input file path does.
+    static void Set (const std::string& name);
     static Scheme scheme ()          { return s_scheme; }
     static const std::string& name () { return s_name; }
 private:

@@ -252,6 +252,32 @@ Terrain and the inflow profile built from Python (see :doc:`python`).
   missing file, a calm wind, an unknown mode -- with the interpreter
   usable afterwards
 
+``phase13_solver_driver``
+-------------------------
+
+The solver driven from Python (see :doc:`python`).
+
+* **Phase 6's flat-terrain assertions, reproduced from Python**: a
+  uniform profile over flat ground is already solenoidal, so lambda comes
+  out identically zero, the velocity is untouched and ``w`` stays exactly
+  zero. The checker also asserts the profile is not ~zero, so the case
+  proves something
+* four ``project_once()`` passes give a **bit-identical** field and
+  lambda to ``solve()`` with ``n_projections = 4``. They are the same
+  code and this holds them to it
+* over a hill the controlled divergence falls **monotonically** pass
+  after pass, and MLMG's residual and iteration count are both reported
+  -- a count of zero would mean it is not being read, and a count at
+  ``max_iter`` would mean the solve never converged
+* **the ghost refill Phase 11 could not test.** Solver B is handed the
+  field solver A produced, and their scheme divergence -- which reads the
+  ghost cells through a five-point stencil -- must match exactly. The
+  valid regions are equal by construction, so a difference would be the
+  ghosts
+* no ParmParse leak: a dict-configured run ignores an inputs file that
+  sets ``poisson.n_projections = 7``, ``alpha_v = 0.125`` and
+  ``anisotropy.enable = 1``
+
 ``profile_convergence``
 -----------------------
 

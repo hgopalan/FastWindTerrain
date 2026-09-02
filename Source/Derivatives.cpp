@@ -205,6 +205,13 @@ ColumnMetric (const amrex::Vector<amrex::Real>& z_cc)
     return dzdk;
 }
 
+void Numerics::Set (const std::string& name)
+{
+    s_scheme = ParseScheme(name);   // throws on an unknown name
+    s_name = name;
+    FWT_DEBUG("gradient_scheme  = " << s_name << "   [set directly]");
+}
+
 void RunGradientSelfTest (const std::string& filename)
 {
     if (!amrex::ParallelDescriptor::IOProcessor()) { return; }

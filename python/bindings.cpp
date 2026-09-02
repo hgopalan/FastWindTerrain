@@ -33,7 +33,9 @@
 #include "Error.H"
 #include "FieldIO.H"
 #include "Grid.H"
+#include "Anisotropy.H"
 #include "Inflow.H"
+#include "Obrien.H"
 #include "Terrain.H"
 #include "Solver.H"
 
@@ -557,6 +559,151 @@ fwt::Inflow::Params InflowParamsFromDict (const py::dict& d)
     return p;
 }
 
+fwt::Anisotropy::Params AnisotropyParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"enable", "source", "alpha_h_mode", "slope_scale",
+                          "decay_height", "min_factor", "max_factor"},
+                      "anisotropy");
+    fwt::Anisotropy::Params p;
+    if (d.contains("enable")) {
+        p.enable = py::cast<bool>(d["enable"]) ? 1 : 0;
+    }
+    if (d.contains("source")) {
+        p.source = py::cast<std::string>(py::str(d["source"]));
+    }
+    if (d.contains("alpha_h_mode")) {
+        p.alpha_h_mode = py::cast<std::string>(py::str(d["alpha_h_mode"]));
+    }
+    if (d.contains("slope_scale")) {
+        p.slope_scale = GetScalar<amrex::Real>(d, "slope_scale", "anisotropy");
+    }
+    if (d.contains("decay_height")) {
+        p.decay_height = GetScalar<amrex::Real>(d, "decay_height",
+                                                "anisotropy");
+    }
+    if (d.contains("min_factor")) {
+        p.min_factor = GetScalar<amrex::Real>(d, "min_factor", "anisotropy");
+    }
+    if (d.contains("max_factor")) {
+        p.max_factor = GetScalar<amrex::Real>(d, "max_factor", "anisotropy");
+    }
+    return p;   // Validate runs in Build, with the bases filled in
+}
+
+fwt::Obrien::Params ObrienParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"enable"}, "obrien");
+    fwt::Obrien::Params p;
+    if (d.contains("enable")) {
+        p.enable = py::cast<bool>(d["enable"]) ? 1 : 0;
+    }
+    return p;
+}
+
+fwt::Poisson::Params PoissonParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"alpha_h", "alpha_v", "lambda_bc", "rhs_operator",
+                          "gradient_operator", "n_projections", "max_iter",
+                          "reltol", "abstol", "num_pre_smooth",
+                          "num_post_smooth", "verbose", "manufactured",
+                          "force_all_dirichlet", "rhs_dump_file"},
+                      "poisson");
+    fwt::Poisson::Params p;
+    if (d.contains("alpha_h")) {
+        p.alpha_h = GetScalar<amrex::Real>(d, "alpha_h", "poisson");
+        p.given_alpha_h = true;
+    }
+    if (d.contains("alpha_v")) {
+        p.alpha_v = GetScalar<amrex::Real>(d, "alpha_v", "poisson");
+        p.given_alpha_v = true;
+    }
+    if (d.contains("lambda_bc")) {
+        p.lambda_bc = py::cast<std::string>(py::str(d["lambda_bc"]));
+    }
+    if (d.contains("rhs_operator")) {
+        p.rhs_operator = py::cast<std::string>(py::str(d["rhs_operator"]));
+    }
+    if (d.contains("gradient_operator")) {
+        p.gradient_operator =
+            py::cast<std::string>(py::str(d["gradient_operator"]));
+    }
+    if (d.contains("n_projections")) {
+        p.n_projections = GetScalar<int>(d, "n_projections", "poisson");
+    }
+    if (d.contains("max_iter")) {
+        p.max_iter = GetScalar<int>(d, "max_iter", "poisson");
+    }
+    if (d.contains("reltol")) {
+        p.reltol = GetScalar<amrex::Real>(d, "reltol", "poisson");
+    }
+    if (d.contains("abstol")) {
+        p.abstol = GetScalar<amrex::Real>(d, "abstol", "poisson");
+    }
+    if (d.contains("num_pre_smooth")) {
+        p.num_pre_smooth = GetScalar<int>(d, "num_pre_smooth", "poisson");
+    }
+    if (d.contains("num_post_smooth")) {
+        p.num_post_smooth = GetScalar<int>(d, "num_post_smooth", "poisson");
+    }
+    if (d.contains("verbose")) {
+        p.verbose = GetScalar<int>(d, "verbose", "poisson");
+    }
+    if (d.contains("manufactured")) {
+        p.manufactured = py::cast<bool>(d["manufactured"]) ? 1 : 0;
+    }
+    if (d.contains("force_all_dirichlet")) {
+        p.force_all_dirichlet =
+            py::cast<bool>(d["force_all_dirichlet"]) ? 1 : 0;
+    }
+    if (d.contains("rhs_dump_file")) {
+        p.rhs_dump_file = py::cast<std::string>(py::str(d["rhs_dump_file"]));
+    }
+    p.Validate();
+    return p;
+}
+
+// The whole case, as one nested dict. An absent section means "use the
+// defaults", not "use whatever ParmParse happens to hold".
+fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"grid", "terrain", "inflow", "anisotropy",
+                          "obrien", "poisson", "numerics"}, "solver");
+
+    auto section = [&] (const char* key) {
+        return d.contains(key) ? py::cast<py::dict>(d[key]) : py::dict();
+    };
+
+    fwt::Solver::Params p;
+    if (!d.contains("grid")) {
+        throw fwt::InputError("a solver configuration needs a 'grid' section");
+    }
+    p.grid       = ParamsFromDict(section("grid"));
+    p.terrain    = TerrainParamsFromDict(section("terrain"));
+    p.inflow     = InflowParamsFromDict(section("inflow"));
+    p.anisotropy = AnisotropyParamsFromDict(section("anisotropy"));
+    p.obrien     = ObrienParamsFromDict(section("obrien"));
+    p.poisson    = PoissonParamsFromDict(section("poisson"));
+
+    if (d.contains("numerics")) {
+        py::dict n = section("numerics");
+        RejectUnknownKeys(n, {"gradient_scheme"}, "numerics");
+        if (n.contains("gradient_scheme")) {
+            p.gradient_scheme =
+                py::cast<std::string>(py::str(n["gradient_scheme"]));
+        }
+    }
+    return p;
+}
+
+void RequireSolved (const fwt::Solver& s, const char* what)
+{
+    if (!s.is_solved()) {
+        throw std::runtime_error(
+            std::string(what) + " is not available until a projection has "
+            "run. Call solve() or project_once() first.");
+    }
+}
+
 void RequireSetup (const fwt::Solver& s, const char* what)
 {
     if (!s.is_setup()) {
@@ -781,16 +928,35 @@ uses, so the two agree bit for bit.
     py::class_<fwt::Solver>(m, "Solver", R"doc(
 The solver pipeline, as an object -- the same one the executable runs.
 
-Phase 11 exposes ``setup()`` and the fields it builds. The remaining
-stages (``solve()``, ``diagnose()``, ``write_output()``) and dict-based
-configuration arrive in later phases; for now the case is described by
-the inputs file AMReX was initialized with::
+Configured either from a dict, with no inputs file anywhere::
+
+    with fwt.session():
+        s = fwt.Solver({"grid": {...}, "terrain": {"points": pts},
+                        "inflow": {"u_ref": 8.0, "v_ref": 6.0},
+                        "poisson": {"alpha_v": 0.5, "n_projections": 4}})
+        s.setup()
+        s.solve()
+        s.diagnose()
+        u = s.velocity[0]
+
+or from the inputs file AMReX was initialized with::
 
     with fwt.session(["inputs"]):
         s = fwt.Solver()
-        s.setup()
-        u = s.velocity[0]          # numpy, (nz, ny, nx)
-        s.set_velocity(new_field)  # writes back, ghosts refilled
+        s.run()
+
+An absent section means "use the defaults", never "use whatever
+ParmParse happens to hold" -- which is what makes a generation loop
+safe. An unknown section or key raises.
+
+STEPWISE. ``project_once()`` runs a single projection pass and returns
+the MLMG residual, so a notebook can watch an approximate projection
+converge rather than be told that it did::
+
+    s.setup()
+    for _ in range(4):
+        s.project_once()
+        print(s.max_divergence_fe)
 
 FIELD LAYOUT. Every field comes back as ``(ncomp, nz, ny, nx)``, with
 the leading axis dropped when there is one component -- so ``velocity``
@@ -805,21 +971,109 @@ COPIES, NOT VIEWS. A MultiFab is several boxes, the velocity carries two
 ghost layers, and a view would outlive the Solver that owns it. Writing
 into a returned array changes nothing; use ``set_velocity``.
 )doc")
-        .def(py::init([] () {
+        .def(py::init([] (const py::object& config) {
                  RequireInitialized("Solver");
-                 return std::make_unique<fwt::Solver>();
-             }))
+                 auto s = std::make_unique<fwt::Solver>();
+                 if (!config.is_none()) {
+                     s->set_config(SolverParamsFromDict(
+                         py::cast<py::dict>(config)));
+                 }
+                 return s;
+             }), py::arg("config") = py::none(),
+             "A solver. With a config dict the case is described entirely\n"
+             "in Python; without one it comes from the inputs file AMReX\n"
+             "was initialized with.")
         .def("setup", [] (fwt::Solver& s,
                           const std::vector<std::string>& args) {
                  RequireInitialized("Solver.setup");
                  amrex::Vector<std::string> a;
                  a.reserve(args.size());
                  for (const std::string& x : args) { a.push_back(x); }
-                 s.Setup(a);
+                 if (s.has_config()) { s.Setup(s.config(), a); }
+                 else                { s.Setup(a); }
              }, py::arg("args") = std::vector<std::string>{},
-             "Build every component from the inputs AMReX was initialized\n"
-             "with. args are echoed by fwt.debug and nothing else.")
+             "Build every component. args are echoed by fwt.debug and\n"
+             "nothing else.")
+        .def("solve", [] (fwt::Solver& s) {
+                 RequireSetup(s, "solve()");
+                 s.Solve();
+             }, "Run the projection loop (or the manufactured solution).")
+        .def("project_once", [] (fwt::Solver& s) {
+                 RequireSetup(s, "project_once()");
+                 return s.ProjectOnce();
+             }, "One projection pass: rebuild the RHS, solve, correct,\n"
+                "refill the ghosts. Returns the MLMG residual.")
+        .def("diagnose", [] (fwt::Solver& s) {
+                 RequireSolved(s, "diagnose()");
+                 s.Diagnose();
+             }, "Compute the divergence field and the post-solve report.")
+        .def("write_output", [] (const fwt::Solver& s) {
+                 s.WriteOutput();
+             }, "Write the report and the field output.\n\n"
+                "Still driven by ParmParse, so a Python-configured run\n"
+                "writes to the default names. In-memory output is the\n"
+                "next phase.")
+        .def("run", [] (fwt::Solver& s,
+                        const std::vector<std::string>& args) {
+                 RequireInitialized("Solver.run");
+                 amrex::Vector<std::string> a;
+                 a.reserve(args.size());
+                 for (const std::string& x : args) { a.push_back(x); }
+                 if (s.has_config()) { s.Run(s.config(), a); }
+                 else                { s.Run(a); }
+             }, py::arg("args") = std::vector<std::string>{},
+             "setup, solve, diagnose and write_output, in order.")
         .def_property_readonly("is_setup", &fwt::Solver::is_setup)
+        .def_property_readonly("is_solved", &fwt::Solver::is_solved)
+        .def_property_readonly("is_diagnosed", &fwt::Solver::is_diagnosed)
+        .def_property_readonly("n_projections_done",
+                               &fwt::Solver::n_projections_done)
+        .def_property_readonly("solve_residual", [] (const fwt::Solver& s) {
+                 RequireSolved(s, "solve_residual");
+                 return s.poisson().solve_residual();
+             }, "MLMG residual of the last solve.")
+        .def_property_readonly("solve_iterations", [] (const fwt::Solver& s) {
+                 RequireSolved(s, "solve_iterations");
+                 return s.poisson().solve_iterations();
+             }, "MLMG iterations of the last solve. A solve that hit\n"
+                "max_iter has not converged, whatever its residual says.")
+        .def_property_readonly("max_divergence_fe", [] (fwt::Solver& s) {
+                 RequireSetup(s, "max_divergence_fe");
+                 return s.MaxDivergenceFE();
+             }, "max|div(u)| in the norm the projection controls. This is\n"
+                "the number that measures whether a pass helped.")
+        .def_property_readonly("max_divergence", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "max_divergence");
+                 return s.MaxDivergence();
+             }, "max|div(u)| with the configured derivative scheme. This\n"
+                "one reads the velocity's ghost cells, so it is what shows\n"
+                "whether they hold what they should.")
+        .def_property_readonly("divergence", [] (const fwt::Solver& s) {
+                 RequireSolved(s, "divergence");
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "divergence is not available until diagnose() has "
+                         "run.");
+                 }
+                 return FieldToNumpy(s.divergence());
+             }, "(nz, ny, nx) [1/s] -- div(u) per cell, zero in solid cells.")
+        .def_property_readonly("diagnostics", [] (const fwt::Solver& s) {
+                 if (!s.is_diagnosed()) {
+                     throw std::runtime_error(
+                         "diagnostics are not available until diagnose() "
+                         "has run.");
+                 }
+                 const auto& dg = s.diagnostics();
+                 py::dict out;
+                 out["div_max"] = dg.div_max();
+                 out["div_l2"] = dg.div_l2();
+                 out["flux_in"] = dg.flux().in;
+                 out["flux_out"] = dg.flux().out;
+                 out["flux_net"] = dg.flux().net;
+                 out["flux_imbalance"] = dg.flux().imbalance;
+                 out["flux_within_tolerance"] = dg.flux_within_tolerance();
+                 return out;
+             }, "The post-solve diagnostics, as a dict.")
         .def_property_readonly("grid", &fwt::Solver::grid,
                                py::return_value_policy::reference_internal)
         .def_property_readonly("shape", [] (const fwt::Solver& s) {

@@ -15,20 +15,29 @@
 
 namespace fwt {
 
-void Obrien::ReadParameters ()
+Obrien::Params Obrien::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("obrien");
-    pp.query("enable", m_enable);
-
-    FWT_DEBUG_SECTION("O'Brien adjustment (obrien.*)");
-    FWT_DEBUG("enable           = " << m_enable
-              << (m_enable ? "" : "   [w left as the profile set it]"));
+    pp.query("enable", p.enable);
+    return p;
 }
 
 long Obrien::Apply (const Grid& grid, const Terrain& terrain,
                     amrex::MultiFab& vel)
 {
-    ReadParameters();
+    return Apply(grid, terrain, vel, Params::FromParmParse());
+}
+
+long Obrien::Apply (const Grid& grid, const Terrain& terrain,
+                    amrex::MultiFab& vel, const Params& params)
+{
+    m_enable = params.enable;
+
+    FWT_DEBUG_SECTION("O'Brien adjustment (obrien.*)");
+    FWT_DEBUG("enable           = " << m_enable
+              << (m_enable ? "" : "   [w left as the profile set it]"));
+
     if (m_enable == 0) { return 0; }
 
     const amrex::Real dx = grid.geom().CellSize(0);

@@ -394,11 +394,117 @@ including the file readers: a missing terrain file is a typo in an inputs
 deck, not a bug in the solver, so it raises ``ValueError`` in Python
 while still aborting the executable through ``main()``'s handler.
 
+Driving the solver
+==================
+
+A whole case as one nested dict, with no inputs file anywhere:
+
+.. code-block:: python
+
+    with fwt.session():
+        s = fwt.Solver({
+            "grid":    {"n_cell": (24, 24, 40), ...},
+            "terrain": {"points": pts},
+            "inflow":  {"mode": "powerlaw", "u_ref": 8.0, "v_ref": 6.0},
+            "poisson": {"alpha_v": 0.5, "n_projections": 4},
+        })
+        s.run()
+        u = s.velocity[0]
+
+Sections are ``grid``, ``terrain``, ``inflow``, ``anisotropy``,
+``obrien``, ``poisson`` and ``numerics``. An absent section means **use
+the defaults**, never "use whatever ParmParse happens to hold" -- which
+is what makes a generation loop safe. An unknown section or key raises.
+
+``Solver::Params`` holds all six module Params in one place, and
+``FromParmParse`` builds one from an inputs deck. The two paths meet
+immediately afterwards, so the executable exercises the same code the
+dict does.
+
+Stepwise
+--------
+
+.. list-table::
+   :widths: 30 54
+   :header-rows: 1
+
+   * - Call
+     - Meaning
+   * - ``setup()``
+     - Build every component and keep ``u0``
+   * - ``project_once()``
+     - **One** projection pass; returns the MLMG residual
+   * - ``solve()``
+     - The projection loop, or the manufactured solution
+   * - ``diagnose()``
+     - The divergence field and the post-solve report
+   * - ``write_output()``
+     - The report and the field output
+   * - ``run()``
+     - All four in order
+
+``project_once`` exists so a notebook can watch an approximate
+projection converge rather than be told that it did:
+
+.. code-block:: python
+
+    s.setup()
+    for _ in range(4):
+        s.project_once()
+        print(s.max_divergence_fe)     # 0.1245, 0.1131, 0.0895, 0.0704...
+
+A regtest requires four stepwise passes to give a **bit-identical** field
+to ``solve()`` with ``n_projections = 4``: they are the same code, and it
+holds them to it.
+
+What the solve reports
+----------------------
+
+.. list-table::
+   :widths: 30 54
+   :header-rows: 1
+
+   * - Property
+     - Meaning
+   * - ``solve_residual``
+     - MLMG residual of the last solve
+   * - ``solve_iterations``
+     - MLMG iterations. A solve that hit ``max_iter`` has not converged,
+       whatever its residual says
+   * - ``max_divergence_fe``
+     - ``max|div(u)|`` in the norm the projection controls -- the number
+       that measures whether a pass helped
+   * - ``max_divergence``
+     - the same with the configured derivative scheme. This one reads the
+       velocity's **ghost cells**
+   * - ``divergence``
+     - the per-cell field, after ``diagnose()``
+   * - ``diagnostics``
+     - the post-solve dict: ``div_max``, ``div_l2``, the flux balance
+
+The ghost refill, finally testable
+----------------------------------
+
+Phase 11 said ``set_velocity`` refills the ghost cells and could not test
+it, since ghost cells are deliberately not exposed. A solve can now
+follow a write, so it is testable through ``max_divergence`` -- the
+scheme divergence, which reads them through a five-point stencil.
+
+The regtest hands solver B the field solver A produced and requires their
+scheme divergence to match **exactly**. The valid regions are equal by
+construction, so any difference would be the ghosts, and B's would be its
+own initial profile rather than the field it was given.
+
 Scope
 =====
 
 Phase 9 exposed the process lifecycle and a whole run, Phase 10 added
-Grid, Phase 11 the fields, Phase 12 terrain and the profile. The narrow surface is deliberate: parity
+Grid, Phase 11 the fields, Phase 12 terrain and the profile, Phase 13 the
+solver.
+
+``write_output()`` is still driven by ParmParse, so a Python-configured
+run writes to the default file names. In-memory output is the next
+phase. The narrow surface is deliberate: parity
 was established and put under test before there was a wider API to keep
 honest, and each new piece inherits a guarantee that is already green.
 

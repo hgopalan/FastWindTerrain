@@ -72,6 +72,36 @@ class Poisson
 {
 public:
 
+    struct Params
+    {
+        amrex::Real alpha_h = 1.0;
+        amrex::Real alpha_v = 1.0;
+        std::string lambda_bc = "flowthrough";
+        std::string rhs_operator = "fe";
+        std::string gradient_operator = "amrex";
+        int  n_projections = 4;
+        int  max_iter = 200;
+        amrex::Real reltol = 1.0e-11;
+        amrex::Real abstol = 0.0;
+        // -1 means "choose from the cell aspect ratio", which is what
+        // BuildOperator does when they are left alone.
+        int  num_pre_smooth = -1;
+        int  num_post_smooth = -1;
+        int  verbose = 0;
+        int  manufactured = 0;
+        int  force_all_dirichlet = 0;
+        std::string rhs_dump_file;
+
+        bool given_alpha_h = false;
+        bool given_alpha_v = false;
+
+        static Params FromParmParse ();
+        void Validate () const;
+    };
+
+    void Build (const Grid& grid, const Terrain& terrain,
+                const BoundaryConditions& bc, const Anisotropy& aniso,
+                const Params& params);
     void Build (const Grid& grid, const Terrain& terrain,
                 const BoundaryConditions& bc, const Anisotropy& aniso);
 
@@ -142,6 +172,11 @@ public:
                                               m_speed_after = r.speed_max; }
 
     amrex::Real solve_residual () const { return m_resid; }
+    // MLMG iterations taken by the last Solve(). A solve that hits
+    // max_iter has not converged, whatever its residual says, so the
+    // count is worth having next to it.
+    int solve_iterations () const { return m_iters; }
+    const Params& params () const { return m_params; }
 
     const amrex::MultiFab& lambda () const { return m_lambda; }
     const amrex::MultiFab& rhs ()    const { return m_rhs; }
@@ -169,7 +204,8 @@ public:
 
 private:
 
-    void ReadParameters ();
+
+    void ApplyParams (const Params& params);
     // Clears the source at nodes buried in terrain, matching how
     // massconsistent_amr imposes the immersed boundary.
     void ZeroRHSInsideTerrain (const Terrain& terrain);
@@ -186,10 +222,13 @@ private:
     void BuildOperator (const Grid& grid, const Terrain& terrain,
                         const BoundaryConditions& bc);
 
+    Params m_params;
+
     amrex::Real m_alpha_h = 1.0;
     amrex::Real m_alpha_v = 1.0;
     int  m_max_iter = 200;
     int  m_verbose = 0;
+    int  m_iters = 0;
     amrex::Real m_reltol = 1.0e-11;
     amrex::Real m_abstol = 0.0;
     VelRange m_vel_before {};

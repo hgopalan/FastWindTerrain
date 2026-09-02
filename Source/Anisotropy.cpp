@@ -1,5 +1,6 @@
 #include "Anisotropy.H"
 #include "Debug.H"
+#include "Error.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -15,49 +16,84 @@
 
 namespace fwt {
 
-void Anisotropy::ReadParameters ()
+Anisotropy::Params Anisotropy::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("anisotropy");
 
-    pp.query("enable", m_enable);
-    pp.query("source", m_source);
-    pp.query("alpha_h_mode", m_alpha_h_mode);
-    pp.query("slope_scale", m_slope_scale);
-    pp.query("decay_height", m_decay_height);
-    pp.query("min_factor", m_min_factor);
-    pp.query("max_factor", m_max_factor);
-
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_source == "slope" || m_source == "none",
-        "anisotropy.source must be 'slope' or 'none' (the Richardson and "
-        "Froude terms are hooks and are not implemented yet)");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        m_alpha_h_mode == "base" || m_alpha_h_mode == "slope",
-        "anisotropy.alpha_h_mode must be 'base' or 'slope'");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_slope_scale > 0.0,
-        "anisotropy.slope_scale must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_decay_height > 0.0,
-        "anisotropy.decay_height must be > 0");
+    pp.query("enable", p.enable);
+    pp.query("source", p.source);
+    pp.query("alpha_h_mode", p.alpha_h_mode);
+    pp.query("slope_scale", p.slope_scale);
+    pp.query("decay_height", p.decay_height);
+    pp.query("min_factor", p.min_factor);
+    pp.query("max_factor", p.max_factor);
 
     // The base values live with the operator they feed.
     amrex::ParmParse ppp("poisson");
-    ppp.query("alpha_h", m_alpha_h_base);
-    ppp.query("alpha_v", m_alpha_v_base);
+    ppp.query("alpha_h", p.alpha_h_base);
+    ppp.query("alpha_v", p.alpha_v_base);
 
-    FWT_DEBUG_SECTION("Anisotropy inputs (anisotropy.*)");
-    FWT_DEBUG("enable           = " << m_enable
-              << (m_enable ? "" : "   [alphas hold their base values]"));
-    FWT_DEBUG("source           = " << m_source);
-    FWT_DEBUG("alpha_h_mode     = " << m_alpha_h_mode);
-    FWT_DEBUG("slope_scale      = " << m_slope_scale);
-    FWT_DEBUG("decay_height     = " << m_decay_height << " m");
-    FWT_DEBUG("alpha_h_base     = " << m_alpha_h_base);
-    FWT_DEBUG("alpha_v_base     = " << m_alpha_v_base);
+    p.Validate();
+    return p;
+}
+
+void Anisotropy::Params::Validate () const
+{
+    if (source != "slope" && source != "none") {
+        throw InputError(
+            "anisotropy.source must be 'slope' or 'none' (the Richardson "
+            "and Froude terms are hooks and are not implemented yet)");
+    }
+    if (alpha_h_mode != "base" && alpha_h_mode != "slope") {
+        throw InputError("anisotropy.alpha_h_mode must be 'base' or 'slope'");
+    }
+    if (slope_scale <= 0.0) {
+        throw InputError("anisotropy.slope_scale must be > 0");
+    }
+    if (decay_height <= 0.0) {
+        throw InputError("anisotropy.decay_height must be > 0");
+    }
+    if (min_factor <= 0.0 || max_factor < min_factor) {
+        throw InputError(
+            "anisotropy.min_factor must be > 0 and no greater than "
+            "anisotropy.max_factor");
+    }
+    if (alpha_h_base <= 0.0 || alpha_v_base <= 0.0) {
+        throw InputError("the anisotropy base weights must be > 0");
+    }
 }
 
 void Anisotropy::Build (const Grid& grid, const Terrain& terrain)
 {
-    ReadParameters();
+    Build(grid, terrain, Params::FromParmParse());
+}
+
+void Anisotropy::Build (const Grid& grid, const Terrain& terrain,
+                        const Params& params)
+{
+    m_params = params;
+    m_params.Validate();
+
+    m_enable       = m_params.enable;
+    m_source       = m_params.source;
+    m_alpha_h_mode = m_params.alpha_h_mode;
+    m_slope_scale  = m_params.slope_scale;
+    m_decay_height = m_params.decay_height;
+    m_min_factor   = m_params.min_factor;
+    m_max_factor   = m_params.max_factor;
+    m_alpha_h_base = m_params.alpha_h_base;
+    m_alpha_v_base = m_params.alpha_v_base;
+
+    FWT_DEBUG_SECTION("Anisotropy inputs (anisotropy.*)");
+    FWT_DEBUG("enable           = " << m_enable);
+    FWT_DEBUG("source           = " << m_source);
+    FWT_DEBUG("alpha_h_mode     = " << m_alpha_h_mode);
+    FWT_DEBUG("slope_scale      = " << m_slope_scale);
+    FWT_DEBUG("decay_height     = " << m_decay_height << " m");
+    FWT_DEBUG("min/max factor   = " << m_min_factor << " / " << m_max_factor);
+    FWT_DEBUG("alpha_h/v base   = " << m_alpha_h_base << " / "
+                                     << m_alpha_v_base);
 
     m_alpha_h.define(grid.ba(), grid.dm(), 1, 0);
     m_alpha_v.define(grid.ba(), grid.dm(), 1, 0);
