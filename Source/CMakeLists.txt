@@ -9,6 +9,7 @@ add_executable(fastwindterrain
     Poisson.cpp
     Output.cpp
     Diagnostics.cpp
+    Verify.cpp
     main.cpp
 )
 

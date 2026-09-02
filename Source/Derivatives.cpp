@@ -189,6 +189,22 @@ amrex::Real StepOvershoot (bool limited)
 
 } // namespace
 
+amrex::Vector<amrex::Real>
+ColumnMetric (const amrex::Vector<amrex::Real>& z_cc)
+{
+    const int nz = int(z_cc.size());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(nz >= 2,
+        "ColumnMetric needs at least two cells in z");
+
+    amrex::Vector<amrex::Real> dzdk(nz);
+    for (int k = 0; k < nz; ++k) {
+        if (k == 0)           { dzdk[k] = z_cc[1] - z_cc[0]; }
+        else if (k == nz - 1) { dzdk[k] = z_cc[nz-1] - z_cc[nz-2]; }
+        else                  { dzdk[k] = 0.5 * (z_cc[k+1] - z_cc[k-1]); }
+    }
+    return dzdk;
+}
+
 void RunGradientSelfTest (const std::string& filename)
 {
     if (!amrex::ParallelDescriptor::IOProcessor()) { return; }

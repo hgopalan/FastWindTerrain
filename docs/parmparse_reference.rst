@@ -6,6 +6,10 @@ Every input, in one place. Each is also documented in context on the page
 listed, which is where the reasoning lives; this page is for looking one
 up.
 
+``regtests/inputs_master`` is the same list as a runnable input file,
+with the defaults and permitted values as comments. It is kept honest by
+a regtest that greps every ParmParse call out of ``Source/``.
+
 Any input can be overridden on the command line::
 
     ./build/fastwindterrain inputs poisson.alpha_v=0.3 fwt.debug=1
@@ -232,6 +236,9 @@ See :doc:`poisson`.
    * - ``poisson.reltol``
      - ``1e-11``
      - MLMG relative tolerance
+   * - ``poisson.abstol``
+     - ``0.0``
+     - MLMG absolute tolerance; ``0`` leaves it unused
    * - ``poisson.num_pre_smooth``
      - *(from the grid)*
      - Smoothing sweeps; chosen from the cell aspect ratio
@@ -244,9 +251,34 @@ See :doc:`poisson`.
    * - ``poisson.manufactured``
      - ``0``
      - Solve a known analytic problem instead
+   * - ``poisson.force_all_dirichlet``
+     - ``0``
+     - Dirichlet on all six faces. Only meaningful with
+       ``manufactured = 1``, whose solution is posed that way
    * - ``poisson.rhs_dump_file``
      - *(none)*
      - Nodal RHS. A single-rank test aid
+
+``verify.`` -- verification aids
+================================
+
+See :doc:`convergence`.
+
+.. list-table::
+   :widths: 30 14 44
+   :header-rows: 1
+
+   * - Input
+     - Default
+     - Meaning
+   * - ``verify.gradient_dump_file``
+     - *(none)*
+     - Writes ``d(u)/dz`` and ``d(v)/dz`` per level, as the solver
+       computes them, so their order can be measured end to end
+   * - ``verify.gradient_advect``
+     - ``1.0``
+     - Which upwind branch that dump measures. Nonzero. Read only when
+       the dump is on
 
 ``numerics.`` and ``fwt.``
 ==========================

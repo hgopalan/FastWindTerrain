@@ -120,3 +120,17 @@ combination of the two candidate stencils comes with a 1/6 overshoot at
 a discontinuity, which the nonlinear weights remove.
 
 The study is a test aid, written only when the input is set.
+
+What it does not cover
+----------------------
+
+This self-test runs on a ``std::vector`` holding ``sin(2 pi x)``. It
+never builds a Grid, a MultiFab or a ghost cell, so it verifies the
+stencil and nothing between the stencil and the number the solver uses:
+the column metric, the box decomposition, the index clamping at the
+domain ends.
+
+:doc:`convergence` closes that gap. It measures the same three schemes
+through the real solver path, on a real profile, and reports the same
+kind of table -- 2, 2 and 3. Both are worth having: this one isolates the
+scheme, that one tests the plumbing around it.

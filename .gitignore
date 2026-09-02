@@ -14,4 +14,4 @@ __pycache__/
 *.pyc
 
 # Sphinx
-doc/_build/
+docs/_build/

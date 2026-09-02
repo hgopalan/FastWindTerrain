@@ -776,17 +776,9 @@ void Poisson::ComputeDivergenceField (const Grid& grid,
 
     const amrex::Real dx = grid.geom().CellSize(0);
     const amrex::Real dy = grid.geom().CellSize(1);
-    const amrex::Vector<amrex::Real>& z_cc = grid.z_cc();
-    const int nz = grid.nz();
-
-    // d(z)/d(k) at cell centres: one-sided at the ends, centred inside,
-    // so the vertical derivative sees the true stretched spacing.
-    amrex::Vector<amrex::Real> dzdk(nz);
-    for (int k = 0; k < nz; ++k) {
-        if (k == 0)           { dzdk[k] = z_cc[1] - z_cc[0]; }
-        else if (k == nz - 1) { dzdk[k] = z_cc[nz-1] - z_cc[nz-2]; }
-        else                  { dzdk[k] = 0.5 * (z_cc[k+1] - z_cc[k-1]); }
-    }
+    // d(z)/d(k) at cell centres, so the vertical derivative sees the true
+    // stretched spacing. Shared with the profile-gradient verification.
+    const amrex::Vector<amrex::Real> dzdk = ColumnMetric(grid.z_cc());
     amrex::Gpu::DeviceVector<amrex::Real> d_dzdk(dzdk.size());
     amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, dzdk.begin(), dzdk.end(),
                           d_dzdk.begin());
