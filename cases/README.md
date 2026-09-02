@@ -57,6 +57,35 @@ download returned a tile of nodata, which the elevation reader turns into a
 flawless sea-level plain, and three of the five failed rather than
 reporting wind over terrain that was not there.
 
+## The corpus
+
+The eight above are a catalogue — domains to look at and solve. `corpus.py`
+and `build_corpus.py` build the other thing: **28 sites, 252 windows**, for
+training on and for holding terrain out of.
+
+```
+python3 cases/build_corpus.py --survey    # download 10 km tiles (network)
+python3 cases/build_corpus.py --split     # cluster and split (offline)
+python3 cases/build_corpus.py --summary
+python3 cases/build_corpus.py --check     # solve a sample of windows
+```
+
+Each site's 10 × 10 km tile is cut into a 3 × 3 grid of 5 × 5 km windows;
+a window is a phase 16A domain exactly, and the middle one *is* that site's
+catalogue case.
+
+Sites are single-linkage clustered by distance **before** being split,
+because the reference list is full of fires on the same mountain — Tubbs and
+Kincade are 10.3 km apart, and Thomas and Woolsey, both in the eight above,
+are 28.3 km apart. Splitting on fire name would put the same ridgeline on
+both sides. Whole clusters go to one fold, and `assert_no_leakage` re-checks
+the geometry rather than trusting that the radius covered it.
+
+The survey **measures**; the split **judges**. Every threshold reads from
+committed JSON, so it can be changed and re-run with no network and no
+tiles — which is what makes the split reproducible rather than something
+that happened once on a laptop.
+
 ## Vendored files
 
 `srtm_terrain_reader.py` and `wildfires_reference.csv` are copied verbatim

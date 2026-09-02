@@ -190,6 +190,15 @@ check that terrain fits inside the domain, so `cases/` does.
 
 See [Real terrain cases](docs/cases.rst).
 
+`cases/build_corpus.py` builds the larger thing those eight are a sample
+of: **28 sites and 252 windows** across the reference list, split so that
+held-out terrain really is held out. Fires are clustered by distance before
+being split, because the list is full of fires on the same mountain — Tubbs
+and Kincade are 10.3 km apart, and Thomas and Woolsey, both in the eight
+above, are 28.3 km apart.
+
+See [The terrain corpus](docs/corpus.rst).
+
 ### Tests
 
 ```
@@ -234,6 +243,7 @@ live in [`docs/`](docs/):
 | [Debugging](docs/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](docs/tools.rst) | Synthetic terrain generation |
 | [Real terrain cases](docs/cases.rst) | The eight-case SRTM catalogue in `cases/` |
+| [The terrain corpus](docs/corpus.rst) | 252 windows, leakage-safe splits, and what is held out |
 | [Surrogate groundwork](docs/surrogate.rst) | Level extraction, 2D→3D stitching, and what it costs |
 | [Regtests](docs/regtests.rst) | Test suite and how to run it |
 
@@ -271,6 +281,7 @@ python/      pybind11 bindings and the Python package
 docs/        documentation
 regtests/    one directory per C++ test group, each self-contained
 cases/       real-terrain case catalogue (SRTM, 5 x 5 km)
+cases/corpus/  the 28-site training corpus; tiles gitignored, surveys not
 tests/       pytest suite for the Python bindings
 examples/    quickstart notebook
 convergence/ the scheme convergence sweep

@@ -572,18 +572,28 @@ class Case(object):
 
     # -- terrain -----------------------------------------------------------
 
-    def download_points(self, subsample=1, tif_path=None):
+    def download_points(self, subsample=1, tif_path=None,
+                        half_width=DOWNLOAD_HALF_WIDTH_M, extent=None):
         """Download SRTM, project, clip, and shift into local coordinates.
 
         Returns an (n, 3) array: x and y local metres, z absolute metres
         above sea level. Needs the geo stack; nothing else here does.
+
+        `extent` is the width of the square the local origin is placed on,
+        defaulting to one domain. The corpus (cases/corpus.py) passes a
+        larger one so several 5 km windows can be cut out of a single tile;
+        `half_width` grows with it so the vendored reader's border smoothing
+        still lands outside every window. HALO_M of extra points is kept
+        beyond the extent on each side either way, so the interpolation at a
+        boundary averages real neighbours instead of extrapolating.
         """
         import numpy as np
 
         sys.path.insert(0, HERE)
         import srtm_terrain_reader as srtm
 
-        box = self.bbox_deg()
+        extent = DOMAIN_M if extent is None else float(extent)
+        box = self.bbox_deg(half_width=half_width)
         utm_x, utm_y, z = None, None, None
         tmp = None
         if tif_path is None:
@@ -608,7 +618,7 @@ class Case(object):
                                      np.array([self.lon]))
         cx, cy = float(cx[0]), float(cy[0])
 
-        half = 0.5 * DOMAIN_M + HALO_M
+        half = 0.5 * extent + HALO_M
         x, y, z = utm_x.ravel(), utm_y.ravel(), z.ravel()
         keep = ((np.abs(x - cx) <= half) & (np.abs(y - cy) <= half))
         if not keep.any():
@@ -616,9 +626,9 @@ class Case(object):
                 "the downloaded tile does not overlap the domain centre; "
                 "the projection or the bounding box is wrong")
 
-        # Local origin at the domain's own corner, so the domain is exactly
-        # [0, DOMAIN_M] and the halo points fall just outside it.
-        x0, y0 = cx - 0.5 * DOMAIN_M, cy - 0.5 * DOMAIN_M
+        # Local origin at the extent's own corner, so the extent is exactly
+        # [0, extent] and the halo points fall just outside it.
+        x0, y0 = cx - 0.5 * extent, cy - 0.5 * extent
         return np.column_stack([x[keep] - x0, y[keep] - y0, z[keep]])
 
     # -- survey ------------------------------------------------------------

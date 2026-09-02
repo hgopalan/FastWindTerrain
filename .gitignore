@@ -26,5 +26,13 @@ cases/*/terrain.csv
 cases/*/*.tif
 cases/*/plt_*/
 
+# The corpus (cases/corpus/). Each site's tile covers 10 km rather than 5,
+# so it is nearer ten megabytes; the per-site survey.json holds every window's
+# extremes, grid and descriptors and IS committed, which is what lets
+# build_corpus.py --split and tests/test_corpus.py run with no tiles at all.
+cases/corpus/*/tile.csv
+cases/corpus/*/*.tif
+cases/corpus/*/plt_*/
+
 # Sphinx
 docs/_build/
