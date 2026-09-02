@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# Conda environment for building and using the FastWindTerrain Python
+# bindings.
+#
+#     conda env create -f environment.yml
+#     conda activate fastwindterrain
+#
+# then either the in-tree build:
+#
+#     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFWT_PYTHON=ON \
+#         -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python
+#     cmake --build build -j 8
+#
+# or the wheel:
+#
+#     pip install .
+#
+# micromamba and mamba take the same file.
+#
+# THE COMPILER IS DELIBERATELY NOT IN HERE. AMReX is a large C++17
+# codebase that wants a toolchain matched to the platform's own headers,
+# and a conda `compilers`/`cxx-compiler` package on macOS routinely
+# half-matches the Xcode SDK and fails in ways that read like an AMReX
+# bug. Use the system toolchain:
+#
+#     macOS   xcode-select --install
+#     Debian  sudo apt-get install build-essential
+#     RHEL    sudo dnf groupinstall "Development Tools"
+#
+# On Linux, if you would rather have conda supply it, add `cxx-compiler`
+# to the list below -- it is reliable there.
+# ---------------------------------------------------------------------------
+name: fastwindterrain
+
+channels:
+  - conda-forge
+
+dependencies:
+  # --- interpreter --------------------------------------------------------
+  # The extension module is built for exactly one minor version of Python.
+  # Pinning the minor version here is what keeps a rebuilt module and the
+  # interpreter that imports it in step.
+  - python=3.11
+
+  # --- building the bindings ---------------------------------------------
+  - cmake>=3.25          # AMReX 26.08 requires 3.25
+  - ninja                # not required; much faster than make on AMReX
+  - make                 # for the GNUmake build and for `make -C docs`
+  - git                  # the AMReX and pybind11 submodules
+
+  # pybind11 is vendored as a submodule, so this is optional -- but if it
+  # is present find_package picks it up and the submodule is not compiled
+  # a second time.
+  - pybind11>=2.12
+
+  # --- runtime ------------------------------------------------------------
+  # numpy is a hard runtime requirement: every field crosses the boundary
+  # as an array. CMake checks for it at configure time so that a missing
+  # numpy is a message rather than an ImportError inside a property.
+  - numpy>=1.21
+
+  # --- the wheel ----------------------------------------------------------
+  # `pip install .` needs these. pip would fetch them into an isolated
+  # build environment anyway; having them here makes the build offline-
+  # capable and reproducible.
+  - pip
+  - scikit-build-core>=0.10
+  - wheel
+
+  # --- tests and the example notebook ------------------------------------
+  - pytest>=7.0
+  - nbclient>=0.7        # tests/test_notebook.py executes examples/*.ipynb
+  - nbformat>=5.0
+  - ipykernel            # the kernel that notebook runs on
+  - matplotlib-base>=3.5 # examples/quickstart.ipynb plots
+  - jupyterlab           # only to open the notebook by hand
+
+  # --- documentation ------------------------------------------------------
+  # Mirrors docs/requirements.txt, so `make -C docs html` works in this
+  # environment too.
+  - sphinx>=7.0
+  - sphinx_rtd_theme>=1.0
+
+  # --- optional: parallel builds -----------------------------------------
+  # Uncomment together with -DFWT_MPI=ON. Serial is the default and is
+  # what the bindings are tested against; the field accessors gather from
+  # a single box and have no parallel gather yet.
+  # - openmpi
+  # - mpi4py

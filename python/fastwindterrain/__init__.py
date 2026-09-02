@@ -28,6 +28,15 @@ anywhere::
                       "dz0": 4.0, "stretching_ratio": 1.05})
         print(g.z_cc)          # numpy, (nz,)
 
+Many cases in one process is what :mod:`fastwindterrain.dataset` is
+for -- a fixed grid, everything else swept, one ``.npz`` out::
+
+    from fastwindterrain import dataset
+
+    configs = dataset.sweep(base, {"inflow.u_ref": [4.0, 8.0, 12.0]})
+    with fwt.session():
+        dataset.generate(configs, "wind.npz", fields=["u", "v", "w", "mask"])
+
 That path never touches ParmParse, which matters when driving many cases
 in one process: ParmParse persists for the life of an AMReX
 initialization, so a case that omits a parameter would otherwise inherit
@@ -66,6 +75,7 @@ __all__ = [
     "finalize",
     "initialize",
     "is_initialized",
+    "dataset",
     "run",
     "session",
 ]
@@ -87,3 +97,8 @@ def session(args=None):
         yield
     finally:
         finalize()
+
+
+# Imported last: dataset reads __version__ and session out of this module,
+# so the names it needs have to exist before it is loaded.
+from . import dataset          # noqa: E402,F401

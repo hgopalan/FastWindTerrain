@@ -64,13 +64,17 @@ set(FWT_PY_DIR ${CMAKE_BINARY_DIR}/python/fastwindterrain)
 set_target_properties(_fastwindterrain PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${FWT_PY_DIR})
 
-set(FWT_PY_FILES
-    fastwindterrain/__init__.py
-    fastwindterrain/__main__.py
-)
+# Globbed with CONFIGURE_DEPENDS rather than listed: a new module added
+# to the package and forgotten here would import from a wheel and not
+# from the build tree, so the two paths would disagree about what the
+# package contains -- exactly the kind of split these bindings exist to
+# avoid.
+file(GLOB FWT_PY_FILES CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/fastwindterrain/*.py)
 foreach(f IN LISTS FWT_PY_FILES)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${f}
-                   ${CMAKE_BINARY_DIR}/python/${f} COPYONLY)
+    get_filename_component(name ${f} NAME)
+    configure_file(${f} ${CMAKE_BINARY_DIR}/python/fastwindterrain/${name}
+                   COPYONLY)
 endforeach()
 
 # An executable shim that is argv-compatible with the solver binary, so
@@ -87,6 +91,17 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fastwindterrain-py.in
                                 GROUP_READ GROUP_EXECUTE
                                 WORLD_READ WORLD_EXECUTE
                @ONLY)
+
+# --- wheel install ---------------------------------------------------------
+# Under scikit-build-core (pip install .) the module is installed next to
+# the pure-Python package, which pyproject.toml supplies via
+# wheel.packages. SKBUILD is defined only by that backend, so an ordinary
+# `cmake --install` of this project still installs nothing -- there is no
+# C++ install target here and adding one by accident would be worse than
+# having none.
+if(DEFINED SKBUILD)
+    install(TARGETS _fastwindterrain LIBRARY DESTINATION fastwindterrain)
+endif()
 
 message(STATUS "Python bindings enabled")
 message(STATUS "  python:  ${Python3_EXECUTABLE} (numpy ${FWT_NUMPY_VERSION})")

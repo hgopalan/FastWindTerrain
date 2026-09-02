@@ -20,7 +20,11 @@ from . import run
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("usage: python -m fastwindterrain <inputs> [name=value ...]",
+        # Both spellings, because the same function backs the console
+        # script and `python -m`, and naming only one of them sends the
+        # reader looking for a command they may not have.
+        print("usage: fastwindterrain <inputs> [name=value ...]\n"
+              "       python -m fastwindterrain <inputs> [name=value ...]",
               file=sys.stderr)
         return 2
     run(args)

@@ -13,5 +13,11 @@ Backtrace.*
 __pycache__/
 *.pyc
 
+# Packaging (pip install . builds under build/, which is covered above;
+# `python -m build` and older tooling write these)
+dist/
+*.egg-info/
+.pytest_cache/
+
 # Sphinx
 docs/_build/

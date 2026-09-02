@@ -29,7 +29,20 @@ It builds the C++ solver only — the Python bindings are CMake-only.
 
 ## Python bindings
 
-Off by default. Turn them on with `FWT_PYTHON`:
+Install them:
+
+```
+pip install .
+```
+
+A conda environment with everything the build needs is in
+`environment.yml`:
+
+```
+conda env create -f environment.yml && conda activate fastwindterrain
+```
+
+Or build them in tree — off by default, turned on with `FWT_PYTHON`:
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFWT_PYTHON=ON
@@ -136,6 +149,38 @@ whatever an earlier case set. An unknown key raises rather than being
 ignored, a bad input raises instead of aborting the interpreter, and a
 domain-height overshoot is a `UserWarning`.
 
+### Generating a dataset
+
+Many cases in one process, on one fixed grid, stacked into an array a
+neural operator can train on — the reason the bindings exist:
+
+```python
+from fastwindterrain import dataset
+
+configs = dataset.sweep(base, {"inflow.u_ref": [4.0, 8.0, 12.0],
+                               "inflow.v_ref": [0.0, 6.0]})
+
+dataset.generate(configs, "wind.npz", fields=["u", "v", "w", "mask"],
+                 dtype="float32", seed=0)
+```
+
+The grid is checked rather than assumed: sweeping a grid parameter
+raises, and so does a config whose grid section differs from the first
+one's. A ragged dataset does not fail at generation time — it fails hours
+into a training run, or never, because the loader padded.
+
+`examples/quickstart.ipynb` is the tour, and CI executes it.
+
+### Tests
+
+```
+pytest tests
+```
+
+The bindings' own suite. The C++ regtest groups stay on
+`run_regtests.py`; see [Regtests](docs/regtests.rst) for why the two are
+split.
+
 numpy is a runtime requirement of the bindings. On a system Python that
 refuses installs (PEP 668), point CMake at a virtual environment:
 
@@ -185,6 +230,9 @@ regtest suite:
 - **CMake** on Linux (Release and Debug) and macOS (Release), with CTest
 - **GNUmake** on Linux, which nothing else exercises and would otherwise
   rot unnoticed
+- **Wheel** on Linux and macOS: `pip install .`, then the bindings test
+  suite against the *installed* package, plus the example notebook
+  executed top to bottom
 - **Python bindings** on Linux, running the entire regtest suite a second
   time through the bindings and asserting the outputs are byte-identical
 - **CUDA, HIP and SYCL** builds, compile-only: hosted runners have no
@@ -200,7 +248,9 @@ regtest suite:
 Source/      solver source (built as one library, fwt_core)
 python/      pybind11 bindings and the Python package
 docs/        documentation
-regtests/    one directory per test group, each self-contained
+regtests/    one directory per C++ test group, each self-contained
+tests/       pytest suite for the Python bindings
+examples/    quickstart notebook
 convergence/ the scheme convergence sweep
 tools/       helper scripts
 external/    AMReX and pybind11 submodules
