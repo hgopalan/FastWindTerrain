@@ -178,6 +178,51 @@ bindings::
 ``build/fastwindterrain-py`` is argv-compatible with the executable, so
 no checker knows the difference. CI runs both.
 
+``mpi_parity``
+--------------
+
+The one group that runs on more than one rank. It is the **only** thing
+in the suite that does, so an MPI build is exercised here or nowhere.
+
+* three cases borrowed from the other groups -- a flat solve, a hill
+  with a real projection to do, and the anisotropy and O'Brien path --
+  are run serially and again under ``mpirun -n 2``, and every entry of
+  the two reports is compared. The decomposition is a distribution
+  detail, not physics, so they must agree to round-off. They are not
+  compared byte for byte: a global sum lands in a different order on a
+  different decomposition, and that difference is real. The tolerance is
+  ``1e-9`` relative, six orders of magnitude looser than what is
+  observed and still far tighter than any genuine parallel bug
+* the near-zero entries -- a solve residual, a flux net, the flux
+  through a closed lid -- are *values that are round-off*, so their
+  relative difference between decompositions is O(1) however right they
+  both are. Those are compared absolutely, and separately held to the
+  physical bound they actually have, so parity cannot be satisfied by
+  two equally broken runs
+* every run is under a **wall-clock timeout**, and expiry is reported as
+  its own failure
+
+That last one is the reason the group exists. A collective call reached
+by only some ranks does not give a wrong answer, it gives no answer: the
+ranks that skipped it walk on, the ranks that entered it wait forever.
+``Poisson::AppendReport`` did exactly that -- it returned early on
+non-IO ranks and then called ``amrex::MultiFab::min`` and ``max``, which
+are collective. Every number the solver produced was correct and none of
+them were ever written. Checking numbers cannot catch that, because the
+failure is the absence of numbers.
+
+The pattern to look for, if this group ever times out again, is a
+rank-conditional early return followed by a collective -- particularly
+the collectives that do not look like one: ``MultiFab::min``, ``max``,
+``norm0``, ``norm2``, ``sum``, and anything built on
+``ParallelDescriptor::Reduce*`` or ``ParallelAllReduce``. Take them
+**before** the IO rank is singled out, then write the results.
+
+The group SKIPS when the executable was not built with MPI (the
+default), or when ``mpirun`` is not on PATH -- it asks by running the
+binary and looking for AMReX's communicator-size line, since that is the
+only thing that actually knows. See :doc:`building`.
+
 ``tests/`` -- the bindings' own suite
 -------------------------------------
 
