@@ -559,12 +559,45 @@ fwt::Inflow::Params InflowParamsFromDict (const py::dict& d)
     return p;
 }
 
-fwt::Anisotropy::Params AnisotropyParamsFromDict (const py::dict& d)
+// allow_base: the base weights are poisson.alpha_h/alpha_v, and inside a
+// Solver configuration that is where they belong -- a second copy in the
+// anisotropy section could disagree with the operator it feeds, and
+// silently overriding one with the other would be worse. A standalone
+// Anisotropy has no Poisson section to take them from, so there they are
+// accepted.
+fwt::Anisotropy::Params AnisotropyParamsFromDict (const py::dict& d,
+                                                  bool allow_base = false)
 {
-    RejectUnknownKeys(d, {"enable", "source", "alpha_h_mode", "slope_scale",
-                          "decay_height", "min_factor", "max_factor"},
-                      "anisotropy");
+    std::vector<std::string> known {"enable", "source", "alpha_h_mode",
+                                    "slope_scale", "decay_height",
+                                    "min_factor", "max_factor"};
+    if (allow_base) {
+        known.push_back("alpha_h_base");
+        known.push_back("alpha_v_base");
+    } else {
+        for (const char* k : {"alpha_h_base", "alpha_v_base"}) {
+            if (d.contains(k)) {
+                throw fwt::InputError(
+                    std::string("anisotropy.") + k + " is not settable "
+                    "here: the base weights are poisson.alpha_h and "
+                    "poisson.alpha_v, so that the operator and the weights "
+                    "it is built from cannot disagree.");
+            }
+        }
+    }
+    RejectUnknownKeys(d, known, "anisotropy");
+
     fwt::Anisotropy::Params p;
+    if (allow_base) {
+        if (d.contains("alpha_h_base")) {
+            p.alpha_h_base = GetScalar<amrex::Real>(d, "alpha_h_base",
+                                                    "anisotropy");
+        }
+        if (d.contains("alpha_v_base")) {
+            p.alpha_v_base = GetScalar<amrex::Real>(d, "alpha_v_base",
+                                                    "anisotropy");
+        }
+    }
     if (d.contains("enable")) {
         p.enable = py::cast<bool>(d["enable"]) ? 1 : 0;
     }
@@ -680,7 +713,7 @@ fwt::Solver::Params SolverParamsFromDict (const py::dict& d)
     p.grid       = ParamsFromDict(section("grid"));
     p.terrain    = TerrainParamsFromDict(section("terrain"));
     p.inflow     = InflowParamsFromDict(section("inflow"));
-    p.anisotropy = AnisotropyParamsFromDict(section("anisotropy"));
+    p.anisotropy = AnisotropyParamsFromDict(section("anisotropy"), false);
     p.obrien     = ObrienParamsFromDict(section("obrien"));
     p.poisson    = PoissonParamsFromDict(section("poisson"));
 
@@ -875,6 +908,61 @@ bit-for-bit the case the CSV would have produced.
                         std::to_string(t.n_total()) + ">";
              });
 
+    py::class_<fwt::Anisotropy>(m, "Anisotropy", R"doc(
+Cell-local variational weights, from the terrain slope.
+
+Useful on its own for choosing ``slope_scale`` and ``decay_height``: the
+weights can be looked at without running a solve::
+
+    a = fwt.Anisotropy(grid, terrain,
+                       {"enable": True, "slope_scale": 0.5,
+                        "decay_height": 500.0,
+                        "alpha_h_base": 1.0, "alpha_v_base": 0.5})
+    a.alpha_v          # (nz, ny, nx)
+
+    alpha_v = clamp(alpha_v_base * f_slope * f_Ri * f_Fr)
+    f_slope = exp(-slope_3d / slope_scale)
+    slope_3d = |grad z_terrain| * exp(-z_agl / decay_height)
+
+Since alpha is a transmissivity, a smaller ``alpha_v`` means LESS
+vertical adjustment: flow is pushed around steep terrain rather than over
+it.
+
+``alpha_h_base``/``alpha_v_base`` are accepted here because a standalone
+Anisotropy has no Poisson section to take them from. Inside a Solver
+configuration they are ``poisson.alpha_h``/``alpha_v`` and setting them
+here raises, so the operator and the weights it is built from cannot
+disagree.
+)doc")
+        .def(py::init([] (const fwt::Grid& g, const fwt::Terrain& t,
+                          const py::dict& d) {
+                 RequireInitialized("Anisotropy");
+                 auto a = std::make_unique<fwt::Anisotropy>();
+                 a->Build(g, t, AnisotropyParamsFromDict(d, true));
+                 return a;
+             }), py::arg("grid"), py::arg("terrain"),
+             py::arg("params") = py::dict())
+        .def_property_readonly("alpha_h", [] (const fwt::Anisotropy& a) {
+                 return FieldToNumpy(a.alpha_h());
+             }, "(nz, ny, nx) -- the horizontal weight.")
+        .def_property_readonly("alpha_v", [] (const fwt::Anisotropy& a) {
+                 return FieldToNumpy(a.alpha_v());
+             }, "(nz, ny, nx) -- the vertical weight.")
+        .def_property_readonly("enabled", &fwt::Anisotropy::enabled)
+        .def_property_readonly("alpha_h_base", &fwt::Anisotropy::alpha_h_base)
+        .def_property_readonly("alpha_v_base", &fwt::Anisotropy::alpha_v_base)
+        .def_property_readonly("alpha_h_min", &fwt::Anisotropy::alpha_h_min)
+        .def_property_readonly("alpha_h_max", &fwt::Anisotropy::alpha_h_max)
+        .def_property_readonly("alpha_v_min", &fwt::Anisotropy::alpha_v_min)
+        .def_property_readonly("alpha_v_max", &fwt::Anisotropy::alpha_v_max)
+        .def_property_readonly("slope_max", &fwt::Anisotropy::slope_max)
+        .def("__repr__", [] (const fwt::Anisotropy& a) {
+                 return std::string("<fastwindterrain.Anisotropy ") +
+                        (a.enabled() ? "on" : "off") + " alpha_v in [" +
+                        std::to_string(a.alpha_v_min()) + ", " +
+                        std::to_string(a.alpha_v_max()) + "]>";
+             });
+
     py::class_<fwt::Inflow>(m, "Inflow", R"doc(
 The initial wind field, anchored to height above ground.
 
@@ -1057,6 +1145,32 @@ into a returned array changes nothing; use ``set_velocity``.
                  }
                  return FieldToNumpy(s.divergence());
              }, "(nz, ny, nx) [1/s] -- div(u) per cell, zero in solid cells.")
+        .def_property_readonly("anisotropy", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "anisotropy");
+                 const auto& a = s.anisotropy();
+                 py::dict out;
+                 out["enabled"] = a.enabled();
+                 out["alpha_h_base"] = a.alpha_h_base();
+                 out["alpha_v_base"] = a.alpha_v_base();
+                 out["alpha_h_min"] = a.alpha_h_min();
+                 out["alpha_h_max"] = a.alpha_h_max();
+                 out["alpha_v_min"] = a.alpha_v_min();
+                 out["alpha_v_max"] = a.alpha_v_max();
+                 out["slope_max"] = a.slope_max();
+                 return out;
+             }, "The anisotropy summary, as a dict.")
+        .def_property_readonly("obrien", [] (const fwt::Solver& s) {
+                 RequireSetup(s, "obrien");
+                 const auto& o = s.obrien();
+                 py::dict out;
+                 out["enabled"] = o.enabled();
+                 out["n_columns"] = o.n_columns();
+                 // Zero to round-off is the point of the scheme, so it is
+                 // reported rather than merely asserted somewhere.
+                 out["max_w_top"] = o.max_w_top();
+                 out["max_residual"] = o.max_residual();
+                 return out;
+             }, "The O'Brien adjustment summary, as a dict.")
         .def_property_readonly("diagnostics", [] (const fwt::Solver& s) {
                  if (!s.is_diagnosed()) {
                      throw std::runtime_error(

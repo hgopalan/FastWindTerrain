@@ -495,12 +495,73 @@ scheme divergence to match **exactly**. The valid regions are equal by
 construction, so any difference would be the ghosts, and B's would be its
 own initial profile rather than the field it was given.
 
+Anisotropy and O'Brien
+======================
+
+The weights can be built and looked at on their own, which is what
+choosing ``slope_scale`` and ``decay_height`` actually needs:
+
+.. code-block:: python
+
+    a = fwt.Anisotropy(grid, terrain,
+                       {"enable": True, "slope_scale": 0.5,
+                        "decay_height": 500.0,
+                        "alpha_h_base": 1.0, "alpha_v_base": 0.5})
+    a.alpha_v          # (nz, ny, nx)
+    a.slope_max        # max |grad z_terrain|
+
+Inside a solve, the same settings go in the ``anisotropy`` and ``obrien``
+sections, and both report what they did:
+
+.. code-block:: python
+
+    s.anisotropy   # enabled, the four alpha extrema, slope_max
+    s.obrien       # enabled, n_columns, max_w_top, max_residual
+
+Where the base weights live
+---------------------------
+
+``alpha_h_base``/``alpha_v_base`` are accepted by a **standalone**
+``Anisotropy``, which has no Poisson section to take them from. Inside a
+``Solver`` configuration they are ``poisson.alpha_h``/``alpha_v``, and
+naming them in the ``anisotropy`` section **raises**.
+
+That is deliberate. The base weights and the operator coefficients are
+the same numbers -- sigma is ``alpha^2`` and the correction multiplies by
+the same alpha -- so a second copy could disagree with the operator it
+feeds, and silently letting one override the other would be worse than
+refusing.
+
+What the regtest holds
+----------------------
+
+Phase 7's assertions, recomputed in numpy rather than read back:
+
+* ``alpha_v`` equals
+  ``clamp(alpha_v_base * exp(-slope_3d / slope_scale))`` cell by cell,
+  with ``|grad z_terrain|`` computed independently from the same central
+  differences -- **agreeing to 5.6e-17 over 105 600 cells**, suppressed
+  to 0.1045 from a base of 0.5 on a 0.78 slope
+* the suppression **decays monotonically with height above ground**. It
+  does not reach base by the domain top, and the check says so: 961 m
+  over a 500 m decay height is under two e-foldings, so requiring it to
+  have finished would be requiring the wrong thing
+* with ``enable`` off, or ``source = "none"``, both weights hold their
+  base values everywhere -- the feature cannot change results when it is
+  switched off
+* ``alpha_h_mode = "slope"`` applies the **same** factor to both weights,
+  in every cell rather than merely at their minima
+* after the O'Brien adjustment ``w`` is **exactly** zero at the domain
+  top, in the reported ``max_w_top`` and in the field itself, having
+  removed a 9.7 m/s residual over 1600 columns. Exactness is the point of
+  the redistribution, so it is held to round-off rather than a tolerance
+
 Scope
 =====
 
 Phase 9 exposed the process lifecycle and a whole run, Phase 10 added
 Grid, Phase 11 the fields, Phase 12 terrain and the profile, Phase 13 the
-solver.
+solver, Phase 14 the anisotropy and O'Brien settings.
 
 ``write_output()`` is still driven by ParmParse, so a Python-configured
 run writes to the default file names. In-memory output is the next

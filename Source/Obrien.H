@@ -63,6 +63,10 @@ public:
     // be zero to round-off, and the regtest holds it to that.
     amrex::Real max_w_top () const { return m_max_w_top; }
     amrex::Real max_residual () const { return m_max_residual; }
+    // Columns the adjustment touched. Zero when it is switched off, and
+    // also zero if every column turned out to be solid -- which is worth
+    // being able to tell apart from "it ran and did nothing".
+    long n_columns () const { return m_n_columns; }
 
     void AppendReport (const std::string& filename) const;
 

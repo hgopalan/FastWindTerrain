@@ -278,6 +278,32 @@ The solver driven from Python (see :doc:`python`).
   sets ``poisson.n_projections = 7``, ``alpha_v = 0.125`` and
   ``anisotropy.enable = 1``
 
+``phase14_anisotropy_python``
+-----------------------------
+
+Anisotropy and the O'Brien adjustment from Python (see :doc:`python`) --
+Phase 7's assertions, recomputed in numpy rather than read out of a
+plotfile.
+
+* ``alpha_v`` follows ``clamp(alpha_v_base * exp(-slope_3d /
+  slope_scale))`` cell by cell, with ``|grad z_terrain|`` computed
+  independently from the same central differences: **5.6e-17 over
+  105 600 cells**, suppressed to 0.1045 from a base of 0.5
+* the suppression decays **monotonically** with height above ground. It
+  does not reach base by the domain top -- 961 m over a 500 m decay
+  height is under two e-foldings -- so the check is that it decays, not
+  that it has finished. An earlier version of this checker required the
+  latter and was wrong
+* ``enable`` off and ``source = "none"`` are both inert
+* ``alpha_h_mode = "slope"`` applies the same factor to both weights in
+  every cell, not merely at their minima
+* the O'Brien adjustment leaves ``w`` **exactly** zero at the domain top,
+  in the reported value and in the field, after removing a 9.7 m/s
+  residual over 1600 columns
+* ``alpha_h_base``/``alpha_v_base`` are refused inside a Solver
+  configuration and accepted standalone, and the Poisson section's values
+  really do reach the weight fields
+
 ``profile_convergence``
 -----------------------
 

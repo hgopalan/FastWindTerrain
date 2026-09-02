@@ -100,6 +100,15 @@ with fwt.session():
     s.diagnose()
 ```
 
+The variational weights can also be built on their own, which is what
+choosing `slope_scale` and `decay_height` actually needs:
+
+```python
+a = fwt.Anisotropy(grid, terrain, {"enable": True, "slope_scale": 0.5,
+                                   "alpha_v_base": 0.5})
+a.alpha_v          # (nz, ny, nx)
+```
+
 Fields come back as numpy, channels-first, so they hand straight to
 PyTorch:
 
