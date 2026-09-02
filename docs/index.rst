@@ -24,6 +24,7 @@ on this layout.
    convergence
    python
    cases
+   surrogate
    output
    debugging
    parmparse_reference

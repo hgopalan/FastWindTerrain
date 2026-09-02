@@ -234,6 +234,7 @@ live in [`docs/`](docs/):
 | [Debugging](docs/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](docs/tools.rst) | Synthetic terrain generation |
 | [Real terrain cases](docs/cases.rst) | The eight-case SRTM catalogue in `cases/` |
+| [Surrogate groundwork](docs/surrogate.rst) | Level extraction, 2D→3D stitching, and what it costs |
 | [Regtests](docs/regtests.rst) | Test suite and how to run it |
 
 To build the docs as HTML:
