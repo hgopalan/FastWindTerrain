@@ -249,8 +249,8 @@ column is 80 m above the lowest terrain.
 Counting samples honestly
 -------------------------
 
-252 windows × 8 directions is 2016 solves. It is **not** 2016
-independent samples. On a square domain the physics is very nearly
+252 windows × 8 directions is 2016 solves, before the convergence screen
+below removes any. It is **not** 2016 independent samples. On a square domain the physics is very nearly
 rotation-equivariant, so a terrain at 90° and a quarter-turn of that
 terrain at 180° are close to the same problem: the four axis-aligned
 directions act partly as a rotation augmentation of the terrain rather
@@ -273,11 +273,14 @@ One note on reading its output: the cell-centred ``max|div(u)|`` can
 falls. ``Source/Solver.cpp:180`` reports both, and the check reads
 ``max_divergence_fe``, which is the controlled one.
 
-Four passes is not enough on heavily occupied windows
------------------------------------------------------
+Four passes was not enough, and why
+-----------------------------------
 
-A seeded sample of twelve windows, four projection passes, 10 m/s at
-225°. Mean **50.7 s** a solve. Every window straddles its terrain, every
+This is the reason the corpus runs at ``n_projections = 16`` where
+phase 17 froze the operator at 4.
+
+A seeded sample of twelve windows, **four** projection passes, 10 m/s at
+225°. Mean 50.7 s a solve. Every window straddles its terrain, every
 field is finite, every one accelerates over its ridges -- and **four
 fail the divergence check**:
 
@@ -300,23 +303,154 @@ window                    solid    ``max_div_fe``         result
 The ordering is the finding. **The failures are exactly the windows
 above about 55% solid**, and the margin narrows steadily on the way there
 -- Bootleg's divergence falls by a factor of 2.2, Apple's 51.6% window by
-5%, and then it inverts. On these windows four passes leave the flow with
-*more* divergence than the terrain-following inflow it started from, in
-the norm the solve controls.
+5%, and then it inverts.
 
-This is not the phase 17 convergence table contradicting itself. That was
-measured on Creek at 71% solid and converged at 0.87 a pass, so solid
-fraction alone does not predict it; something about these particular
-windows -- narrow passages between solid blocks, most likely -- makes the
-first few passes non-monotone. What it does mean is concrete:
+They are not divergent, they are slow
+--------------------------------------
 
-* the dataset target is "FastWindTerrain at four passes", and on roughly
-  a third of the corpus that field is **not** closer to mass-consistent
-  than the initial condition. That is still a well-defined target for a
-  surrogate to emulate, but it cannot be described as an approximately
-  converged solution;
-* ``--check`` should be run and its failures counted before generating a
-  dataset, not after;
-* whether more passes recover monotonicity on these windows is open, and
-  is the first thing to settle in phase 21 -- if they need 16, the
-  corpus's cost is four times the 28 core-hours quoted above.
+Sweeping the pass count on the worst failure, a marginal one and a
+healthy control settles it. ``max_divergence_fe`` against passes:
+
+==================  =====  =====  =====  =====  =====  =====  =====
+window / solid          0      1      2      4      8     16     24
+==================  =====  =====  =====  =====  =====  =====  =====
+``ditch_fire:20``    .194   .227   .250   .259   .251   .203   .159
+64% solid
+``kincade:20``       .152   .175   .177   .161   .140   .089   .057
+59% solid
+``bootleg:02``       .056   .042   .037   .029   .019   .012   .009
+18% solid
+==================  =====  =====  =====  =====  =====  =====  =====
+
+Bootleg falls from the first pass. The other two **rise, peak, and then
+fall** -- and four passes lands on top of ditch_fire's hump exactly.
+Both are below their starting divergence by 24 passes. Nothing here
+fails to converge; four passes catches the steep windows mid-flight.
+
+What it is not, and what it probably is
+----------------------------------------
+
+Two plausible explanations were tested and **both are wrong**, which is
+worth recording because each looked convincing.
+
+**Not the domain top.** The lid is ``w = 0`` a fixed 1000 m above the
+highest ground, which on a 1850 m-relief window is barely half the relief
+-- an obvious suspect. Raising it changes almost nothing:
+
+=====================  ==============  ========  ========  =========
+window                  atmos/relief    pass 0    pass 4    pass 16
+=====================  ==============  ========  ========  =========
+``ditch_fire:20``               0.54    0.0350    0.0261     0.0086
+``ditch_fire:20``               2.16    0.0349    0.0240     0.0079
+``kincade_fire:20``             1.37    0.0396    0.0200     0.0078
+``bootleg_fire:02``             4.31    0.0294    0.0125     0.0058
+=====================  ==============  ========  ========  =========
+
+A **fourfold** change in domain height moves the final divergence by 8%,
+and every window is monotone at every height. Exonerated.
+
+**Not terrain occupancy.** The first sample suggested "above 55% solid",
+but ``marshall_fire`` -- 137-223 m of relief, 17% solid, one of the
+gentlest sites in the corpus -- has windows that fail the same test. No
+terrain descriptor separates the failures from the passes either: relief,
+slope, ruggedness and slope-change (curvature) all overlap.
+
+**Not the boundary flux imbalance either**, though it correlates. Terrain
+blocking part of a face means the inflow's mass flux does not balance --
+by 0.7% to 27% before the solve, driven by the terrain slope along the
+wind. ``bootleg_fire:02`` slopes toward 225 deg and its imbalance is
+4.3e-2 at six directions but **5.2e-4 at 135 and 315**, the two
+perpendicular ones. Suggestive, and wrong. Normalised by the fluid volume
+it is a bulk divergence, which is the form that can be compared with the
+local one:
+
+=====================  ===========  ==============  ============
+window                   rel imbal    net / volume     ``div_l2``
+=====================  ===========  ==============  ============
+``bootleg_fire:22``         0.0004        1.59e-06      3.09e-03
+``delta_fire:20``           0.0002        6.36e-07      7.54e-03
+``kincade_fire:20``         0.0032        1.15e-05      1.02e-02
+``ditch_fire:20``           0.0035        1.38e-05      9.59e-03
+=====================  ===========  ==============  ============
+
+**Seven hundred to two thousand times smaller** than the local
+divergence, so it cannot be the mechanism. The post-solve figures also
+show the projection doing its job: a pre-solve imbalance of up to 27%
+comes out at 0.02-0.35%, exactly as ``Inflow.cpp:456`` says to expect.
+
+**What it probably is: the vertical stretching.** Geometric grading makes
+the grid metric terms first-order accurate where a uniform grid is
+second-order, so a stretched column is a coarser discretisation of the
+same problem. At equal horizontal resolution:
+
+=====================================  ========  ========  ========
+mesh, both dx = 50 m                     cells    pass 0   pass 16
+=====================================  ========  ========  ========
+stretched 100x100x60, dz0 4, r 1.06      0.60 M    0.1943    0.2025
+uniform 100x100x228, dz 12.5             2.28 M    0.1285    0.0597
+=====================================  ========  ========  ========
+
+**This is a trade, not a defect.** Stretching buys a large cost saving for
+a small accuracy loss and that is why it is here. The uniform mesh above
+also has 228 vertical cells against 60, so it is finer as well as
+ungraded, and the comparison does not separate the two.
+
+Nor should it be pushed further. **Grid convergence does not exist in this
+regime**: laminar flow converges under refinement and so does
+wall-resolved turbulence, but wall-modelled LES for the atmospheric
+boundary layer does not converge even over flat ground, let alone complex
+terrain. A refinement study here is not a verification strategy, and a
+finer mesh that disagrees is a different model rather than a better-
+resolved one.
+
+Why none of it matters much
+----------------------------
+
+Divergence is 1/s. Multiplied by the cell size it is a local velocity
+imbalance, and at ``dx = 50 m`` the worst windows sit at **0.3-0.4 m/s**.
+
+CFD practice runs at around **0.25 m/s on average, higher on steep
+terrain**, and **20-30% is an acceptable error for turbulent atmospheric
+flow** -- these are turbulent boundary-layer flows, not laminar ones, and
+the physical variability swamps what a solver can be driven to. The
+differences above sit at the edge of that noise, and on the steepest
+ground -- exactly the windows that "fail" -- the accepted band is wider
+still.
+
+So **nothing is dropped from the corpus on this basis.** The screen
+catches gross failure only: a non-finite field, or a speed-up past
+``MAX_SPEEDUP`` that means the solve produced something other than flow
+(the failure ``Poisson.cpp:218`` records is a 34.8 m/s corrected wind from
+a 10 m/s inflow, which no divergence norm would catch).
+
+The criterion that was rejected
+--------------------------------
+
+"Did the L-infinity divergence fall across the projection" is the obvious
+screen and it is the wrong one. It would have removed roughly a third of
+the corpus, and it fails on three counts:
+
+* **the differences are physically tiny**, per above;
+* **the norms disagree with each other.** Over 1 to 16 passes
+  ``ditch_fire:20``'s L-infinity humps while its L2 falls monotonically,
+  and ``bootleg_fire:02`` does the exact opposite. Choosing one and
+  calling it convergence bakes in a decision nobody made;
+* **it tracks nothing real** -- gentle sites fail it, steep ones pass, and
+  no terrain descriptor separates them.
+
+A corpus trimmed on a criterion that fine is a corpus trimmed to what was
+expected, which is the one thing a held-out terrain set must not be.
+``tests/test_corpus.py`` asserts that a rising divergence is **not** a
+reason to drop, so the criterion cannot creep back.
+
+Measuring it anyway
+-------------------
+
+``build_corpus.py --solvability`` solves every window at every direction
+and records **every** norm -- ``div_fe_before``/``after``, ``div_l2``,
+``div_max``, ``speed_max``, ``flux_imbalance``, the per-component
+``du/dv/dw_max`` and the physical ``dspeed_max`` and ``speedup_max`` -- and
+judges none of them. The judgement lives in the split stage with every
+other threshold, so the rule can be changed without re-solving. The
+manifest records ``solvability_screened`` so a manifest built before the
+measurement is distinguishable from one built after it.

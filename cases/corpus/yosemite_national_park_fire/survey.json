@@ -18,6 +18,8 @@
   "windows": [
     {
       "aniso": 1.0801888013015757,
+      "dslope_max": 0.6395773615356382,
+      "dslope_p95": 0.247169200228557,
       "i": 0,
       "id": "yosemite_national_park_fire:00",
       "j": 0,
@@ -38,6 +40,8 @@
     },
     {
       "aniso": 1.1156349460211075,
+      "dslope_max": 0.6395773615356382,
+      "dslope_p95": 0.22912310192521682,
       "i": 1,
       "id": "yosemite_national_park_fire:10",
       "j": 0,
@@ -58,6 +62,8 @@
     },
     {
       "aniso": 1.5772687239080831,
+      "dslope_max": 0.5790617410950235,
+      "dslope_p95": 0.21353058854819623,
       "i": 2,
       "id": "yosemite_national_park_fire:20",
       "j": 0,
@@ -78,6 +84,8 @@
     },
     {
       "aniso": 1.1440919041705793,
+      "dslope_max": 0.6395773615356382,
+      "dslope_p95": 0.22184678685452097,
       "i": 0,
       "id": "yosemite_national_park_fire:01",
       "j": 1,
@@ -98,6 +106,8 @@
     },
     {
       "aniso": 1.0662494061986578,
+      "dslope_max": 0.6395773615356382,
+      "dslope_p95": 0.22275108599900614,
       "i": 1,
       "id": "yosemite_national_park_fire:11",
       "j": 1,
@@ -118,6 +128,8 @@
     },
     {
       "aniso": 1.3773547954818648,
+      "dslope_max": 0.5603653941849016,
+      "dslope_p95": 0.20767441348060867,
       "i": 2,
       "id": "yosemite_national_park_fire:21",
       "j": 1,
@@ -138,6 +150,8 @@
     },
     {
       "aniso": 1.2478323427307108,
+      "dslope_max": 0.6173380354392559,
+      "dslope_p95": 0.20072701779732458,
       "i": 0,
       "id": "yosemite_national_park_fire:02",
       "j": 2,
@@ -158,6 +172,8 @@
     },
     {
       "aniso": 1.2522587464278252,
+      "dslope_max": 0.4789653562628513,
+      "dslope_p95": 0.20167617324453482,
       "i": 1,
       "id": "yosemite_national_park_fire:12",
       "j": 2,
@@ -178,6 +194,8 @@
     },
     {
       "aniso": 1.3319662032636126,
+      "dslope_max": 0.4789653562628513,
+      "dslope_p95": 0.19524782746484226,
       "i": 2,
       "id": "yosemite_national_park_fire:22",
       "j": 2,

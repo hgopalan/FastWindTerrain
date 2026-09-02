@@ -126,6 +126,45 @@ REFERENCE_HEIGHT_M = 80.0
 #: samples, and a paper should not claim otherwise.
 WIND_DIRECTIONS = tuple(float(45 * k) for k in range(8))
 
+#: Projection passes the corpus is generated at.
+#:
+#: Phase 17 froze this at 4 on Creek, where the outer iteration falls
+#: geometrically at ~0.87 a pass from the first one. Across the corpus the
+#: L-infinity divergence instead RISES for the first passes on some windows
+#: and only then falls -- over 0, 1, 2, 4, 8, 16 and 24 passes:
+#:
+#:     ditch_fire:20    64% solid   .194 .227 .250 .259 .251 .203 .159
+#:     kincade_fire:20  59% solid   .152 .175 .177 .161 .140 .089 .057
+#:     bootleg_fire:02  18% solid   .056 .042 .037 .029 .019 .012 .009
+#:
+#: Four passes lands on ditch_fire's hump exactly. Nothing there is
+#: divergent: both are below their starting value by 24 passes. 16 is past
+#: the hump on the windows measured and is cheap enough to take.
+#:
+#: WHAT THIS IS NOT, since two plausible explanations were tested and both
+#: are wrong:
+#:
+#: * Not the domain top. Raising it from 1000 m above the highest ground to
+#:   4000 m -- atmosphere/relief 0.54 to 2.16 on ditch_fire:20 -- moves the
+#:   final divergence 0.0086 to 0.0079, 8% for a 4x change, with every
+#:   window monotone at every height.
+#: * Not terrain occupancy. marshall_fire, at 137-223 m of relief and 17%
+#:   solid, has windows that fail the same test.
+#:
+#: WHAT IT PROBABLY IS: the vertical stretching. Geometric grading makes
+#: the grid metric terms first-order accurate where a uniform grid is
+#: second-order, so a stretched column is simply a coarser discretisation
+#: of the same problem. That is a deliberate trade -- stretching buys a lot
+#: of cost for a little accuracy, and is why it is here -- not a defect.
+#:
+#: AND IT DOES NOT MATTER MUCH. Divergence is 1/s; multiplied by the cell
+#: size it is a local velocity imbalance, and at dx = 50 m an L2 divergence
+#: of 0.007 is 0.35 m/s. CFD practice runs at ~0.25 m/s and 20-30% error is
+#: acceptable for turbulent atmospheric flow, so these differences sit at
+#: the edge of the noise. NOTHING IS DROPPED FROM THE CORPUS ON THIS BASIS;
+#: screening is for gross failure only -- see screen_window.
+N_PROJECTIONS = 16
+
 #: How wide to download. The vendored reader smooths the outer 20% of every
 #: side (srtm_terrain_reader.py:281), so only 60% of a tile is untouched, and
 #: that 60% has to contain the whole window span plus its halo. Solved for
@@ -289,6 +328,16 @@ def descriptors(z, dx=WINDOW_M / 100.0):
     ``aniso``       eigenvalue ratio of the gradient covariance. 1 is
                     isotropic hummocks; large is parallel ridges, which
                     channel wind and are the interesting case.
+    ``dslope_p95``  slope CHANGE per cell -- the Hessian norm times dx, so
+                    a dimensionless "how much does the slope turn between
+                    one cell and the next". Steepness and curvature are
+                    different things and only this one is about the mesh:
+                    a uniform 30-degree ramp is steep and perfectly
+                    resolved, while a cliff edge turns the surface through
+                    a large angle inside one 50 m cell and cannot be. That
+                    is where a coarse mesh makes the wind behave oddly,
+                    independently of how steep or how rough the ground is.
+    ``dslope_max``  the worst cell, which is the cliff edge itself.
     """
     import numpy as np
 
@@ -312,6 +361,16 @@ def descriptors(z, dx=WINDOW_M / 100.0):
     eig = np.linalg.eigvalsh(cov)
     aniso = float(np.sqrt(max(eig[1], 0.0) / max(eig[0], 1e-30)))
 
+    # Slope change per cell: the Hessian's Frobenius norm scaled by dx, so
+    # the number is the angle-ish amount the surface turns from one cell to
+    # the next. Dimensionless, and therefore a statement about the MESH as
+    # much as about the ground -- which is the point of carrying it
+    # alongside slope_p95.
+    gxy, gxx = np.gradient(gx, dx)
+    gyy, gyx = np.gradient(gy, dx)
+    dslope = dx * np.sqrt(gxx ** 2 + 2.0 * (0.5 * (gxy + gyx)) ** 2
+                          + gyy ** 2)
+
     return {
         "relief": float(z.max() - z.min()),
         "std": float(z.std()),
@@ -319,10 +378,13 @@ def descriptors(z, dx=WINDOW_M / 100.0):
         "slope_p95": float(np.percentile(slope, 95.0)),
         "tri": float(np.mean(np.abs(z - neigh))),
         "aniso": aniso,
+        "dslope_p95": float(np.percentile(dslope, 95.0)),
+        "dslope_max": float(dslope.max()),
     }
 
 
-DESCRIPTOR_KEYS = ("relief", "std", "slope_mean", "slope_p95", "tri", "aniso")
+DESCRIPTOR_KEYS = ("relief", "std", "slope_mean", "slope_p95", "tri", "aniso",
+                   "dslope_p95", "dslope_max")
 
 
 # ---------------------------------------------------------------------------
@@ -348,32 +410,100 @@ MIN_RELIEF_M = 60.0        # per WINDOW; below this the sample is a plate
 MIN_WINDOWS = 5            # a site needs a majority of its nine to survive
 MAX_SEA_FRACTION = 0.02    # ocean reads as exactly 0 m after _fix_srtm_zeros
 
+#: Largest terrain-induced amplification a window may show before it is
+#: treated as a failed solve rather than as flow.
+#:
+#: Speed-up over complex terrain does not normally exceed 20-30%, so 2.0 --
+#: a doubling -- is far outside anything physical and catches only gross
+#: failure. It is deliberately not set near the physical rule: the screen
+#: is here to remove fields that are wrong, not fields that are unusual,
+#: and a corpus trimmed to what was expected teaches a surrogate what was
+#: expected.
+#:
+#: `Poisson.cpp:218` records the failure this is shaped for -- a 34.8 m/s
+#: corrected wind from a 10 m/s inflow, from a lambda boundary condition
+#: that interacted badly with the nodal divergence. No divergence norm
+#: would have caught it.
+MAX_SPEEDUP = 2.0
 
-def screen_window(entry):
-    """``(ok, reason)`` for one window.
 
-    Relief is the whole test, and the granularity is the point. Screening a
-    SITE on its tile's relief passes anything with one steep corner: Erskine
-    Fire spans 81 m across its 10 km tile, which sounds like terrain, while
-    eight of its nine 5 km windows hold 10 to 12 m and are plates. A window
-    is what gets trained on, so a window is what gets judged.
+def screen_window(entry, solvability=None):
+    """``(ok, reason)`` for one window: enough relief, and it must solve.
+
+    RELIEF, and the granularity is the point. Screening a SITE on its tile's
+    relief passes anything with one steep corner: Erskine Fire spans 81 m
+    across its 10 km tile, which sounds like terrain, while eight of its
+    nine 5 km windows hold 10 to 12 m and are plates. A window is what gets
+    trained on, so a window is what gets judged.
 
     A sample with no relief produces flow barely distinguishable from the
     inflow profile. It teaches a surrogate nothing, and worse, it inflates
     every skill score measured against a flat baseline -- so a corpus full
     of them reports success it has not earned. 60 m over 5 km is a 1.2%
     grade: generous, and still enough to exclude a plate.
+
+    THE SOLVE, when `solvability` is given -- that window's entry from
+    build_corpus.py --solvability. GROSS FAILURE ONLY: a non-finite field,
+    or an amplification past MAX_SPEEDUP that means the solve produced
+    something other than flow.
+
+    IT IS DELIBERATELY NOT A CONVERGENCE TEST, and the history matters
+    because the obvious screen is the wrong one. "Did the L-infinity
+    divergence fall across the projection" looked like a clean criterion
+    and would have removed about a third of the corpus. It is a bad
+    criterion for three independently checked reasons:
+
+    * the differences are physically tiny. Divergence is 1/s; times the
+      cell size it is a local velocity imbalance, and at dx = 50 m the
+      worst windows sit at 0.3-0.4 m/s -- the same order as the ~0.25 m/s
+      CFD practice runs at, and well inside the 20-30% that is acceptable
+      for turbulent atmospheric flow. On genuinely steep ground the
+      accepted band is wider still.
+    * the norms disagree with each other. Over 1 to 16 passes ditch_fire's
+      L-infinity humps while its L2 falls monotonically, and bootleg_fire
+      does the exact opposite. Picking one and calling it convergence
+      would bake in a choice nobody made.
+    * it does not track anything real. The failures are not the steep
+      windows (marshall_fire, 137 m of relief, has them), not the occupied
+      ones, and no terrain descriptor separates them -- relief, slope,
+      ruggedness and curvature all overlap between passing and failing.
+
+    A corpus trimmed on a criterion that fine is a corpus trimmed to what
+    was expected, which is the one thing a held-out terrain set must not
+    be.
     """
     relief = float(entry["z_max"] - entry["z_min"])
     if relief <= 0.0:
         return False, "perfectly flat -- missing or nodata SRTM"
     if relief < MIN_RELIEF_M:
         return False, f"relief {relief:.0f} m is under {MIN_RELIEF_M:.0f} m"
+
+    if solvability is not None:
+        import math
+
+        after = solvability.get("div_fe_after") or []
+        n_bad = sum(1 for v in after if not math.isfinite(v))
+        if n_bad:
+            return (False,
+                    f"the solve produced a non-finite field at {n_bad} of "
+                    f"{len(after)} wind directions")
+
+        speedup = [v for v in (solvability.get("speedup_max") or [])
+                   if math.isfinite(v)]
+        if speedup and max(speedup) > MAX_SPEEDUP:
+            return (False,
+                    f"wind speed reaches {max(speedup):.1f}x the "
+                    f"undisturbed profile at the same height; terrain "
+                    f"speed-up does not exceed about 1.3x, so this is a "
+                    f"failed solve rather than flow")
     return True, "ok"
 
 
-def screen_site(survey):
+def screen_site(survey, solvability=None):
     """``(ok, reason, kept_window_ids)`` for one surveyed site.
+
+    `solvability` is ``{window_id: entry}`` from build_corpus.py
+    --solvability, or None to screen on geometry alone.
 
     Three ways a site is unusable, all of which the reference list contains
     or nearly contains:
@@ -399,18 +529,28 @@ def screen_site(survey):
                 f"{100.0 * sea:.0f}% of the tile is at or below sea level; "
                 f"the reader clamps water to a flat 0 m plane", [])
 
-    kept, dropped = [], 0
+    kept, flat, stuck = [], 0, 0
     for w in survey.get("windows", []):
-        ok, _ = screen_window(w)
+        solv = (solvability or {}).get(w["id"])
+        ok, reason = screen_window(w, solvability=solv)
         if ok:
             kept.append(w["id"])
+        elif "non-finite" in reason or "failed solve" in reason:
+            stuck += 1
         else:
-            dropped += 1
+            flat += 1
     if len(kept) < MIN_WINDOWS:
-        return (False,
-                f"only {len(kept)} of {len(kept) + dropped} windows clear "
-                f"the {MIN_RELIEF_M:.0f} m relief minimum; the site is a "
-                f"plate with a corner", [])
+        n = len(kept) + flat + stuck
+        # Name the cause: a site of plates and a site the solver cannot
+        # handle are different problems and want different responses.
+        if flat >= stuck:
+            why = (f"only {len(kept)} of {n} windows clear the "
+                   f"{MIN_RELIEF_M:.0f} m relief minimum; the site is a "
+                   f"plate with a corner")
+        else:
+            why = (f"only {len(kept)} of {n} windows solve -- {stuck} "
+                   f"produced a non-finite or unphysical field")
+        return False, why, []
     return True, "ok", kept
 
 
@@ -724,7 +864,7 @@ def window_config(manifest, window_id_, wind_speed=REFERENCE_SPEED_MS,
                    "z_ref": z_ref},
         "anisotropy": {"enable": True},
         "obrien": {"enable": True},
-        "poisson": {"alpha_v": 0.5, "n_projections": 4},
+        "poisson": {"alpha_v": 0.5, "n_projections": N_PROJECTIONS},
     }
     for name, section in kwargs.items():
         cfg.setdefault(name, {}).update(section)
