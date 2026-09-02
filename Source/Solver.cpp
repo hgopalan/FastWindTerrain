@@ -1,5 +1,6 @@
 #include "Solver.H"
 #include "Output.H"
+#include "FieldIO.H"
 #include "Debug.H"
 #include "Derivatives.H"
 
@@ -290,6 +291,15 @@ void Solver::WriteOutput () const
                            << ascii_file << "\n";
         }
     }
+}
+
+void Solver::SetVelocity (const amrex::Vector<amrex::Real>& buffer)
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_setup_done,
+        "Solver::SetVelocity called before Setup");
+
+    ScatterField(buffer, m_inflow.velocity());
+    m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
 }
 
 void Solver::Run (const amrex::Vector<std::string>& args)

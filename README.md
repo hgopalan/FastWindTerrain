@@ -73,6 +73,17 @@ with fwt.session():
     print(g.z_cc)          # numpy, (nz,)
 ```
 
+Fields come back as numpy, channels-first, so they hand straight to
+PyTorch:
+
+```python
+with fwt.session(["inputs"]):
+    s = fwt.Solver()
+    s.setup()
+    u = s.velocity[0]           # (nz, ny, nx)
+    s.set_velocity(new_field)   # ghosts refilled through the BCs
+```
+
 That path never touches ParmParse, which matters when driving many cases
 in one process: ParmParse persists for the life of an AMReX
 initialization, so a case that omits a parameter would otherwise inherit

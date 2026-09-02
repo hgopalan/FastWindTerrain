@@ -205,6 +205,28 @@ no checker knows the difference. CI runs both.
 * ten grids built and destroyed inside one AMReX initialization, each
   independent -- dataset generation depends on it
 
+``phase11_field_bindings``
+--------------------------
+
+Fields as numpy (see :doc:`python`).
+
+* eight fields with the right shapes and dtypes -- channels-first
+  ``(ncomp, nz, ny, nx)``, the nodal ``lambda_`` one point larger in
+  every direction, the mask as ``int32``
+* **index order** checked cell by cell against the plotfile the C++ run
+  wrote. A transposed array passes every other check in the group and
+  would quietly ruin a training set, so this is the one that matters
+* a write/read round trip that must be **bit-exact**, not close: the
+  values never leave double precision, so any difference would mean the
+  gather or the scatter is doing arithmetic. Also that the array handed
+  back is a copy -- scribbling on it changes nothing
+* **decomposition invariance**: the same case at ``max_grid_size`` 8 and
+  64, nine boxes against one, must give identical arrays. A MultiFab is
+  N separate FArrayBoxes, so this is what actually validates the gather
+* four bad shapes rejected with the field left untouched, ``float32``
+  accepted by widening, and reads before ``setup()`` raising rather than
+  returning something empty
+
 ``profile_convergence``
 -----------------------
 

@@ -76,6 +76,22 @@ public:
     const Poisson&     poisson ()   const { return m_poisson; }
     const Diagnostics& diagnostics () const { return m_diag; }
 
+    // Overwrites the velocity's valid region from a flat buffer in
+    // FieldIO's layout, then refills its ghosts through the boundary
+    // conditions so the field is immediately consistent for anything
+    // that reads a stencil near a face.
+    //
+    // Refilling here rather than leaving it to the caller is the whole
+    // reason this lives on Solver: only the boundary conditions know
+    // what the ghosts should hold, and a field written from Python with
+    // stale ghosts would give a quietly wrong divergence two calls
+    // later.
+    void SetVelocity (const amrex::Vector<amrex::Real>& buffer);
+
+    bool is_setup ()     const { return m_setup_done; }
+    bool is_solved ()    const { return m_solved; }
+    bool is_diagnosed () const { return m_diagnosed; }
+
     // The velocity after the projection, and the field that went in.
     const amrex::MultiFab& velocity () const { return m_inflow.velocity(); }
     const amrex::MultiFab& velocity0 () const { return m_vel0; }

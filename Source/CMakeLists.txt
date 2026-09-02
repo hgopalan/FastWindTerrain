@@ -21,6 +21,7 @@ add_library(fwt_core STATIC
     Verify.cpp
     Solver.cpp
     Error.cpp
+    FieldIO.cpp
 )
 
 # PUBLIC: anything linking fwt_core needs the headers and AMReX too.
