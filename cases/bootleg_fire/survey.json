@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      2607.999999999995
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      1387.0
+    ],
+    "stretching_ratio": 1.046334288984092
+  },
+  "halo_m": 250.0,
+  "lat": 42.8667,
+  "lon": -121.5833,
+  "n_points": 43205,
+  "name": "Bootleg Fire",
+  "relief": 221.0,
+  "slug": "bootleg_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 1608.0,
+  "z_mean": 1443.0542868937612,
+  "z_min": 1387.0
+}

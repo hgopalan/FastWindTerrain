@@ -19,5 +19,12 @@ dist/
 *.egg-info/
 .pytest_cache/
 
+# Real terrain (cases/). A downloaded 5x5 km SRTM tile is about a megabyte
+# of text per case; survey.json carries what is needed to rebuild the grid
+# and IS committed, so the catalogue stays reproducible without them.
+cases/*/terrain.csv
+cases/*/*.tif
+cases/*/plt_*/
+
 # Sphinx
 docs/_build/

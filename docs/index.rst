@@ -23,6 +23,7 @@ on this layout.
    numerics
    convergence
    python
+   cases
    output
    debugging
    parmparse_reference

@@ -171,6 +171,25 @@ into a training run, or never, because the loader padded.
 
 `examples/quickstart.ipynb` is the tour, and CI executes it.
 
+### Real terrain
+
+`cases/` holds eight 5 × 5 km domains over real ground, at wildfire
+locations — Creek, Dixie, Rim, August Complex, Tubbs, Thomas, Woolsey and
+Bootleg:
+
+```
+pip install ".[cases]"
+python3 cases/creek_fire/prepare.py    # download SRTM, derive the grid
+python3 cases/creek_fire/run.py        # solve it, with sanity checks
+```
+
+Cell counts are the same for every case, but the vertical extent follows
+each case's own relief — the floor sits on the ground rather than at sea
+level, which matters when the ground is at 2000 m. The solver does not
+check that terrain fits inside the domain, so `cases/` does.
+
+See [Real terrain cases](docs/cases.rst).
+
 ### Tests
 
 ```
@@ -214,6 +233,7 @@ live in [`docs/`](docs/):
 | [Output](docs/output.rst) | Diagnostics, the report, and the plt/ascii field backends |
 | [Debugging](docs/debugging.rst) | The `fwt.debug` diagnostics switch |
 | [Tools](docs/tools.rst) | Synthetic terrain generation |
+| [Real terrain cases](docs/cases.rst) | The eight-case SRTM catalogue in `cases/` |
 | [Regtests](docs/regtests.rst) | Test suite and how to run it |
 
 To build the docs as HTML:
@@ -249,6 +269,7 @@ Source/      solver source (built as one library, fwt_core)
 python/      pybind11 bindings and the Python package
 docs/        documentation
 regtests/    one directory per C++ test group, each self-contained
+cases/       real-terrain case catalogue (SRTM, 5 x 5 km)
 tests/       pytest suite for the Python bindings
 examples/    quickstart notebook
 convergence/ the scheme convergence sweep
