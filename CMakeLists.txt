@@ -38,12 +38,25 @@ option(FWT_MPI                "Build with MPI"                        OFF)
 option(FWT_OMP                "Build with OpenMP"                     OFF)
 option(FWT_USE_INTERNAL_AMREX "Use the AMReX git submodule"           ON)
 option(FWT_ENABLE_TESTS       "Register the regtests with CTest"      ON)
+option(FWT_PYTHON            "Build the pybind11 Python bindings"    OFF)
 
 # GPU backend, passed straight through to AMReX. NONE builds for the CPU.
 # CI compiles all of these; it cannot RUN them, since hosted runners have
 # no GPU, so the GPU jobs are build-only.
 set(FWT_GPU_BACKEND NONE CACHE STRING "GPU backend: NONE, CUDA, HIP, SYCL")
 set_property(CACHE FWT_GPU_BACKEND PROPERTY STRINGS NONE CUDA HIP SYCL)
+
+# Position-independent code everywhere, so the static AMReX and fwt_core
+# archives can be linked into the Python extension module. It is set
+# BEFORE add_subdirectory(external/amrex) because it has to reach AMReX's
+# own targets; without it the module fails to link with a relocation
+# error that reads like a pybind11 problem and is not one.
+#
+# On by default rather than gated behind FWT_PYTHON: the flag costs
+# effectively nothing on x86-64 and arm64, and having the C++-only build
+# produce different object code from the bindings build would undermine
+# the bit-for-bit guarantee the bindings are built on.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- AMReX ----------------------------------------------------------------
 if(FWT_USE_INTERNAL_AMREX)
@@ -79,6 +92,11 @@ else()
 endif()
 
 add_subdirectory(Source)
+
+# --- Python bindings ------------------------------------------------------
+if(FWT_PYTHON)
+    add_subdirectory(python)
+endif()
 
 # --- Tests ----------------------------------------------------------------
 # Thin wrapper over run_regtests.py; the Python checkers stay the single

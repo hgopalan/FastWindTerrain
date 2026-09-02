@@ -22,6 +22,7 @@ on this layout.
    anisotropy
    numerics
    convergence
+   python
    output
    debugging
    parmparse_reference

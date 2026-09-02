@@ -1,0 +1,303 @@
+#include "Solver.H"
+#include "Output.H"
+#include "Debug.H"
+#include "Derivatives.H"
+
+#include <AMReX.H>
+#include <AMReX_Print.H>
+#include <AMReX_ParmParse.H>
+#include <AMReX_ParallelDescriptor.H>
+#include <AMReX_Version.H>
+
+#include <fstream>
+#include <iomanip>
+
+namespace fwt {
+
+void Solver::Setup (const amrex::Vector<std::string>& args)
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!m_setup_done,
+        "Solver::Setup called twice on the same solver");
+
+    amrex::Print() << "FastWindTerrain -- mass-consistent wind solver\n";
+
+    // fwt.debug = 1 turns on verbose diagnostics everywhere.
+    fwt::Debug::Init();
+    FWT_DEBUG_SECTION("Run configuration");
+    FWT_DEBUG("AMReX version    = " << amrex::Version());
+    FWT_DEBUG("MPI ranks        = " << amrex::ParallelDescriptor::NProcs());
+    FWT_DEBUG("amrex::Real      = " << sizeof(amrex::Real) * 8 << "-bit");
+    for (int i = 0; i < int(args.size()); ++i) {
+        FWT_DEBUG("argv[" << (i + 1) << "]         = " << args[i]);
+    }
+
+    // Directional-derivative scheme (numerics.gradient_scheme).
+    fwt::Numerics::Init();
+
+    std::string selftest_file;
+    {
+        amrex::ParmParse pp("numerics");
+        pp.query("selftest_file", selftest_file);
+    }
+    if (!selftest_file.empty()) {
+        fwt::RunGradientSelfTest(selftest_file);
+    }
+
+    m_grid.Build();   // aborts on undershoot (see Grid::BuildVerticalStretching)
+    m_terrain.Build(m_grid);
+    m_inflow.Build(m_grid, m_terrain);
+    m_bc.Build(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+
+    // Verification dump, if asked for. It runs HERE, on the raw profile,
+    // before O'Brien and the projection rewrite the field: the quantity
+    // under study is the gradient of the inflow profile, not of whatever
+    // the adjustment left behind.
+    m_verify.MaybeWriteGradientDump(m_grid, m_terrain, m_inflow.velocity());
+
+    // Cell-local variational weights, from the terrain slope.
+    m_aniso.Build(m_grid, m_terrain);
+
+    // O'Brien runs on u0, BEFORE the projection: it rewrites w from
+    // continuity, and doing that afterwards would put back the divergence
+    // the solve had just removed. massconsistent_amr applies it at the
+    // same point.
+    if (m_obrien.Apply(m_grid, m_terrain, m_inflow.velocity()) > 0) {
+        m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+    }
+
+    m_poisson.Build(m_grid, m_terrain, m_bc, m_aniso);
+
+    // Keep the initial field: the projection corrects in place, and both
+    // are worth having in the output -- the checkers compare against u0,
+    // and a user wants to see what the adjustment did.
+    m_vel0.define(m_grid.ba(), m_grid.dm(), 3, m_inflow.velocity().nGrow());
+    amrex::MultiFab::Copy(m_vel0, m_inflow.velocity(), 0, 0, 3,
+                          m_inflow.velocity().nGrow());
+
+    {
+        amrex::ParmParse pp("poisson");
+        pp.query("manufactured", m_manufactured);
+    }
+
+    m_setup_done = true;
+}
+
+void Solver::Solve ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_setup_done,
+        "Solver::Solve called before Setup");
+
+    if (m_manufactured) {
+        m_mms_err = m_poisson.RunManufactured(m_grid);
+        amrex::Print() << "Manufactured solution: L2 error = "
+                       << m_mms_err.l2 << ", Linf error = "
+                       << m_mms_err.linf << "\n";
+        m_solved = true;
+        return;
+    }
+
+    m_poisson.ComputeRHS(m_grid, m_terrain, m_inflow.velocity());
+
+    const amrex::Real div0 =
+        m_poisson.MaxDivergence(m_grid, m_terrain, m_inflow.velocity());
+    m_poisson.set_div_before(div0);
+    m_poisson.set_vel_before(
+        fwt::Poisson::VelocityRange(m_terrain, m_inflow.velocity()));
+
+    const amrex::Real fe0 =
+        m_poisson.MaxDivergenceFE(m_grid, m_terrain, m_inflow.velocity());
+
+    // AMReX's nodal projection is approximate: its divergence and
+    // gradient are not an exact factorisation of the operator, so one
+    // pass removes only part of the divergence. Repeating the projection
+    // drives the remainder down geometrically.
+    int n_proj = 4;
+    {
+        amrex::ParmParse pp("poisson");
+        pp.query("n_projections", n_proj);
+    }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(n_proj >= 1,
+        "poisson.n_projections must be >= 1");
+
+    for (int ip = 0; ip < n_proj; ++ip) {
+        if (ip > 0) {
+            m_poisson.ComputeRHS(m_grid, m_terrain, m_inflow.velocity());
+        }
+        m_poisson.Solve();
+        m_poisson.ApplyCorrection(m_grid, m_terrain, m_inflow.velocity());
+
+        // The correction changed the interior, so the ghosts are
+        // refreshed before anything reads a stencil near a face. The
+        // classification is NOT redone: which face is an inflow face
+        // follows from the incoming wind, not from the corrected field.
+        m_bc.RefillGhosts(m_grid, m_terrain, m_inflow, m_inflow.velocity());
+
+        if (n_proj > 1) {
+            amrex::Print() << "  projection pass " << (ip + 1)
+                << ": max|div| (controlled norm) = "
+                << m_poisson.MaxDivergenceFE(m_grid, m_terrain,
+                                             m_inflow.velocity())
+                << "\n";
+        }
+    }
+
+    const amrex::Real div1 =
+        m_poisson.MaxDivergence(m_grid, m_terrain, m_inflow.velocity());
+    m_poisson.set_div_after(div1);
+
+    amrex::Print() << "Projection: max|div(u)| " << div0 << " -> "
+                   << div1 << "  (factor "
+                   << (div1 > 0.0 ? div0 / div1 : 0.0) << ")\n";
+    const amrex::Real fe1 =
+        m_poisson.MaxDivergenceFE(m_grid, m_terrain, m_inflow.velocity());
+    m_poisson.set_div_fe(fe0, fe1);
+    m_poisson.set_n_projections(n_proj);
+    amrex::Print() << "  in the norm the solve controls: "
+                   << fe0 << " -> " << fe1 << "\n";
+
+    // A corrected wind far larger than the one that went in means the
+    // setup is wrong, whatever the residual says.
+    const auto vr =
+        fwt::Poisson::VelocityRange(m_terrain, m_inflow.velocity());
+    m_poisson.set_vel_after(vr);
+    amrex::Print() << "  velocity u [" << vr.lo[0] << ", " << vr.hi[0]
+                   << "]  v [" << vr.lo[1] << ", " << vr.hi[1]
+                   << "]  w [" << vr.lo[2] << ", " << vr.hi[2]
+                   << "]  |U|max " << vr.speed_max << " m/s\n";
+
+    m_solved = true;
+}
+
+void Solver::Diagnose ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_solved,
+        "Solver::Diagnose called before Solve");
+
+    // Post-solve diagnostics. The divergence field is computed once and
+    // then used everywhere: the scalar in the report, the norms, and the
+    // component in the output file are all reductions or copies of this
+    // one array, so they cannot disagree.
+    m_divergence.define(m_grid.ba(), m_grid.dm(), 1, 0);
+    m_poisson.ComputeDivergenceField(m_grid, m_terrain, m_inflow.velocity(),
+                                     m_divergence);
+
+    m_diag.Compute(m_grid, m_terrain, m_inflow.velocity(), m_divergence);
+    m_diag.Print();
+
+    {
+        amrex::ParmParse pp("poisson");
+        std::string rhs_dump;
+        if (pp.query("rhs_dump_file", rhs_dump) && !rhs_dump.empty()) {
+            m_poisson.WriteRHSDump(rhs_dump);
+        }
+    }
+
+    amrex::Print() << "Grid built: n_cell = ("
+                    << m_grid.nx() << ", " << m_grid.ny() << ", "
+                    << m_grid.nz()
+                    << "), n_boxes = " << m_grid.ba().size() << "\n";
+
+    amrex::Print() << "Terrain: z in [" << m_terrain.z_min() << ", "
+                   << m_terrain.z_max() << "] m, solid cells = "
+                   << m_terrain.n_solid() << " of " << m_terrain.n_total()
+                   << "\n";
+
+    amrex::Print() << "Inflow: mode = " << m_inflow.mode_name()
+                   << ", boundary flux in/out = " << m_inflow.flux_in()
+                   << " / " << m_inflow.flux_out()
+                   << " m^3/s, relative imbalance = "
+                   << m_inflow.flux_imbalance() << "\n";
+
+    m_diagnosed = true;
+}
+
+void Solver::WriteOutput () const
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_diagnosed,
+        "Solver::WriteOutput called before Diagnose");
+
+    // Two independent switches:
+    //   grid.output_format -- WHICH outputs the run produces: the
+    //                         plain-text report, the field output, or
+    //                         both. report is the default, so the Phase 1
+    //                         checkers keep working.
+    //   output.format      -- which backend writes the field output: plt
+    //                         (default, production) or ascii (one
+    //                         gathered plain-text file, a regtest aid).
+    std::string report_file   = "grid_report.txt";
+    std::string plot_file     = "plt_grid";
+    std::string output_format = "report";
+    std::string ascii_file    = "fields.txt";
+    std::string field_format  = "plt";
+
+    amrex::ParmParse pp("grid");
+    pp.query("report_file", report_file);
+    pp.query("plot_file", plot_file);
+    pp.query("output_format", output_format);
+    {
+        amrex::ParmParse ppo("output");
+        ppo.query("format", field_format);
+        ppo.query("ascii_file", ascii_file);
+    }
+
+    const auto fmt  = fwt::Grid::ParseOutputFormat(output_format);
+    const auto ffmt = fwt::ParseFieldFormat(field_format);
+
+    FWT_DEBUG_SECTION("Output settings");
+    FWT_DEBUG("grid.output_format = " << output_format);
+    FWT_DEBUG("output.format      = " << field_format
+              << (fwt::Grid::WantsPlt(fmt) ? "" : "   [no field output]"));
+    FWT_DEBUG("report_file      = " << report_file
+              << (fwt::Grid::WantsAscii(fmt) ? "" : "   [not written]"));
+    FWT_DEBUG("plot_file        = " << plot_file
+              << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldPlt(ffmt))
+                  ? "" : "   [not written]"));
+    FWT_DEBUG("ascii_file       = " << ascii_file
+              << ((fwt::Grid::WantsPlt(fmt) && fwt::WantsFieldAscii(ffmt))
+                  ? "" : "   [not written]"));
+
+    if (fwt::Grid::WantsAscii(fmt)) {
+        m_grid.WriteReport(report_file);
+        m_terrain.AppendReport(report_file);
+        m_inflow.AppendReport(report_file);
+        m_bc.AppendReport(report_file);
+        fwt::AppendNumericsReport(report_file);
+        m_aniso.AppendReport(report_file);
+        m_obrien.AppendReport(report_file);
+        m_poisson.AppendReport(report_file);
+        m_diag.AppendReport(report_file);
+        if (m_manufactured) {
+            std::ofstream os(report_file, std::ios::app);
+            os << std::setprecision(17);
+            os << "poisson_mms_l2 " << m_mms_err.l2 << "\n";
+            os << "poisson_mms_linf " << m_mms_err.linf << "\n";
+        }
+        amrex::Print() << "Wrote grid report to " << report_file << "\n";
+    }
+    if (fwt::Grid::WantsPlt(fmt)) {
+        // One gather, both backends. Neither assembles its own idea of
+        // what the fields are, so they cannot drift apart.
+        const fwt::OutputFields fields =
+            fwt::CollectOutputFields(m_grid, m_terrain, m_inflow, m_poisson,
+                                     m_vel0, m_aniso, m_divergence);
+        if (fwt::WantsFieldPlt(ffmt)) {
+            fwt::WritePlotfile(plot_file, m_grid, fields);
+            amrex::Print() << "Wrote plotfile to " << plot_file << "\n";
+        }
+        if (fwt::WantsFieldAscii(ffmt)) {
+            fwt::WriteAscii(ascii_file, m_grid, fields);
+            amrex::Print() << "Wrote ascii field output to "
+                           << ascii_file << "\n";
+        }
+    }
+}
+
+void Solver::Run (const amrex::Vector<std::string>& args)
+{
+    Setup(args);
+    Solve();
+    Diagnose();
+    WriteOutput();
+}
+
+} // namespace fwt

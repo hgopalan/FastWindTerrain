@@ -117,6 +117,65 @@ jobs:
         run: python3 run_regtests.py main3d.gnu.ex
 
   # ---------------------------------------------------------------------
+  # The Python bindings, and the parity guarantee they rest on.
+  #
+  # The point of this job is the SECOND regtest run: the same suite,
+  # driven through the bindings instead of the executable. Since both
+  # link one compiled library, any difference between the two runs means
+  # something other than the solver changed -- which is exactly what
+  # would otherwise go unnoticed until a result did not reproduce.
+  # ---------------------------------------------------------------------
+  python:
+    name: Python bindings (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with the AMReX and pybind11 submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Configure with the bindings on
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFWT_PYTHON=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify both entry points exist
+        run: |
+          test -f build/fastwindterrain
+          test -x build/fastwindterrain-py
+          test -f build/python/fastwindterrain/__init__.py
+
+      - name: Import the module
+        run: |
+          PYTHONPATH=build/python python3 -c \
+            "import fastwindterrain as fwt; print(fwt.__version__, fwt.amrex_version())"
+
+      # The regtests once through the executable...
+      - name: Regtests through the C++ executable
+        run: python3 run_regtests.py build/fastwindterrain
+
+      # ...and again through the bindings. Same checkers, same
+      # assertions, different entry point.
+      - name: Regtests through the Python bindings
+        run: python3 run_regtests.py build/fastwindterrain-py
+
+  # ---------------------------------------------------------------------
   # GPU backends: COMPILE ONLY.
   #
   # Hosted runners have no GPU, so these jobs prove the code still builds

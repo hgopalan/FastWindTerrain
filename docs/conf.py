@@ -13,7 +13,7 @@ extensions = []
 templates_path = []
 exclude_patterns = ["_build"]
 
-html_theme = "alabaster"
+html_theme = "sphinx_rtd_theme"
 html_static_path = []
 
 # One document tree rooted at index.rst.
