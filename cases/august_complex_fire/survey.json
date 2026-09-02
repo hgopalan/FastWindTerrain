@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      1253.2252135765345
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      87.5196063639876
+    ],
+    "stretching_ratio": 1.0451675948257289
+  },
+  "halo_m": 250.0,
+  "lat": 39.4667,
+  "lon": -122.3667,
+  "n_points": 41042,
+  "name": "August Complex Fire",
+  "relief": 165.70560721255046,
+  "slug": "august_complex_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 253.22521357653807,
+  "z_mean": 137.5643589410004,
+  "z_min": 87.5196063639876
+}

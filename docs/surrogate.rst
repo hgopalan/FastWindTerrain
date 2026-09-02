@@ -226,6 +226,207 @@ reason is that on slopes reaching 1.89, ``u.grad(h)`` implies a surface
 suppressed ``alpha_v`` is pushing air around the obstacle rather than over
 it, which is exactly what the kinematic condition assumes it does not do.
 
+Where to put the levels
+=======================
+
+The count is what a paper usually reports; the placement is what has to be
+reproduced. At fixed k, four distribution rules across 10-1600 m above
+ground, measured on three terrains (``--placement``):
+
+.. list-table:: Column RMSE at fixed level count
+   :widths: 10 26 21 21 21
+   :header-rows: 1
+
+   * - k
+     - rule
+     - Creek
+     - Bootleg
+     - Thomas
+   * - 5
+     - uniform
+     - 0.0353
+     - 0.0164
+     - 0.0203
+   * - 5
+     - **log**
+     - **0.0170**
+     - **0.0113**
+     - **0.0127**
+   * - 5
+     - engineering heights only
+     - 0.1977
+     - 0.1164
+     - 0.1184
+   * - 8
+     - log
+     - 0.0129
+     - 0.0105
+     - 0.0115
+   * - 12
+     - uniform
+     - 0.0187
+     - 0.0116
+     - 0.0144
+   * - 12
+     - log
+     - 0.0119
+     - 0.0104
+     - 0.0113
+
+**Five log-spaced levels beat twelve uniform ones, on every terrain
+tested.** Placement matters more than count, which is the useful form of
+the result: it transfers to a grid that is not this one.
+
+Sample where the shear is, not where the answer is
+--------------------------------------------------
+
+Anchoring the level set on the heights people ask for -- 10, 80, 100, 120,
+160 m -- is worse than log spacing **even for accuracy at those heights**:
+
+.. list-table:: RMSE inside the 10-160 m band, k = 8
+   :widths: 34 22 22 22
+   :header-rows: 1
+
+   * - level set
+     - Creek
+     - Bootleg
+     - Thomas
+   * - log-spaced
+     - 0.0099
+     - 0.0014
+     - 0.0039
+   * - anchored on 10/80/100/120/160
+     - 0.0183
+     - 0.0040
+     - 0.0097
+
+Two to three times worse, consistently, and the reason is visible in the
+level lists: anchoring leaves **nothing between 10 and 80 m**, which is
+where the shear actually is. Log spacing puts levels at 21, 43 and 88 m in
+that gap and reconstructs the whole band better as a result -- including
+at 100 and 120 m, which it never samples.
+
+So the heights an answer is wanted at are not the heights samples should
+be taken at. Sample logarithmically and interpolate out to the engineering
+heights.
+
+Dividing the budget
+-------------------
+
+A fixed number of levels has to be shared between the band, where the
+answer is wanted, and the column above, which has to be spanned for a 3D
+reconstruction. Sweeping that split at k = 8 (``--split``):
+
+.. list-table:: Column RMSE by split
+   :widths: 28 24 24 24
+   :header-rows: 1
+
+   * - split
+     - Creek
+     - Bootleg
+     - Thomas
+   * - 2 band + 6 aloft
+     - 0.0189
+     - 0.0117
+     - 0.0145
+   * - 3 + 5
+     - 0.0137
+     - 0.0105
+     - 0.0121
+   * - **4 + 4**
+     - **0.0127**
+     - **0.0104**
+     - 0.0116
+   * - **5 + 3**
+     - 0.0130
+     - 0.0105
+     - **0.0115**
+   * - 6 + 2
+     - 0.0150
+     - 0.0110
+     - 0.0119
+   * - 7 + 1
+     - 0.0239
+     - 0.0150
+     - 0.0152
+
+Both extremes fail for opposite reasons -- too few band levels
+under-resolve the shear, too few aloft fail to span the column -- and
+everything between 4+4 and 5+3 is within 2 % of the best on all three
+terrains. A flat optimum is what a recipe wants.
+
+The recommended set
+-------------------
+
+**Five levels octave-spaced across the band, three log-spaced above it:**
+
+::
+
+    10, 20, 40, 80, 160, 345, 743, 1600 m above ground
+
+``geomspace(10, 160, 5)`` has a ratio of exactly 2, so the band levels are
+octaves, and the set contains 10, 80 and 160 m outright. Measured: column
+RMSE 0.0130 / 0.0105 / 0.0115 and band RMSE 0.0093 / 0.0013 / 0.0037 on
+Creek / Bootleg / Thomas -- within a few per cent of the best achievable
+at any split, on both metrics at once.
+
+At k = 12 the pattern holds at 7+5 or 8+4. The column stops improving past
+about six band levels while the band keeps improving, so the extra levels
+are worth buying only when the band is the deliverable.
+
+How many levels are worth having
+--------------------------------
+
+**Levels cost nothing in solver time.** All k are extracted from the same
+solved field, so a sample is 51 s whether five levels are kept or twenty.
+The budget trades against network size, not against how much data can be
+afforded.
+
+And the ceiling adds in quadrature with the surrogate's own error, which
+is what settles it:
+
+.. list-table:: Total error, ceiling combined with network error
+   :widths: 22 20 20 20 18
+   :header-rows: 1
+
+   * - network error
+     - k = 5
+     - k = 8
+     - k = 12
+     - gain, 5 to 12
+   * - 10 %
+     - 10.09 %
+     - 10.07 %
+     - 10.06 %
+     - 0.3 %
+   * - 5 %
+     - 5.18 %
+     - 5.13 %
+     - 5.12 %
+     - 1.1 %
+   * - 2 %
+     - 2.42 %
+     - 2.31 %
+     - 2.29 %
+     - 5.4 %
+   * - 1 %
+     - 1.69 %
+     - 1.53 %
+     - 1.50 %
+     - 11.3 %
+
+At 5 % network error, going from five levels to twelve buys 1.1 % of total
+accuracy for 2.4 times the output channels. The level count only begins to
+matter below about 2 %.
+
+The rule, which is more use than the number: **choose the smallest k whose
+ceiling is under a third of the network's own error.** The recommended
+eight-level set has a ceiling near 1.2 %, so it is comfortable for anything
+above about 3 %.
+
+Spend the real budget on terrains instead. At 51 s a solve, eight terrains
+by sixty wind conditions is 480 solves -- under an hour on eight cores.
+
 Reproducing it
 --------------
 
@@ -233,8 +434,12 @@ Reproducing it
 
     python3 cases/creek_fire/prepare.py
     python3 cases/stitching_study.py --case creek_fire --figure study.png
+    python3 cases/stitching_study.py --placement --case creek_fire
+    python3 cases/stitching_study.py --split --case creek_fire
 
-Each case costs one solve, and every reconstruction after that is numpy.
+Each case costs one solve, and every reconstruction after that is numpy --
+which is why the placement and split sweeps are nearly free once the field
+exists.
 
 What transfers
 ==============

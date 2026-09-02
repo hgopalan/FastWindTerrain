@@ -1,0 +1,36 @@
+{
+  "domain_m": 5000.0,
+  "download_half_width_m": 4400.0,
+  "grid": {
+    "dz0": 4.0,
+    "max_grid_size": 50,
+    "n_cell": [
+      100,
+      100,
+      60
+    ],
+    "prob_hi": [
+      5000.0,
+      5000.0,
+      1373.999999999994
+    ],
+    "prob_lo": [
+      0.0,
+      0.0,
+      71.0
+    ],
+    "stretching_ratio": 1.0479616049701201
+  },
+  "halo_m": 250.0,
+  "lat": 34.3667,
+  "lon": -119.0667,
+  "n_points": 38412,
+  "name": "Thomas Fire",
+  "relief": 303.0,
+  "slug": "thomas_fire",
+  "source": "SRTM1 via cases/srtm_terrain_reader.py",
+  "subsample": 1,
+  "z_max": 374.0,
+  "z_mean": 156.53025323815712,
+  "z_min": 71.0
+}
