@@ -18,6 +18,8 @@
   "windows": [
     {
       "aniso": 1.6983463586933347,
+      "dslope_max": 0.6354390706432836,
+      "dslope_p95": 0.20745688136179166,
       "i": 0,
       "id": "hermits_peak_calf_canyon_fire:00",
       "j": 0,
@@ -38,6 +40,8 @@
     },
     {
       "aniso": 1.502880681267919,
+      "dslope_max": 0.6354390706432836,
+      "dslope_p95": 0.21574887399628911,
       "i": 1,
       "id": "hermits_peak_calf_canyon_fire:10",
       "j": 0,
@@ -58,6 +62,8 @@
     },
     {
       "aniso": 1.1758677498335919,
+      "dslope_max": 0.5423012308671261,
+      "dslope_p95": 0.17567058990074572,
       "i": 2,
       "id": "hermits_peak_calf_canyon_fire:20",
       "j": 0,
@@ -78,6 +84,8 @@
     },
     {
       "aniso": 1.6634867095835904,
+      "dslope_max": 0.6457989238145261,
+      "dslope_p95": 0.21624205151014808,
       "i": 0,
       "id": "hermits_peak_calf_canyon_fire:01",
       "j": 1,
@@ -98,6 +106,8 @@
     },
     {
       "aniso": 1.5872291523660815,
+      "dslope_max": 0.6354390706432836,
+      "dslope_p95": 0.22932918449012998,
       "i": 1,
       "id": "hermits_peak_calf_canyon_fire:11",
       "j": 1,
@@ -118,6 +128,8 @@
     },
     {
       "aniso": 1.1689584836769307,
+      "dslope_max": 0.5423012308671261,
+      "dslope_p95": 0.17138726249652333,
       "i": 2,
       "id": "hermits_peak_calf_canyon_fire:21",
       "j": 1,
@@ -138,6 +150,8 @@
     },
     {
       "aniso": 1.296794524629969,
+      "dslope_max": 0.6161320881109827,
+      "dslope_p95": 0.1525227856327823,
       "i": 0,
       "id": "hermits_peak_calf_canyon_fire:02",
       "j": 2,
@@ -158,6 +172,8 @@
     },
     {
       "aniso": 1.0910738329071672,
+      "dslope_max": 0.6161320881109827,
+      "dslope_p95": 0.16369398417965322,
       "i": 1,
       "id": "hermits_peak_calf_canyon_fire:12",
       "j": 2,
@@ -178,6 +194,8 @@
     },
     {
       "aniso": 1.1676497978737865,
+      "dslope_max": 0.38627831611417174,
+      "dslope_p95": 0.15594019284723035,
       "i": 2,
       "id": "hermits_peak_calf_canyon_fire:22",
       "j": 2,

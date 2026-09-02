@@ -40,6 +40,8 @@ import numpy as np
 
 __all__ = [
     "ALOFT_LEVELS",
+    "BAND_BASE_M",
+    "BAND_TOP_M",
     "DEFAULT_LEVELS",
     "RECOMMENDED_LEVELS",
     "DIAGNOSTIC_LEVEL",
@@ -48,7 +50,9 @@ __all__ = [
     "first_fluid_k",
     "height_above_ground",
     "log_law",
+    "max_agl",
     "obrien_w",
+    "recommended_levels",
     "stitch_levels",
     "surface_kinematic_w",
 ]
@@ -81,6 +85,66 @@ DEFAULT_LEVELS = ENGINEERING_LEVELS + ALOFT_LEVELS
 #: heights samples should be taken at. See docs/surrogate.rst for the
 #: measurements behind that.
 RECOMMENDED_LEVELS = (10.0, 20.0, 40.0, 80.0, 160.0, 345.0, 743.0, 1600.0)
+
+#: The band the engineering levels live in, and the base of the set.
+BAND_BASE_M = 10.0
+BAND_TOP_M = 160.0
+
+
+def recommended_levels(top_agl, n_band=5, n_aloft=3, base=BAND_BASE_M,
+                       band_top=BAND_TOP_M):
+    """The recommended set, with its TOP LEVEL SCALED TO THE COLUMN.
+
+    ``RECOMMENDED_LEVELS`` is this with ``top_agl = 1600`` and is kept for
+    the studies that produced it -- but as a fixed tuple it is a bug on any
+    domain taller than the one it was tuned on.
+
+    WHY IT HAS TO SCALE. The set was measured on Creek (1128 m of relief),
+    where a column of relief + 1000 m is about 2100 m and a top level at
+    1600 m leaves little above it. The terrain corpus reaches 1970 m of
+    relief, so its tallest columns are near 3000 m and a fixed 1600 m top
+    leaves 1200 m of column reconstructed by holding the top value
+    constant.
+
+    That is not a small effect. On ``ditch_fire:20`` (1850 m relief), error
+    by height band, with and without two more levels at 2400 and 3200 m:
+
+        band          top 1600 m    + 2400, 3200
+        0-50 m           0.0214        0.0214
+        50-200 m         0.0105        0.0105
+        200-500 m        0.0080        0.0080
+        500-1000 m       0.0042        0.0042
+        1000-1600 m      0.0029        0.0029
+        1600 m +         0.0197        0.0013     <- 15x
+
+    Every other band is untouched, which is what makes the diagnosis
+    certain: the aloft levels are the only thing that changed.
+
+    ``top_agl`` should be the largest height above ground in the domain --
+    ``prob_hi[2]`` minus the LOWEST terrain, since that is the deepest
+    column and the one with the most to reconstruct.
+
+    Structure, preserved from the tuned set: ``n_band`` levels geometrically
+    spaced across 10-160 m (exact octaves at the default of 5, and the set
+    still contains 10, 80 and 160 m outright), then ``n_aloft`` continuing
+    geometrically from 160 m to ``top_agl``.
+    """
+    if top_agl <= band_top:
+        raise ValueError(
+            f"top_agl must be above the {band_top:.0f} m band top, got "
+            f"{top_agl}. A domain that shallow does not need aloft levels; "
+            f"pass the engineering band directly.")
+    band = np.geomspace(base, band_top, n_band)
+    aloft = np.geomspace(band_top, top_agl, n_aloft + 1)[1:]
+    return tuple(float(v) for v in np.concatenate([band, aloft]))
+
+
+def max_agl(z_cc, z_terrain):
+    """The deepest column's height above ground -- what to pass as top_agl."""
+    zt = np.asarray(z_terrain)
+    if zt.ndim == 3:
+        zt = zt[0]
+    return float(np.asarray(z_cc)[-1] - zt.min())
 
 #: Pedestrian height. Sub-grid, so it is diagnosed from a log law and is
 #: deliberately not part of the level set the surrogate predicts.

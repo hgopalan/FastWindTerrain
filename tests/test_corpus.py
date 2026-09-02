@@ -207,6 +207,90 @@ def test_a_site_with_one_flat_window_keeps_the_rest():
     assert len(kept) == 8
 
 
+def solv(div_after=None, speedup=None, n_directions=8):
+    """A solvability entry: finite and physical unless told otherwise."""
+    return {
+        "div_fe_before": [0.1] * n_directions,
+        "div_fe_after": (div_after if div_after is not None
+                         else [0.05] * n_directions),
+        "speedup_max": (speedup if speedup is not None
+                        else [1.25] * n_directions),
+        "n_directions": n_directions,
+    }
+
+
+def test_a_healthy_solve_passes():
+    good = {"z_min": 1000.0, "z_max": 1800.0}
+    assert corpus.screen_window(good, solvability=solv())[0]
+
+
+def test_a_non_finite_field_is_dropped():
+    good = {"z_min": 1000.0, "z_max": 1800.0}
+    ok, reason = corpus.screen_window(
+        good, solvability=solv(div_after=[0.05] * 7 + [float("inf")]))
+    assert not ok and "non-finite" in reason
+
+
+def test_an_absurd_speed_up_is_dropped():
+    """The failure Poisson.cpp:218 records -- a 34.8 m/s corrected wind
+    from a 10 m/s inflow -- which no divergence norm would catch."""
+    good = {"z_min": 1000.0, "z_max": 1800.0}
+    ok, reason = corpus.screen_window(
+        good, solvability=solv(speedup=[1.2] * 7 + [3.5]))
+    assert not ok and "failed solve" in reason
+
+
+def test_rising_divergence_is_NOT_a_reason_to_drop():
+    """The criterion that was tried and rejected, asserted so it stays out.
+
+    "Did L-infinity divergence fall across the projection" would have
+    removed about a third of the corpus over differences of 0.3-0.4 m/s --
+    the same order as the ~0.25 m/s CFD practice runs at, and well inside
+    the 20-30% acceptable for turbulent atmospheric flow. It also tracked
+    nothing real: gentle sites failed it, steep ones passed, and no terrain
+    descriptor separated them.
+    """
+    good = {"z_min": 1000.0, "z_max": 1800.0}
+    worse = solv(div_after=[0.5] * 8)          # ends far ABOVE its start
+    assert corpus.screen_window(good, solvability=worse)[0]
+
+
+def test_relief_is_still_judged_before_the_solve():
+    """A plate that solves beautifully is still a plate."""
+    flat = {"z_min": 1000.0, "z_max": 1012.0}
+    ok, reason = corpus.screen_window(flat, solvability=solv())
+    assert not ok and "under" in reason
+
+
+def test_without_solvability_data_the_screen_is_geometry_only():
+    """A manifest can be built before the measurement exists."""
+    good = {"z_min": 1000.0, "z_max": 1800.0}
+    assert corpus.screen_window(good)[0]
+    assert corpus.screen_window(good, solvability=None)[0]
+
+
+def test_a_site_whose_windows_do_not_solve_says_so_rather_than_blaming_relief():
+    """A site of plates and a site the solver cannot handle are different
+    problems and want different responses, so the message must say which."""
+    survey = fake_survey([800.0] * 9)
+    broken = solv(div_after=[float("inf")] * 8)
+    solvability = {w["id"]: broken for w in survey["windows"]}
+    ok, reason, kept = corpus.screen_site(survey, solvability=solvability)
+    assert not ok
+    assert "solve" in reason
+    assert "plate" not in reason
+    assert kept == []
+
+
+def test_a_site_with_a_few_unsolvable_windows_keeps_the_rest():
+    survey = fake_survey([800.0] * 9)
+    solvability = {w["id"]: solv() for w in survey["windows"]}
+    solvability[survey["windows"][0]["id"]] = solv(
+        div_after=[float("inf")] * 8)
+    ok, _, kept = corpus.screen_site(survey, solvability=solvability)
+    assert ok and len(kept) == 8
+
+
 def test_a_mostly_submerged_tile_is_rejected():
     survey = fake_survey([400.0] * 9, sea=0.30)
     ok, reason, _ = corpus.screen_site(survey)

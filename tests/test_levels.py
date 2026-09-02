@@ -312,3 +312,60 @@ def test_recommended_levels_span_more_than_the_engineering_band():
     # Exactly a decade above the top engineering height, as it happens.
     assert max(lv.RECOMMENDED_LEVELS) >= 10.0 * max(lv.ENGINEERING_LEVELS)
     assert sorted(lv.RECOMMENDED_LEVELS) == list(lv.RECOMMENDED_LEVELS)
+
+
+def test_recommended_levels_reproduces_the_tuned_set_at_its_own_column():
+    """The scaling function must agree with the constant it generalises.
+
+    To a tenth of a percent, not exactly: the constant carries the aloft
+    levels rounded to whole metres (345 and 743 against 344.71 and
+    742.654), which is how they were written down.
+    """
+    got = lv.recommended_levels(1600.0)
+    assert np.allclose(got, lv.RECOMMENDED_LEVELS, rtol=1e-3)
+
+
+def test_the_top_level_follows_the_column():
+    """The defect this exists to fix.
+
+    A fixed 1600 m top was tuned on Creek at 1128 m relief. The corpus
+    reaches 1970 m, whose column is near 3000 m, and holding the top value
+    constant over the last 1200 m of it cost 15x in that band.
+    """
+    for top in (1200.0, 1600.0, 3000.0):
+        assert lv.recommended_levels(top)[-1] == pytest.approx(top)
+
+
+def test_the_band_is_unchanged_whatever_the_column():
+    """Only the aloft levels may move: the band is what the placement
+    study fixed, and the measurement showed every band below 1600 m was
+    identical with and without the extra aloft levels."""
+    a = lv.recommended_levels(1600.0)
+    b = lv.recommended_levels(3200.0)
+    assert np.allclose(a[:5], b[:5], rtol=0, atol=1e-12)
+    assert np.allclose(a[:5], lv.RECOMMENDED_LEVELS[:5], rtol=1e-12)
+
+
+def test_levels_stay_sorted_and_positive():
+    for top in (200.0, 1000.0, 5000.0):
+        got = lv.recommended_levels(top)
+        assert list(got) == sorted(got)
+        assert got[0] > 0.0
+        assert len(set(got)) == len(got)
+
+
+def test_a_column_shallower_than_the_band_is_refused():
+    """Silently returning a degenerate set would be worse than an error."""
+    with pytest.raises(ValueError, match="band top"):
+        lv.recommended_levels(100.0)
+
+
+def test_max_agl_measures_the_deepest_column():
+    """top_agl is the LOWEST ground's column, since that is the one with
+    the most to reconstruct above the highest level."""
+    z_cc = np.linspace(1000.0, 3000.0, 50)
+    zt = np.array([[1000.0, 1500.0], [1200.0, 1800.0]])
+    assert lv.max_agl(z_cc, zt) == pytest.approx(3000.0 - 1000.0)
+    # And it accepts the solver's k-replicated terrain field.
+    assert lv.max_agl(z_cc, np.broadcast_to(zt, (50, 2, 2))) == \
+        pytest.approx(2000.0)

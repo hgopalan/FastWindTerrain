@@ -175,6 +175,226 @@ def run_survey(args):
 
 
 # ---------------------------------------------------------------------------
+# Stage 1b: solvability
+#
+# A window can pass every geometric check and still not be usable. Above
+# roughly 55% solid the projection is non-monotone at the operating pass
+# count: it ends with MORE divergence than the terrain-following inflow
+# started with, in the norm the solve controls. Such a window is not a
+# mass-consistent field and does not belong in a training set.
+#
+# This is a MEASUREMENT, like the survey, and for the same reason: it is
+# expensive, it needs the solver, and the judgement made from it belongs in
+# the split stage where it can be changed without re-running. The result is
+# a few hundred bytes a site and is committed, so the split still rebuilds
+# offline.
+#
+# Recorded PER (window, direction), not per window, because whether the two
+# differ is an empirical question and storing the finer thing costs nothing.
+# ---------------------------------------------------------------------------
+
+SOLVABILITY_FILE = "solvability.json"
+
+
+def solvability_path(slug):
+    return os.path.join(corpus.site_dir(slug), SOLVABILITY_FILE)
+
+
+def read_solvability(corpus_dir=None):
+    """``{window_id: entry}`` across every site that has been measured."""
+    root = corpus_dir or corpus.CORPUS_DIR
+    out = {}
+    if not os.path.isdir(root):
+        return out
+    for slug in sorted(os.listdir(root)):
+        path = os.path.join(root, slug, SOLVABILITY_FILE)
+        if os.path.isfile(path):
+            with open(path) as f:
+                out.update(json.load(f).get("windows", {}))
+    return out
+
+
+def measure_solvability(manifest, slug, directions, n_projections):
+    """Solve every window of one site at every probe direction.
+
+    RECORDS EVERY NORM, and judges none of them. Which norm you look at
+    changes the verdict, and not by a little -- over 1 to 16 passes:
+
+        ditch_fire:20    max|div|  .227 .250 .259 .251 .202   humps
+                          L2|div|  .0086 .0079 .0074 .0070 .0068   falls
+        bootleg_fire:02  max|div|  .042 .037 .029 .019 .012   falls
+                          L2|div|  .0075 .0072 .0075 .0079 .0082   rises
+
+    They disagree in opposite directions on the two windows. A max norm is
+    dominated by a handful of cells against the immersed boundary; an
+    energy norm is what "how mass-consistent is this field" actually means.
+    Storing one and calling it convergence would bake a choice nobody had
+    made into the corpus, so all of them are stored and the choice stays a
+    split-stage judgement that can be changed without re-solving 252
+    windows.
+
+        div_fe_before   L-infinity nodal, at setup -- the only "before"
+                        available, since diagnose() needs a solved field
+        div_fe_after    the same after the solve
+        div_l2          energy norm over fluid cells, from Diagnostics
+        div_max         cell-centred max, from Diagnostics
+        speed_max       so a relative divergence can be formed: a
+                        divergence of 0.007 1/s means one thing at 10 m/s
+                        and another at 30
+        flux_imbalance  net boundary mass error of the CORRECTED field
+        du/dv/dw_max    the largest change the projection made to each
+                        velocity component, over the fluid, as a fraction
+                        of the reference speed
+        dspeed_max      the same for the SPEED |U|, which is the physical
+                        quantity: components can each move a long way
+                        while the speed barely changes, if the correction
+                        mostly turns the wind
+        speedup_max     max |U| / |U0| over the fluid -- terrain-induced
+                        amplification relative to the undisturbed profile
+                        AT THE SAME HEIGHT, which is the form the usual
+                        rule of thumb takes. Speed-up over complex terrain
+                        does not normally exceed 20-30%, so a window well
+                        past that is reporting something other than
+                        terrain-driven flow. Measured against the profile
+                        rather than against the 80 m reference on purpose:
+                        the reference is one height, and the power law
+                        alone already gives 1.6x it near the domain top.
+
+    The last of those is a different kind of evidence from a divergence
+    norm and worth having for that reason: it says how far the projection
+    MOVED the field rather than how mass-consistent the result is. A
+    correction of a few tenths of the reference wind is the operator doing
+    its job over terrain; a correction several times the reference wind is
+    the signature of a setup that has gone wrong -- `Poisson.cpp:218`
+    records exactly that failure, a 34.8 m/s corrected wind from a 10 m/s
+    inflow, from a lambda boundary condition that interacted badly with
+    the nodal divergence. Nothing in a divergence norm would have caught
+    it.
+
+    ``velocity0`` is the baseline, which is the O'Brien-adjusted inflow --
+    ``Solver.cpp:113`` copies it after that adjustment runs -- so this
+    measures the projection alone and not O'Brien.
+    """
+    import numpy as np
+    import fastwindterrain as fwt
+
+    ids = [w["id"] for w in manifest["windows"] if w["site"] == slug]
+    windows = {}
+    for wid in ids:
+        rec = {k: [] for k in ("div_fe_before", "div_fe_after", "div_l2",
+                               "div_max", "speed_max", "flux_imbalance",
+                               "du_max", "dv_max", "dw_max",
+                               "dspeed_max", "speedup_max")}
+        for d in directions:
+            cfg = corpus.window_config(
+                manifest, wid, wind_direction=float(d),
+                poisson={"n_projections": n_projections})
+            s = fwt.Solver(cfg)
+            s.setup()
+            rec["div_fe_before"].append(float(s.max_divergence_fe))
+            s.solve()
+            s.diagnose()
+            dg = s.diagnostics
+
+            u, v, w = s.velocity
+            fluid = s.mask == 0
+            speed = np.sqrt(u * u + v * v + w * w)
+            finite = bool(np.all(np.isfinite(s.velocity)))
+
+            # A non-finite field is never converged, whatever a norm says.
+            rec["div_fe_after"].append(float(s.max_divergence_fe)
+                                       if finite else float("inf"))
+            rec["div_l2"].append(float(dg["div_l2"]) if finite
+                                 else float("inf"))
+            rec["div_max"].append(float(dg["div_max"]) if finite
+                                  else float("inf"))
+            rec["speed_max"].append(float(speed[fluid].max()) if finite
+                                    else float("inf"))
+            rec["flux_imbalance"].append(float(dg["flux_imbalance"]))
+
+            # How far the projection moved each component, over the fluid,
+            # relative to the reference wind.
+            u0, v0, w0 = s.velocity0
+            for name, a, b in (("du_max", u, u0), ("dv_max", v, v0),
+                               ("dw_max", w, w0)):
+                rec[name].append(
+                    float(np.abs(a[fluid] - b[fluid]).max()
+                          / corpus.REFERENCE_SPEED_MS) if finite
+                    else float("inf"))
+
+            speed0 = np.sqrt(u0 * u0 + v0 * v0 + w0 * w0)
+            rec["dspeed_max"].append(
+                float(np.abs(speed[fluid] - speed0[fluid]).max()
+                      / corpus.REFERENCE_SPEED_MS) if finite
+                else float("inf"))
+            # Amplification relative to the undisturbed profile at the same
+            # height. Guarded against the near-surface cells where the
+            # profile itself is almost zero and the ratio is meaningless.
+            live = fluid & (speed0 > 0.1 * corpus.REFERENCE_SPEED_MS)
+            rec["speedup_max"].append(
+                float((speed[live] / speed0[live]).max())
+                if finite and live.any() else float("inf"))
+
+        rec["n_directions"] = len(directions)
+        rec["n_converged"] = int(sum(
+            1 for a, b in zip(rec["div_fe_after"], rec["div_fe_before"])
+            if a < b))
+        windows[wid] = rec
+    return {
+        "note": HEADER,
+        "slug": slug,
+        "n_projections": n_projections,
+        "directions": [float(d) for d in directions],
+        "windows": windows,
+    }
+
+
+def run_solvability(args):
+    import fastwindterrain as fwt
+
+    manifest = corpus.load_manifest()
+    directions = ([float(v) for v in args.directions.split(",")]
+                  if args.directions else list(corpus.WIND_DIRECTIONS))
+
+    sites = sorted({w["site"] for w in manifest["windows"]})
+    if args.only:
+        sites = [s for s in sites if s in set(args.only)]
+
+    n_win = sum(1 for w in manifest["windows"] if w["site"] in set(sites))
+    print(f"{n_win} windows x {len(directions)} directions = "
+          f"{n_win * len(directions)} solves at {args.n_projections} passes\n")
+
+    failed = 0
+    # One session for the whole run: Initialize/Finalize are process-global
+    # and a per-site session would be both slower and, on a second open,
+    # an error.
+    with fwt.session():
+        for n, slug in enumerate(sites, 1):
+            path = solvability_path(slug)
+            if os.path.isfile(path) and not args.force:
+                print(f"[{n:2d}/{len(sites)}] {slug:32s} already measured")
+                continue
+            t0 = time.time()
+            print(f"[{n:2d}/{len(sites)}] {slug:32s} ", end="", flush=True)
+            entry = measure_solvability(manifest, slug, directions,
+                                        args.n_projections)
+            # Written per site, so a run killed halfway keeps what it has
+            # and --force is not needed to resume.
+            with open(path, "w") as f:
+                json.dump(entry, f, indent=2, sort_keys=True)
+                f.write("\n")
+            bad = [w for w, v in entry["windows"].items()
+                   if v["n_converged"] < v["n_directions"]]
+            failed += len(bad)
+            print(f"{len(entry['windows'])} windows, "
+                  f"{len(bad)} not fully converged, {time.time() - t0:6.1f} s")
+
+    print(f"\n{failed} window(s) failed at least one direction. "
+          f"Run --split to apply the screen.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Stage 2: split
 # ---------------------------------------------------------------------------
 
@@ -194,9 +414,14 @@ def build_manifest(fractions=None, seed=corpus.DEFAULT_SEED,
             "    python3 cases/build_corpus.py --survey\n"
             "first -- it needs the network and pip install \".[cases]\".")
 
+    # Solvability, if it has been measured. Absent, the split screens on
+    # geometry alone and says so in the manifest, so a manifest built
+    # before the measurement is distinguishable from one built after it.
+    solvability = read_solvability(corpus_dir)
+
     rejected, accepted, keep = {}, {}, {}
     for slug, survey in surveys.items():
-        ok, reason, kept = corpus.screen_site(survey)
+        ok, reason, kept = corpus.screen_site(survey, solvability=solvability)
         if ok:
             accepted[slug] = survey
             keep[slug] = set(kept)
@@ -217,7 +442,8 @@ def build_manifest(fractions=None, seed=corpus.DEFAULT_SEED,
     for slug in sorted(accepted):
         for w in accepted[slug]["windows"]:
             if w["id"] not in keep[slug]:
-                dropped[w["id"]] = corpus.screen_window(w)[1]
+                dropped[w["id"]] = corpus.screen_window(
+                    w, solvability=solvability.get(w["id"]))[1]
                 continue
             entry = dict(w)
             entry["fold"] = assigned[slug]
@@ -236,6 +462,11 @@ def build_manifest(fractions=None, seed=corpus.DEFAULT_SEED,
         "rejected": rejected,
         "dropped_windows": dropped,
         "min_relief_m": corpus.MIN_RELIEF_M,
+        # Whether the convergence screen was applied at all. A manifest
+        # built before --solvability was run is a weaker artefact than one
+        # built after, and the difference must not be invisible.
+        "solvability_screened": bool(solvability),
+        "n_solvability_measured": len(solvability),
         "clusters": clusters,
         "folds": folds,
         "fold_of": assigned,
@@ -407,13 +638,23 @@ def main(argv=None):
                       help="print the existing manifest")
     mode.add_argument("--check", action="store_true",
                       help="solve a sample of windows and check them")
+    mode.add_argument("--solvability", action="store_true",
+                      help="solve every window and record whether the "
+                           "projection converges (expensive; needs --split "
+                           "afterwards to apply the screen)")
+
+    p.add_argument("--directions", metavar="D,D,...",
+                   help="--solvability: probe directions in degrees FROM "
+                        "(default: all eight)")
 
     p.add_argument("-n", type=int, default=3,
                    help="--check: windows to solve per fold (default 3)")
     p.add_argument("--direction", type=float, default=225.0,
                    help="--check: wind direction, degrees FROM (default 225)")
-    p.add_argument("--n-projections", type=int, default=4,
-                   help="--check: projection passes (default 4)")
+    p.add_argument("--n-projections", type=int, default=corpus.N_PROJECTIONS,
+                   help=f"--check and --solvability: projection passes "
+                        f"(default {corpus.N_PROJECTIONS}, the operating "
+                        f"point the corpus is generated at)")
 
     p.add_argument("--only", nargs="+", metavar="SLUG",
                    help="survey just these sites")
@@ -438,6 +679,8 @@ def main(argv=None):
         return run_split(args)
     if args.check:
         return run_check(args)
+    if args.solvability:
+        return run_solvability(args)
     return run_summary(args)
 
 
