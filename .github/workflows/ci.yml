@@ -278,6 +278,76 @@ jobs:
         run: ccache -s
 
   # ---------------------------------------------------------------------
+  # MPI: BUILT AND RUN.
+  #
+  # Unlike the GPU jobs below, this one is not compile-only. A hosted
+  # runner has no GPU but it does have more than one core, so two ranks
+  # actually execute -- and running is the whole point here. A collective
+  # reached by some ranks and not others compiles perfectly and then
+  # hangs, which no build job can see.
+  #
+  # The suite is run in full so any group that gains a parallel-relevant
+  # case is covered automatically, but only mpi_parity does anything
+  # different on this executable: it runs its cases serially and again
+  # under mpirun -n 2, compares the reports, and puts the parallel runs
+  # under a wall-clock timeout so a deadlock fails as a deadlock rather
+  # than as a six-hour job.
+  # ---------------------------------------------------------------------
+  mpi:
+    name: MPI (2 ranks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (with the AMReX submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache \
+            libopenmpi-dev openmpi-bin
+
+      - name: Set up ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-mpi-${{ github.sha }}
+          restore-keys: ccache-mpi-
+
+      - name: Configure with MPI on
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFWT_MPI=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # A guard against the group silently skipping: if the build came
+      # out serial, or mpirun went missing, mpi_parity would print SKIP
+      # and this job would pass while testing nothing.
+      - name: The executable really is an MPI build
+        run: |
+          which mpirun
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/build/fastwindterrain" \
+            "$GITHUB_WORKSPACE/regtests/phase6_solve_correction/inputs_flat" \
+            | grep -q "MPI initialized with" \
+            || { echo "FWT_MPI=ON produced a serial executable"; exit 1; }
+
+      - name: Run the regtests on the MPI build
+        run: python3 run_regtests.py build/fastwindterrain
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+  # ---------------------------------------------------------------------
   # GPU backends: COMPILE ONLY.
   #
   # Hosted runners have no GPU, so these jobs prove the code still builds

@@ -948,6 +948,16 @@ Poisson::Error Poisson::RunManufactured (const Grid& grid)
 
 void Poisson::AppendReport (const std::string& filename) const
 {
+    // MultiFab::min and max are COLLECTIVE -- each one ends in an
+    // all-reduce over every rank. So they are taken here, before the IO
+    // rank is singled out below. Calling them inside the guard would
+    // leave rank 0 waiting in a reduction the other ranks had already
+    // walked past, and the run would hang after a correct solve.
+    const amrex::Real rhs_min = m_rhs.min(0);
+    const amrex::Real rhs_max = m_rhs.max(0);
+    const amrex::Real lambda_absmax =
+        std::max(std::abs(m_lambda.min(0)), std::abs(m_lambda.max(0)));
+
     if (!amrex::ParallelDescriptor::IOProcessor()) { return; }
 
     std::ofstream os(filename, std::ios::app);
@@ -957,8 +967,8 @@ void Poisson::AppendReport (const std::string& filename) const
     os << "poisson_alpha_v " << m_alpha_v << "\n";
     os << "poisson_sigma_convention alpha_squared\n";
     os << "poisson_n_pinned_nodes " << m_n_pinned << "\n";
-    os << "poisson_rhs_min " << m_rhs.min(0) << "\n";
-    os << "poisson_rhs_max " << m_rhs.max(0) << "\n";
+    os << "poisson_rhs_min " << rhs_min << "\n";
+    os << "poisson_rhs_max " << rhs_max << "\n";
     os << "poisson_solve_residual " << m_resid << "\n";
     os << "poisson_aspect_ratio " << m_aspect << "\n";
     os << "poisson_num_pre_smooth " << m_pre_smooth << "\n";
@@ -979,9 +989,7 @@ void Poisson::AppendReport (const std::string& filename) const
     os << "poisson_div_controlled_before " << m_div_fe_before << "\n";
     os << "poisson_div_controlled_after " << m_div_fe_after << "\n";
     os << "poisson_n_projections " << m_n_projections << "\n";
-    os << "poisson_lambda_absmax "
-       << std::max(std::abs(m_lambda.min(0)), std::abs(m_lambda.max(0)))
-       << "\n";
+    os << "poisson_lambda_absmax " << lambda_absmax << "\n";
     os.close();
 }
 
