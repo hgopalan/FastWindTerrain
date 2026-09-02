@@ -33,6 +33,8 @@
 #include "Error.H"
 #include "FieldIO.H"
 #include "Grid.H"
+#include "Inflow.H"
+#include "Terrain.H"
 #include "Solver.H"
 
 namespace py = pybind11;
@@ -385,6 +387,176 @@ amrex::Vector<amrex::Real> NumpyToBuffer (const py::array& a,
     return buf;
 }
 
+// A dict key set, checked strictly. Same reasoning as Grid: ParmParse
+// ignores a misspelling and mentions it once at finalize, which is how a
+// typo produces a whole dataset from the wrong terrain.
+void RejectUnknownKeys (const py::dict& d,
+                        const std::vector<std::string>& known,
+                        const char* prefix)
+{
+    for (auto item : d) {
+        const std::string key = py::cast<std::string>(py::str(item.first));
+        if (std::find(known.begin(), known.end(), key) != known.end()) {
+            continue;
+        }
+        std::string msg = std::string("unknown ") + prefix + " parameter '" +
+                          key + "'. Valid keys are:";
+        for (const std::string& k : known) { msg += " " + k; }
+        throw fwt::InputError(msg);
+    }
+}
+
+template <typename T>
+T GetScalar (const py::dict& d, const char* key, const char* prefix)
+{
+    try {
+        return py::cast<T>(d[key]);
+    } catch (const py::cast_error&) {
+        throw fwt::InputError(std::string(prefix) + "." + key +
+                              " is not a number");
+    }
+}
+
+// An (n, ncol) float array split into ncol host columns. Anything else --
+// a flat array, a transposed one, the wrong width -- raises rather than
+// being reshaped, since a silently transposed point cloud is a whole
+// dataset built on the wrong terrain.
+std::vector<std::vector<amrex::Real>>
+Columns (const py::object& obj, int ncol, const char* what)
+{
+    auto arr = py::array_t<amrex::Real, py::array::c_style |
+                                        py::array::forcecast>::ensure(obj);
+    if (!arr) {
+        throw fwt::InputError(std::string(what) +
+                              " must be an array of numbers");
+    }
+    if (arr.ndim() != 2 || arr.shape(1) != ncol) {
+        std::string got;
+        for (py::ssize_t k = 0; k < arr.ndim(); ++k) {
+            got += (k ? ", " : "") + std::to_string(arr.shape(k));
+        }
+        throw fwt::InputError(std::string(what) + " has shape (" + got +
+                              "), expected (n, " + std::to_string(ncol) +
+                              ")");
+    }
+    const py::ssize_t n = arr.shape(0);
+    if (n == 0) {
+        throw fwt::InputError(std::string(what) + " is empty");
+    }
+
+    std::vector<std::vector<amrex::Real>> cols(ncol);
+    for (int c = 0; c < ncol; ++c) { cols[c].resize(std::size_t(n)); }
+    const amrex::Real* p = arr.data();
+    for (py::ssize_t i = 0; i < n; ++i) {
+        for (int c = 0; c < ncol; ++c) {
+            cols[c][std::size_t(i)] = p[i * ncol + c];
+        }
+    }
+    return cols;
+}
+
+fwt::Terrain::Params TerrainParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"file", "flat_elevation", "idw_n_neighbors",
+                          "idw_exponent", "points"}, "terrain");
+
+    fwt::Terrain::Params p;
+    if (d.contains("file")) {
+        p.file = py::cast<std::string>(py::str(d["file"]));
+    }
+    if (d.contains("flat_elevation")) {
+        p.flat_elevation = GetScalar<amrex::Real>(d, "flat_elevation",
+                                                  "terrain");
+        p.given_flat = true;
+    }
+    if (d.contains("idw_n_neighbors")) {
+        p.idw_n_neighbors = GetScalar<int>(d, "idw_n_neighbors", "terrain");
+        p.given_k = true;
+    }
+    if (d.contains("idw_exponent")) {
+        p.idw_exponent = GetScalar<amrex::Real>(d, "idw_exponent", "terrain");
+        p.given_p = true;
+    }
+    if (d.contains("points")) {
+        auto cols = Columns(d["points"], 3, "terrain points");
+        p.xp = std::move(cols[0]);
+        p.yp = std::move(cols[1]);
+        p.zp = std::move(cols[2]);
+    }
+
+    p.Validate();
+    return p;
+}
+
+fwt::Inflow::Params InflowParamsFromDict (const py::dict& d)
+{
+    RejectUnknownKeys(d, {"mode", "u_ref", "v_ref", "z_ref",
+                          "powerlaw_exponent", "z0", "z_agl_min",
+                          "idw_n_neighbors", "idw_exponent", "file",
+                          "points", "velocity"}, "inflow");
+
+    fwt::Inflow::Params p;
+    if (d.contains("mode")) {
+        p.mode_name = py::cast<std::string>(py::str(d["mode"]));
+    }
+    if (d.contains("u_ref")) { p.u_ref = GetScalar<amrex::Real>(d, "u_ref", "inflow"); }
+    if (d.contains("v_ref")) { p.v_ref = GetScalar<amrex::Real>(d, "v_ref", "inflow"); }
+    if (d.contains("z_ref")) {
+        p.z_ref = GetScalar<amrex::Real>(d, "z_ref", "inflow");
+        p.given_z_ref = true;
+    }
+    if (d.contains("powerlaw_exponent")) {
+        p.powerlaw_exponent = GetScalar<amrex::Real>(d, "powerlaw_exponent",
+                                                     "inflow");
+        p.given_exponent = true;
+    }
+    if (d.contains("z0")) {
+        p.z0 = GetScalar<amrex::Real>(d, "z0", "inflow");
+        p.given_z0 = true;
+    }
+    if (d.contains("z_agl_min")) {
+        p.z_agl_min = GetScalar<amrex::Real>(d, "z_agl_min", "inflow");
+        p.given_z_agl_min = true;
+    }
+    if (d.contains("idw_n_neighbors")) {
+        p.idw_n_neighbors = GetScalar<int>(d, "idw_n_neighbors", "inflow");
+        p.given_k = true;
+    }
+    if (d.contains("idw_exponent")) {
+        p.idw_exponent = GetScalar<amrex::Real>(d, "idw_exponent", "inflow");
+        p.given_p = true;
+    }
+    if (d.contains("file")) {
+        p.file = py::cast<std::string>(py::str(d["file"]));
+    }
+
+    const bool has_points = d.contains("points");
+    const bool has_vel    = d.contains("velocity");
+    if (has_points != has_vel) {
+        throw fwt::InputError(
+            "a userfile table needs both 'points' (n, 3) and 'velocity' "
+            "(n, 3); only one was given");
+    }
+    if (has_points) {
+        auto pc = Columns(d["points"], 3, "inflow points");
+        auto vc = Columns(d["velocity"], 3, "inflow velocity");
+        if (pc[0].size() != vc[0].size()) {
+            throw fwt::InputError(
+                "inflow points has " + std::to_string(pc[0].size()) +
+                " rows but velocity has " + std::to_string(vc[0].size()));
+        }
+        p.xp = std::move(pc[0]);
+        p.yp = std::move(pc[1]);
+        p.zp = std::move(pc[2]);
+        p.up = std::move(vc[0]);
+        p.vp = std::move(vc[1]);
+        p.wp = std::move(vc[2]);
+    }
+
+    p.Validate();
+    return p;
+}
+
 void RequireSetup (const fwt::Solver& s, const char* what)
 {
     if (!s.is_setup()) {
@@ -511,6 +683,99 @@ Requires AMReX to be initialized -- use ``fwt.session()``.
                         std::to_string(g.nz()) + ") dz0=" +
                         std::to_string(g.dz0()) + " r=" +
                         std::to_string(g.stretching_ratio()) + ">";
+             });
+
+    py::class_<fwt::Terrain>(m, "Terrain", R"doc(
+Terrain height and the immersed-boundary mask.
+
+Built from a dict, with the scattered points handed in directly rather
+than read from a CSV::
+
+    t = fwt.Terrain(grid, {"points": pts})       # pts is (n, 3): x, y, z
+
+    t = fwt.Terrain(grid, {"file": "terrain.csv"})   # or from a file
+    t = fwt.Terrain(grid, {"flat_elevation": 0.0})   # or flat ground
+
+``points`` and ``file`` are mutually exclusive: two sources for one thing
+is a mistake worth reporting, not a precedence rule to remember.
+
+The points go through exactly the inverse-distance interpolation the file
+path uses -- there is no second code path -- so a case built this way is
+bit-for-bit the case the CSV would have produced.
+)doc")
+        .def(py::init([] (const fwt::Grid& g, const py::dict& d) {
+                 RequireInitialized("Terrain");
+                 auto t = std::make_unique<fwt::Terrain>();
+                 t->Build(g, TerrainParamsFromDict(d));
+                 return t;
+             }), py::arg("grid"), py::arg("params") = py::dict())
+        .def_property_readonly("z_terrain", [] (const fwt::Terrain& t) {
+                 return FieldToNumpy(t.z_terrain());
+             }, "(nz, ny, nx) [m] -- surface height, replicated along k.")
+        .def_property_readonly("mask", [] (const fwt::Terrain& t) {
+                 return IFieldToNumpy(t.mask());
+             }, "(nz, ny, nx) int32: 1 solid, 0 fluid.")
+        .def_property_readonly("z_min", &fwt::Terrain::z_min)
+        .def_property_readonly("z_max", &fwt::Terrain::z_max)
+        .def_property_readonly("n_solid", &fwt::Terrain::n_solid)
+        .def_property_readonly("n_total", &fwt::Terrain::n_total)
+        .def_property_readonly("n_points", &fwt::Terrain::n_points)
+        .def("__repr__", [] (const fwt::Terrain& t) {
+                 return "<fastwindterrain.Terrain z in [" +
+                        std::to_string(t.z_min()) + ", " +
+                        std::to_string(t.z_max()) + "] m, " +
+                        std::to_string(t.n_solid()) + " solid of " +
+                        std::to_string(t.n_total()) + ">";
+             });
+
+    py::class_<fwt::Inflow>(m, "Inflow", R"doc(
+The initial wind field, anchored to height above ground.
+
+Built from a dict, with no inputs file involved::
+
+    inf = fwt.Inflow(grid, terrain,
+                     {"mode": "powerlaw", "u_ref": 8.0, "v_ref": 6.0,
+                      "z_ref": 10.0, "powerlaw_exponent": 0.14})
+
+``userfile`` mode takes the table directly, as two (n, 3) arrays instead
+of a six-column file::
+
+    inf = fwt.Inflow(grid, terrain,
+                     {"mode": "userfile", "points": xyz, "velocity": uvw})
+
+``points``/``velocity`` and ``file`` are mutually exclusive. The table
+goes through exactly the 3D inverse-distance interpolation the file path
+uses, so the two agree bit for bit.
+)doc")
+        .def(py::init([] (const fwt::Grid& g, const fwt::Terrain& t,
+                          const py::dict& d) {
+                 RequireInitialized("Inflow");
+                 auto inf = std::make_unique<fwt::Inflow>();
+                 inf->Build(g, t, InflowParamsFromDict(d));
+                 return inf;
+             }), py::arg("grid"), py::arg("terrain"), py::arg("params"))
+        .def_property_readonly("velocity", [] (const fwt::Inflow& i) {
+                 return FieldToNumpy(i.velocity());
+             }, "(3, nz, ny, nx) [m/s] -- the profile mapped onto the grid.")
+        .def_property_readonly("mode", [] (const fwt::Inflow& i) {
+                 return i.mode_name();
+             })
+        .def_property_readonly("speed_ref", &fwt::Inflow::speed_ref)
+        .def_property_readonly("z_agl_min", &fwt::Inflow::z_agl_min)
+        .def_property_readonly("direction", [] (const fwt::Inflow& i) {
+                 return py::make_tuple(i.dir_x(), i.dir_y());
+             })
+        .def_property_readonly("flux_in", &fwt::Inflow::flux_in)
+        .def_property_readonly("flux_out", &fwt::Inflow::flux_out)
+        .def_property_readonly("flux_net", &fwt::Inflow::flux_net)
+        .def_property_readonly("flux_imbalance", &fwt::Inflow::flux_imbalance)
+        .def_property_readonly("n_points", &fwt::Inflow::n_points)
+        .def("profile_speed", &fwt::Inflow::ProfileSpeed, py::arg("z_agl"),
+             "Speed of the 1D law at a height above ground [m/s].\n"
+             "Raises for mode = userfile, which is a 3D field.")
+        .def("__repr__", [] (const fwt::Inflow& i) {
+                 return "<fastwindterrain.Inflow mode=" + i.mode_name() +
+                        " speed_ref=" + std::to_string(i.speed_ref()) + ">";
              });
 
     py::class_<fwt::Solver>(m, "Solver", R"doc(

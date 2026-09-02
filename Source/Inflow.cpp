@@ -2,6 +2,7 @@
 #include "Debug.H"
 #include "Derivatives.H"
 #include "Diagnostics.H"
+#include "Error.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -35,55 +36,109 @@ Inflow::Mode Inflow::ParseMode (const std::string& s)
     if (s == "powerlaw") { return Mode::powerlaw; }
     if (s == "loglaw")   { return Mode::loglaw;   }
     if (s == "userfile") { return Mode::userfile; }
-    amrex::Abort("inflow.mode = '" + s + "' is not recognized "
+    throw InputError("inflow.mode = '" + s + "' is not recognized "
                  "(expected powerlaw, loglaw, or userfile)");
     return Mode::powerlaw;   // unreachable; silences the compiler
 }
 
-void Inflow::ReadParameters ()
+Inflow::Params Inflow::Params::FromParmParse ()
 {
+    Params p;
     amrex::ParmParse pp("inflow");
 
-    pp.query("mode", m_mode_name);
-    m_mode = ParseMode(m_mode_name);
+    pp.query("mode", p.mode_name);
+    pp.query("u_ref", p.u_ref);
+    pp.query("v_ref", p.v_ref);
+    p.given_z_ref     = pp.query("z_ref", p.z_ref);
+    p.given_exponent  = pp.query("powerlaw_exponent", p.powerlaw_exponent);
+    p.given_z0        = pp.query("z0", p.z0);
+    p.given_k         = pp.query("idw_n_neighbors", p.idw_n_neighbors);
+    p.given_p         = pp.query("idw_exponent", p.idw_exponent);
+    p.given_z_agl_min = pp.query("z_agl_min", p.z_agl_min);
+    pp.query("file", p.file);
 
-    const bool got_u  = pp.query("u_ref", m_u_ref);
-    const bool got_v  = pp.query("v_ref", m_v_ref);
-    const bool got_zr = pp.query("z_ref", m_z_ref);
-    const bool got_a  = pp.query("powerlaw_exponent", m_powerlaw_exponent);
-    const bool got_z0 = pp.query("z0", m_z0);
-    const bool got_k  = pp.query("idw_n_neighbors", m_idw_k);
-    const bool got_p  = pp.query("idw_exponent", m_idw_exponent);
-    const bool got_zm = pp.query("z_agl_min", m_z_agl_min);
-    pp.query("file", m_file);
+    p.Validate();
+    return p;
+}
 
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_z_ref > 0.0, "inflow.z_ref must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_z0 > 0.0, "inflow.z0 must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_idw_k > 0,
-        "inflow.idw_n_neighbors must be > 0");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_idw_exponent > 0.0,
-        "inflow.idw_exponent must be > 0");
+void Inflow::Params::Validate () const
+{
+    const Mode m = ParseMode(mode_name);   // throws on an unknown name
 
-    // The floor defaults to z0: at z_agl = z0 the log law gives exactly
-    // zero speed, which is the physically right place to stop.
-    if (m_z_agl_min < 0.0) { m_z_agl_min = m_z0; }
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_z_agl_min > 0.0,
-        "inflow.z_agl_min must be > 0");
+    if (z_ref <= 0.0) { throw InputError("inflow.z_ref must be > 0"); }
+    if (z0 <= 0.0)    { throw InputError("inflow.z0 must be > 0"); }
+    if (idw_n_neighbors <= 0) {
+        throw InputError("inflow.idw_n_neighbors must be > 0");
+    }
+    if (idw_exponent <= 0.0) {
+        throw InputError("inflow.idw_exponent must be > 0");
+    }
+    // A negative value means "follow z0", which is resolved in Build.
+    if (given_z_agl_min && z_agl_min <= 0.0) {
+        throw InputError("inflow.z_agl_min must be > 0");
+    }
 
-    if (m_mode == Mode::userfile) {
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!m_file.empty(),
-            "inflow.mode = userfile requires inflow.file");
+    if (m == Mode::userfile) {
+        if (file.empty() && !has_table()) {
+            throw InputError(
+                "inflow.mode = userfile needs either inflow.file or a "
+                "velocity table given directly");
+        }
+        if (!file.empty() && has_table()) {
+            throw InputError(
+                "a velocity table was given directly AND inflow.file is "
+                "set; use one or the other");
+        }
+        const std::size_t n = xp.size();
+        if (yp.size() != n || zp.size() != n || up.size() != n ||
+            vp.size() != n || wp.size() != n) {
+            throw InputError(
+                "the velocity table columns have different lengths");
+        }
     } else {
+        if (has_table()) {
+            throw InputError(
+                "a velocity table was given, but inflow.mode is '" +
+                mode_name + "'. Set mode = userfile to use it.");
+        }
         // A calm reference wind leaves no inflow face for Phase 4 to
         // classify, so it is rejected here rather than producing a
         // silently empty flow field.
-        const amrex::Real speed = std::hypot(m_u_ref, m_v_ref);
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(speed > 0.0,
-            "inflow.u_ref and inflow.v_ref are both zero: there is no wind "
-            "and no inflow face. Set at least one of them.");
+        if (std::hypot(u_ref, v_ref) <= 0.0) {
+            throw InputError(
+                "inflow.u_ref and inflow.v_ref are both zero: there is no "
+                "wind and no inflow face. Set at least one of them.");
+        }
+    }
+}
+
+void Inflow::ApplyParams (const Params& params)
+{
+    m_params = params;
+    m_params.Validate();
+
+    m_mode_name = m_params.mode_name;
+    m_mode      = ParseMode(m_mode_name);
+    m_u_ref     = m_params.u_ref;
+    m_v_ref     = m_params.v_ref;
+    m_z_ref     = m_params.z_ref;
+    m_powerlaw_exponent = m_params.powerlaw_exponent;
+    m_z0        = m_params.z0;
+    m_idw_k     = m_params.idw_n_neighbors;
+    m_idw_exponent = m_params.idw_exponent;
+    m_file      = m_params.file;
+
+    // The floor defaults to z0: at z_agl = z0 the log law gives exactly
+    // zero speed, which is the physically right place to stop.
+    m_z_agl_min = m_params.z_agl_min;
+    if (m_z_agl_min < 0.0) { m_z_agl_min = m_z0; }
+    if (m_z_agl_min <= 0.0) {
+        throw InputError("inflow.z_agl_min must be > 0");
     }
 
     m_speed_ref = std::hypot(m_u_ref, m_v_ref);
+    m_dir_x = 0.0;
+    m_dir_y = 0.0;
     if (m_speed_ref > 0.0) {
         m_dir_x = m_u_ref / m_speed_ref;
         m_dir_y = m_v_ref / m_speed_ref;
@@ -91,28 +146,30 @@ void Inflow::ReadParameters ()
 
     FWT_DEBUG_SECTION("Inflow inputs (inflow.*)");
     FWT_DEBUG("mode             = " << m_mode_name);
-    FWT_DEBUG("u_ref, v_ref     = " << m_u_ref << ", " << m_v_ref << " m/s"
-              << (got_u || got_v ? "" : "   [default]"));
+    FWT_DEBUG("u_ref, v_ref     = " << m_u_ref << ", " << m_v_ref << " m/s");
     FWT_DEBUG("speed_ref        = " << m_speed_ref << " m/s");
     FWT_DEBUG("direction        = (" << m_dir_x << ", " << m_dir_y << ")");
     FWT_DEBUG("z_ref            = " << m_z_ref << " m AGL"
-                                     << (got_zr ? "" : "   [default]"));
+              << (m_params.given_z_ref ? "" : "   [default]"));
     if (m_mode == Mode::powerlaw) {
         FWT_DEBUG("powerlaw_exponent= " << m_powerlaw_exponent
-                                         << (got_a ? "" : "   [default]"));
+                  << (m_params.given_exponent ? "" : "   [default]"));
     }
     if (m_mode == Mode::loglaw) {
         FWT_DEBUG("z0               = " << m_z0 << " m"
-                                         << (got_z0 ? "" : "   [default]"));
+                  << (m_params.given_z0 ? "" : "   [default]"));
     }
     if (m_mode == Mode::userfile) {
-        FWT_DEBUG("file             = " << m_file);
-        FWT_DEBUG("idw_n_neighbors  = " << m_idw_k << (got_k ? "" : "   [default]"));
+        FWT_DEBUG("file             = "
+                  << (m_file.empty() ? std::string("<given directly>")
+                                     : m_file));
+        FWT_DEBUG("idw_n_neighbors  = " << m_idw_k
+                  << (m_params.given_k ? "" : "   [default]"));
         FWT_DEBUG("idw_exponent     = " << m_idw_exponent
-                                         << (got_p ? "" : "   [default]"));
+                  << (m_params.given_p ? "" : "   [default]"));
     }
     FWT_DEBUG("z_agl_min        = " << m_z_agl_min << " m"
-              << (got_zm ? "" : "   [default: z0]"));
+              << (m_params.given_z_agl_min ? "" : "   [default: z0]"));
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +191,7 @@ amrex::Real Inflow::ProfileSpeed (amrex::Real z_agl) const
         return m_speed_ref * std::log((z + m_z0) / m_z0)
                            / std::log((m_z_ref + m_z0) / m_z0);
     case Mode::userfile:
-        amrex::Abort("Inflow::ProfileSpeed: mode = userfile is a 3D field, "
+        throw InputError("Inflow::ProfileSpeed: mode = userfile is a 3D field, "
                      "not a 1D law; interpolate the file instead");
         return 0.0;
     }
@@ -171,7 +228,7 @@ void Inflow::ReadVelocityFile (const std::string& filename,
 {
     std::ifstream f(filename);
     if (!f.is_open()) {
-        amrex::Abort("Inflow: cannot open velocity file: " + filename);
+        throw InputError("Inflow: cannot open velocity file: " + filename);
     }
 
     n_columns = 0;
@@ -196,7 +253,7 @@ void Inflow::ReadVelocityFile (const std::string& filename,
         if (n_columns == 0) {
             n_columns = ncol;
         } else if (ncol != n_columns) {
-            amrex::Abort("Inflow: " + filename + " mixes " +
+            throw InputError("Inflow: " + filename + " mixes " +
                          std::to_string(n_columns) + "- and " +
                          std::to_string(ncol) + "-column rows");
         }
@@ -206,7 +263,8 @@ void Inflow::ReadVelocityFile (const std::string& filename,
     }
 
     if (xp.empty()) {
-        amrex::Abort("Inflow: no data read from velocity file: " + filename);
+        throw InputError("Inflow: no data read from velocity file: "
+                         + filename);
     }
 }
 
@@ -343,15 +401,33 @@ void Inflow::ComputeBoundaryFlux (const Grid& grid, const Terrain& terrain)
     m_flux_imbalance = fb.imbalance;
 }
 
-void Inflow::Build (const Grid& grid, const Terrain& terrain)
+void Inflow::Build (const Grid& grid, const Terrain& terrain,
+                   const Params& params)
 {
-    ReadParameters();
+    ApplyParams(params);
 
     if (m_mode == Mode::userfile) {
-        ReadVelocityFile(m_file, m_xp, m_yp, m_zp, m_up, m_vp, m_wp,
-                         m_n_columns);
-        amrex::Print() << "Inflow: read " << m_xp.size() << " velocity points ("
-                       << m_n_columns << " columns) from " << m_file << "\n";
+        if (m_params.has_table()) {
+            // Handed in directly. It goes through the same 3D IDW the
+            // file path uses -- one interpolation, two ways of filling
+            // the table it reads.
+            m_xp = m_params.xp;
+            m_yp = m_params.yp;
+            m_zp = m_params.zp;
+            m_up = m_params.up;
+            m_vp = m_params.vp;
+            m_wp = m_params.wp;
+            m_n_columns = 6;
+            amrex::Print() << "Inflow: " << m_xp.size()
+                           << " velocity points given directly\n";
+        } else {
+            ReadVelocityFile(m_file, m_xp, m_yp, m_zp, m_up, m_vp, m_wp,
+                             m_n_columns);
+            amrex::Print() << "Inflow: read " << m_xp.size()
+                           << " velocity points ("
+                           << m_n_columns << " columns) from " << m_file
+                           << "\n";
+        }
     }
 
     BuildVelocity(grid, terrain);
@@ -381,6 +457,11 @@ void Inflow::Build (const Grid& grid, const Terrain& terrain)
                   "part of a face. It is a diagnostic, not an error -- the "
                   "mass-consistent solve is the correction.");
     }
+}
+
+void Inflow::Build (const Grid& grid, const Terrain& terrain)
+{
+    Build(grid, terrain, Params::FromParmParse());
 }
 
 void Inflow::AppendReport (const std::string& filename) const

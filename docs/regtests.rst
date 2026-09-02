@@ -227,6 +227,31 @@ Fields as numpy (see :doc:`python`).
   accepted by widening, and reads before ``setup()`` raising rather than
   returning something empty
 
+``phase12_terrain_profile_python``
+----------------------------------
+
+Terrain and the inflow profile built from Python (see :doc:`python`).
+
+* **a case with no inputs file at all** -- grid, terrain point cloud and
+  profile, with AMReX initialized with no arguments so ParmParse holds
+  nothing -- reproduces the fields the equivalent inputs file produces,
+  bit for bit across five fields
+* terrain from a numpy ``(n, 3)`` array and terrain from the CSV those
+  numbers were read out of give identical ``z_terrain``, ``mask`` and
+  extrema. The checker also asserts the terrain is not flat, so the
+  comparison is of an interpolation rather than of a constant
+* the same for ``userfile`` mode, where the six-column velocity table is
+  handed in as two ``(n, 3)`` arrays: identical interpolated field and
+  identical flux diagnostics
+* no ParmParse leak: initialized from an inputs file naming a 100 m
+  hill, a Terrain built from a dict that omits ``file`` must be flat
+  ground. Inheriting it would silently swap the terrain under a whole
+  dataset
+* thirteen bad inputs all raise -- ``points`` and ``file`` together, a
+  table in the wrong mode, a flattened point array, an empty one, a
+  missing file, a calm wind, an unknown mode -- with the interpreter
+  usable afterwards
+
 ``profile_convergence``
 -----------------------
 

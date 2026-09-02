@@ -73,6 +73,18 @@ with fwt.session():
     print(g.z_cc)          # numpy, (nz,)
 ```
 
+A whole case can be described in Python, with no inputs file anywhere —
+the terrain point cloud and the profile go through the same
+interpolation the file readers feed, so the result is bit-for-bit what
+the files would have produced:
+
+```python
+with fwt.session():                       # no arguments: ParmParse is empty
+    g = fwt.Grid({"n_cell": (24, 24, 40), ...})
+    t = fwt.Terrain(g, {"points": pts})   # (n, 3) numpy array
+    inf = fwt.Inflow(g, t, {"mode": "powerlaw", "u_ref": 8.0, "v_ref": 6.0})
+```
+
 Fields come back as numpy, channels-first, so they hand straight to
 PyTorch:
 
