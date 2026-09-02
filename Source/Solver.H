@@ -10,6 +10,7 @@
 #include "Poisson.H"
 #include "Diagnostics.H"
 #include "Verify.H"
+#include "Output.H"
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_Vector.H>
@@ -80,6 +81,8 @@ public:
         Obrien::Params     obrien;
         Poisson::Params    poisson;
 
+        OutputParams       output;
+
         // numerics.gradient_scheme. Empty leaves the current setting,
         // which is what the ParmParse path has already established.
         std::string gradient_scheme;
@@ -104,6 +107,25 @@ public:
     void Solve ();
     void Diagnose ();
     void WriteOutput () const;
+
+    // -------------------------------------------------------------------
+    // The output fields, in memory.
+    //
+    // This is the SAME object the plotfile and the ascii backends are
+    // handed -- one gather, three consumers now instead of two. A
+    // notebook or a dataset generator gets exactly the array the file
+    // would have contained, without a file.
+    //
+    // Requires Diagnose(), since the divergence component comes from it.
+    // -------------------------------------------------------------------
+    OutputFields CollectOutput () const;
+
+    // Explicit destinations, for a caller that has not gone through
+    // ParmParse. WriteOutput() is these three behind the configured
+    // format switches.
+    void WritePlotfile (const std::string& path) const;
+    void WriteAscii (const std::string& path) const;
+    void WriteReport (const std::string& path) const;
 
     void Run (const Params& params,
               const amrex::Vector<std::string>& args = {});

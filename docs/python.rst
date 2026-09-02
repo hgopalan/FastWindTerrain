@@ -556,16 +556,70 @@ Phase 7's assertions, recomputed in numpy rather than read back:
   removed a 9.7 m/s residual over 1600 columns. Exactness is the point of
   the redistribution, so it is held to round-off rather than a tolerance
 
+Output without a file
+=====================
+
+.. code-block:: python
+
+    s.setup(); s.solve(); s.diagnose()
+
+    f = s.fields()            # {name: numpy array}, no file involved
+    f["u"], f["divergence"], f["lambda"]
+
+    s.write_plotfile("plt_case")     # the production path, still there
+    s.write_ascii("fields.txt")
+    s.write_report("report.txt")
+
+``fields()`` returns the **same object** the plotfile and ascii backends
+are handed. One gather, three consumers. A dataset generator gets exactly
+the array the file would have contained, and a regtest requires all three
+to agree value for value -- so a third assembly of "the output fields"
+cannot creep in without being caught.
+
+``write_plotfile`` is kept deliberately: results stay viewable in VisIt,
+ParaView and yt, which no numpy array replaces.
+
+All three writers require ``diagnose()``, since the divergence component
+comes from it. Asking earlier raises and writes nothing, rather than
+producing a file with a missing field.
+
+The output section
+------------------
+
+``write_output()`` no longer reads ParmParse. Its settings are the
+``output`` section of the config:
+
+.. list-table::
+   :widths: 24 60
+   :header-rows: 1
+
+   * - Key
+     - Meaning
+   * - ``which``
+     - ``report`` | ``fields`` | ``both`` -- which outputs are produced
+   * - ``format``
+     - ``plt`` | ``ascii`` | ``both`` -- which backend writes the fields
+   * - ``report_file``, ``plot_file``, ``ascii_file``
+     - where each goes
+
+That was the last module reading the global, and it mattered for the
+same reason the others did: a generation loop that let ParmParse decide
+would have case 2 write over case 1's plotfile, or write nothing,
+depending on what an earlier run had set. A regtest initializes from an
+inputs file naming its own report, plotfile and ascii file, then runs a
+dict-configured solver and requires none of those three names to appear.
+
 Scope
 =====
 
 Phase 9 exposed the process lifecycle and a whole run, Phase 10 added
 Grid, Phase 11 the fields, Phase 12 terrain and the profile, Phase 13 the
-solver, Phase 14 the anisotropy and O'Brien settings.
+solver, Phase 14 the anisotropy and O'Brien settings, Phase 15 the
+output.
 
-``write_output()`` is still driven by ParmParse, so a Python-configured
-run writes to the default file names. In-memory output is the next
-phase. The narrow surface is deliberate: parity
+**Nothing in a Python-configured run reads ParmParse any more.** That was
+the point of the migration, and it is what makes a loop over a few
+hundred cases in one process safe. The narrow surface is deliberate: parity
 was established and put under test before there was a wider API to keep
 honest, and each new piece inherits a guarantee that is already green.
 

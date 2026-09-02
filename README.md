@@ -109,6 +109,15 @@ a = fwt.Anisotropy(grid, terrain, {"enable": True, "slope_scale": 0.5,
 a.alpha_v          # (nz, ny, nx)
 ```
 
+Output comes back in memory, no file round-trip needed — the same object
+the plotfile and ascii backends are handed:
+
+```python
+s.setup(); s.solve(); s.diagnose()
+f = s.fields()                    # {name: numpy array}, 17 fields
+s.write_plotfile("plt_case")      # still there, for VisIt/ParaView/yt
+```
+
 Fields come back as numpy, channels-first, so they hand straight to
 PyTorch:
 

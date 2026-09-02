@@ -304,6 +304,28 @@ plotfile.
   configuration and accepted standalone, and the Poisson section's values
   really do reach the weight fields
 
+``phase15_output_interop``
+--------------------------
+
+In-memory output and the file writers (see :doc:`python`).
+
+* **the cross-check**: the same case written by the C++ ascii backend,
+  written as a plotfile, and read back through ``fields()`` -- all three
+  must agree **exactly**, over all 17 fields. They come from one gather,
+  so a difference would mean a third assembly of "the output fields" had
+  crept in
+* ``write_plotfile`` / ``write_ascii`` / ``write_report`` put files where
+  they are told, with no ParmParse involved, and the report really
+  carries the diagnostics rather than being an empty file with the right
+  name. Writing before ``diagnose()`` raises and creates nothing
+* the ``output`` config section really selects: ``which = both`` with
+  ``format = ascii`` writes the report and the plain-text file and **no**
+  plotfile. A bad value or an unknown key raises at configuration time
+* no ParmParse leak: initialized from an inputs file naming its own
+  report, plotfile and ascii file, a dict-configured run writes only what
+  the dict says. In a generation loop the alternative is case 2
+  overwriting case 1
+
 ``profile_convergence``
 -----------------------
 
