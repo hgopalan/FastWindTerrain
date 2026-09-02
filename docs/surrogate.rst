@@ -441,6 +441,126 @@ Each case costs one solve, and every reconstruction after that is numpy --
 which is why the placement and split sweeps are nearly free once the field
 exists.
 
+Warm starting: a negative result
+================================
+
+If the surrogate's output is an initial condition rather than an answer,
+the figure of merit is not RMSE but **iterations saved**. The projection
+is a stationary iteration, so that is directly measurable:
+``cases/warmstart_study.py`` seeds it from a reconstruction instead of
+from the solver's own initial field and counts passes to a fixed target.
+
+**It does not work well here, and the number is worth recording so that
+nobody re-derives the idea and re-runs the experiment.**
+
+.. list-table:: Passes to reach the divergence the cold start reaches at 12
+   :widths: 30 18 12 18 12
+   :header-rows: 1
+
+   * - start
+     - Creek
+     - saved
+     - Bootleg
+     - saved
+   * - cold (solver default)
+     - 12
+     - --
+     - 12
+     - --
+   * - warm, perfect levels
+     - 7
+     - 5
+     - 11
+     - 1
+   * - warm, 2 % level noise
+     - 8
+     - 4
+     - 11
+     - 1
+   * - warm, 5 % level noise
+     - 9
+     - 3
+     - 13
+     - **-1**
+   * - warm, 20 % level noise
+     - 16
+     - **-4**
+     - 18
+     - **-6**
+
+Even a *perfect* reconstruction saves 5 passes of 12 on Creek and 1 of 12
+on Bootleg. At a plausible 5 % surrogate error it saves 3 and nothing, and
+by 20 % it is worse than the initial condition the solver builds for
+itself.
+
+Why, and why it is not a bug
+----------------------------
+
+The mechanism checks out, which is how the number is known to be real. The
+perfect reconstruction sits 0.447 from the fixed point in max norm against
+the cold start's 0.915 -- exactly twice as close. At a convergence factor
+of 0.87 a two-fold reduction predicts ``ln 2 / ln(1/0.87)`` = 5 passes.
+Measured: 5.
+
+So the reconstruction is simply not much closer to the answer than the
+solver's own guess **in the norm the iteration converges in**. Its RMSE is
+excellent -- about 1.3 % on speed -- and its max-norm error is about 44 %,
+and the projection converges in a max norm.
+
+The obvious hope is that those worst cells sit near the terrain, where
+stitching is hardest and a better near-surface treatment would fix them.
+They do not:
+
+.. list-table:: Max-norm error by height above the surface, Creek
+   :widths: 30 20 20 30
+   :header-rows: 1
+
+   * - cells above the ground
+     - max
+     - rmse
+     - share of fluid cells
+   * - 1st fluid cell
+     - 0.441
+     - 0.041
+     - 6 %
+   * - 2-3
+     - 0.296
+     - 0.048
+     - 12 %
+   * - 4-10
+     - 0.335
+     - 0.045
+     - 40 %
+   * - 11+
+     - 0.331
+     - 0.028
+     - 42 %
+
+The error is spread through the column, so there is no localised fix to
+be had.
+
+What to conclude
+----------------
+
+Do not claim warm-start value on this evidence. The stitching recipe above
+stands on its own and is the stronger result.
+
+The idea is not dead for a fractional-step solver -- each step there costs
+far more, so a given fractional reduction in iterations is worth much more
+wall clock, and both the iteration and the norm it converges in are
+different. But that has to be measured on that solver rather than inferred
+from this one.
+
+**Caveat on the measurement.** One random seed per noise level, and the
+non-monotonicity -- 10 % noise saved more than 5 % on Creek -- shows it is
+noisy. Several seeds would tighten it. The gap between "5 passes saved
+from a perfect reconstruction" and "12 passes to beat" is wide enough that
+this is unlikely to change the conclusion.
+
+::
+
+    python3 cases/warmstart_study.py --case creek_fire --case bootleg_fire
+
 What transfers
 ==============
 
