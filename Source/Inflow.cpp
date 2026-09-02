@@ -56,6 +56,7 @@ Inflow::Params Inflow::Params::FromParmParse ()
     p.given_p         = pp.query("idw_exponent", p.idw_exponent);
     p.given_z_agl_min = pp.query("z_agl_min", p.z_agl_min);
     pp.query("file", p.file);
+    pp.query("balance_flux", p.balance_flux);
 
     p.Validate();
     return p;
@@ -127,6 +128,7 @@ void Inflow::ApplyParams (const Params& params)
     m_idw_k     = m_params.idw_n_neighbors;
     m_idw_exponent = m_params.idw_exponent;
     m_file      = m_params.file;
+    m_balance_flux = m_params.balance_flux;
 
     // The floor defaults to z0: at z_agl = z0 the log law gives exactly
     // zero speed, which is the physically right place to stop.
@@ -170,6 +172,10 @@ void Inflow::ApplyParams (const Params& params)
     }
     FWT_DEBUG("z_agl_min        = " << m_z_agl_min << " m"
               << (m_params.given_z_agl_min ? "" : "   [default: z0]"));
+    FWT_DEBUG("balance_flux     = " << m_balance_flux
+              << (m_balance_flux ? "   [net boundary flux redistributed "
+                                   "over xlo/xhi/ylo/yhi]"
+                                 : "   [default: report only]"));
 }
 
 // ---------------------------------------------------------------------------
@@ -393,12 +399,110 @@ void Inflow::ComputeBoundaryFlux (const Grid& grid, const Terrain& terrain)
     // The same routine the post-solve diagnostics use, so the before and
     // after numbers cannot come from two subtly different definitions of
     // "boundary flux".
-    const FluxBalance fb = ComputeFluxBalance(grid, terrain, m_vel);
+    m_flux = ComputeFluxBalance(grid, terrain, m_vel);
+}
 
-    m_flux_out       = fb.out;
-    m_flux_in        = fb.in;
-    m_flux_net       = fb.net;
-    m_flux_imbalance = fb.imbalance;
+void Inflow::BalanceBoundaryFlux (const Grid& grid, const Terrain& terrain)
+{
+    // Total open area of the four lateral faces. The top is excluded on
+    // purpose: it carries w = 0 by boundary condition. The ground is
+    // closed, and solid cells carry no flux.
+    //
+    // A cell at a corner belongs to two faces and is counted once for
+    // each, which is right: it later receives one shift per face, in each
+    // of those two normal components.
+    const amrex::Box& domain = grid.geom().Domain();
+    const amrex::Real dx = grid.geom().CellSize(0);
+    const amrex::Real dy = grid.geom().CellSize(1);
+
+    const amrex::Vector<amrex::Real>& z_face = grid.z_face();
+    amrex::Gpu::DeviceVector<amrex::Real> d_zf(z_face.size());
+    amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, z_face.begin(),
+                          z_face.end(), d_zf.begin());
+    amrex::Gpu::streamSynchronize();
+    const amrex::Real* zf = d_zf.data();
+
+    struct Face { int dir; int side; amrex::Real lateral; };
+    const Face faces[4] = {
+        {0, -1, dy},   // xlo
+        {0, +1, dy},   // xhi
+        {1, -1, dx},   // ylo
+        {1, +1, dx},   // yhi
+    };
+
+    amrex::Box layer[4];
+    for (int f = 0; f < 4; ++f) {
+        layer[f] = domain;
+        if (faces[f].side < 0) {
+            layer[f].setBig(faces[f].dir, domain.smallEnd(faces[f].dir));
+        } else {
+            layer[f].setSmall(faces[f].dir, domain.bigEnd(faces[f].dir));
+        }
+    }
+
+    const int solid = Terrain::kSolid;
+    amrex::Real open_area = 0.0;
+
+    for (int f = 0; f < 4; ++f) {
+        const amrex::Real lat = faces[f].lateral;
+
+        amrex::ReduceOps<amrex::ReduceOpSum> reduce_op;
+        amrex::ReduceData<amrex::Real> reduce_data(reduce_op);
+        using ReduceTuple = typename decltype(reduce_data)::Type;
+
+        for (amrex::MFIter mfi(m_vel); mfi.isValid(); ++mfi) {
+            const amrex::Box sect = mfi.tilebox() & layer[f];
+            if (!sect.ok()) { continue; }
+
+            auto const& mk = terrain.mask().const_array(mfi);
+            reduce_op.eval(sect, reduce_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
+            {
+                if (mk(i,j,k) == solid) { return {amrex::Real(0.0)}; }
+                return {lat * (zf[k+1] - zf[k])};
+            });
+        }
+
+        amrex::Real a = amrex::get<0>(reduce_data.value(reduce_op));
+        amrex::ParallelDescriptor::ReduceRealSum(a);
+        open_area += a;
+    }
+
+    m_balance_shift = 0.0;
+    if (open_area <= 0.0) {
+        // Every lateral face sealed by terrain. Nothing to redistribute
+        // over, and no flux to redistribute either.
+        amrex::Print() << "Inflow: balance_flux is on but no lateral face "
+                          "has any open area; nothing redistributed\n";
+        return;
+    }
+    if (m_flux.net == 0.0) { return; }
+
+    // One uniform outward-normal velocity, so that the flux it adds,
+    // shift * open_area, is exactly minus the net that is there.
+    m_balance_shift = -m_flux.net / open_area;
+    const amrex::Real shift = m_balance_shift;
+
+    for (int f = 0; f < 4; ++f) {
+        const int dir = faces[f].dir;
+        const amrex::Real signed_shift = amrex::Real(faces[f].side) * shift;
+
+        for (amrex::MFIter mfi(m_vel); mfi.isValid(); ++mfi) {
+            const amrex::Box sect = mfi.tilebox() & layer[f];
+            if (!sect.ok()) { continue; }
+
+            auto const& vel = m_vel.array(mfi);
+            auto const& mk  = terrain.mask().const_array(mfi);
+            amrex::ParallelFor(sect,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                // Solid cells stay at zero: the immersed boundary is not
+                // negotiable, and they carry no area in the sum above.
+                if (mk(i,j,k) == solid) { return; }
+                vel(i,j,k,dir) += signed_shift;
+            });
+        }
+    }
 }
 
 void Inflow::Build (const Grid& grid, const Terrain& terrain,
@@ -433,6 +537,23 @@ void Inflow::Build (const Grid& grid, const Terrain& terrain,
     BuildVelocity(grid, terrain);
     ComputeBoundaryFlux(grid, terrain);
 
+    // The raw profile's balance is kept whether or not anything is done
+    // about it: the boundary conditions classify the faces from it, and
+    // the report carries it so that the effect of the redistribution can
+    // be read off a single run.
+    m_flux_raw = m_flux;
+
+    if (m_balance_flux) {
+        BalanceBoundaryFlux(grid, terrain);
+        ComputeBoundaryFlux(grid, terrain);
+
+        amrex::Print() << "Inflow: boundary flux redistributed over "
+                          "xlo/xhi/ylo/yhi, shift = " << m_balance_shift
+                       << " m/s; relative imbalance "
+                       << m_flux_raw.imbalance << " -> "
+                       << m_flux.imbalance << "\n";
+    }
+
     if (Debug::Enabled()) {
         FWT_DEBUG_SECTION("Inflow profile");
         FWT_DEBUG("mode             = " << m_mode_name);
@@ -449,13 +570,25 @@ void Inflow::Build (const Grid& grid, const Terrain& terrain,
         }
 
         FWT_DEBUG_SECTION("Boundary mass flux (open faces only)");
-        FWT_DEBUG("flux_in          = " << m_flux_in << " m^3/s");
-        FWT_DEBUG("flux_out         = " << m_flux_out << " m^3/s");
-        FWT_DEBUG("flux_net         = " << m_flux_net << " m^3/s");
-        FWT_DEBUG("relative imbalance = " << m_flux_imbalance);
-        FWT_DEBUG("note: an imbalance here is expected when terrain blocks "
-                  "part of a face. It is a diagnostic, not an error -- the "
-                  "mass-consistent solve is the correction.");
+        FWT_DEBUG("flux_in          = " << m_flux.in << " m^3/s");
+        FWT_DEBUG("flux_out         = " << m_flux.out << " m^3/s");
+        FWT_DEBUG("flux_net         = " << m_flux.net << " m^3/s");
+        FWT_DEBUG("relative imbalance = " << m_flux.imbalance);
+        if (m_balance_flux) {
+            FWT_DEBUG("before redistribution: in " << m_flux_raw.in
+                      << ", out " << m_flux_raw.out
+                      << ", net " << m_flux_raw.net
+                      << ", relative imbalance " << m_flux_raw.imbalance);
+            FWT_DEBUG("balance shift    = " << m_balance_shift
+                      << " m/s outward on every open cell of "
+                         "xlo/xhi/ylo/yhi");
+        } else {
+            FWT_DEBUG("note: an imbalance here is expected when terrain "
+                      "blocks part of a face. It is a diagnostic, not an "
+                      "error -- the mass-consistent solve is the "
+                      "correction. Set inflow.balance_flux = 1 to "
+                      "redistribute it instead.");
+        }
     }
 }
 
@@ -482,10 +615,17 @@ void Inflow::AppendReport (const std::string& filename) const
     os << "inflow_file " << (m_file.empty() ? "none" : m_file) << "\n";
     os << "inflow_n_points " << m_xp.size() << "\n";
     os << "inflow_n_columns " << m_n_columns << "\n";
-    os << "inflow_flux_in " << m_flux_in << "\n";
-    os << "inflow_flux_out " << m_flux_out << "\n";
-    os << "inflow_flux_net " << m_flux_net << "\n";
-    os << "inflow_flux_imbalance " << m_flux_imbalance << "\n";
+    os << "inflow_flux_in " << m_flux.in << "\n";
+    os << "inflow_flux_out " << m_flux.out << "\n";
+    os << "inflow_flux_net " << m_flux.net << "\n";
+    os << "inflow_flux_imbalance " << m_flux.imbalance << "\n";
+    // Always written, so one report says both what the profile carried
+    // and what was done about it. With balance_flux off the raw and the
+    // reported balance are the same numbers.
+    os << "inflow_balance_flux " << m_balance_flux << "\n";
+    os << "inflow_flux_balance_shift " << m_balance_shift << "\n";
+    os << "inflow_flux_imbalance_raw " << m_flux_raw.imbalance << "\n";
+    os << "inflow_flux_net_raw " << m_flux_raw.net << "\n";
     os.close();
 
     FWT_DEBUG("appended inflow summary to " << filename);

@@ -159,6 +159,74 @@ def test_numpy_velocity_table_matches_the_file(amrex, profile_table):
 
 
 # ---------------------------------------------------------------------------
+# balance_flux
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def slope_points():
+    """Ground rising 0 -> 100 m across x, as an (n, 3) point cloud.
+
+    The hill cloud will not do here: it sits in the middle of the domain
+    and leaves every lateral face fully open, so the raw profile balances
+    exactly and there is nothing to redistribute. A slope blocks the
+    bottom of xhi and part of ylo/yhi, which is the case the option is
+    for."""
+    x = np.linspace(0.0, 1000.0, 51)
+    xx, yy = np.meshgrid(x, x, indexing="ij")
+    zz = 100.0 * xx / 1000.0
+    return np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+
+
+def test_balance_flux_is_off_by_default(amrex, slope_points):
+    g = fwt.Grid(GRID)
+    t = fwt.Terrain(g, {"points": slope_points})
+    a = fwt.Inflow(g, t, INFLOW)
+    b = fwt.Inflow(g, t, dict(INFLOW, balance_flux=0))
+
+    assert not a.flux_balanced and not b.flux_balanced
+    assert a.flux_balance_shift == 0.0
+    assert np.array_equal(a.velocity, b.velocity)
+    # Nothing was done, so the two imbalances are the same number.
+    assert a.flux_imbalance_raw == a.flux_imbalance > 0.0
+
+
+def test_balance_flux_redistributes_over_the_lateral_faces(amrex,
+                                                           slope_points):
+    """The slope blocks part of the faces, so the raw profile carries a
+    net boundary flux. With balance_flux on it must vanish, and the field
+    must differ ONLY in the boundary cell layer."""
+    g = fwt.Grid(GRID)
+    t = fwt.Terrain(g, {"points": slope_points})
+    off = fwt.Inflow(g, t, INFLOW)
+    on = fwt.Inflow(g, t, dict(INFLOW, balance_flux=1))
+
+    assert off.flux_imbalance > 1.0e-4, "nothing to redistribute"
+    assert on.flux_imbalance < 1.0e-12
+    assert on.flux_imbalance_raw == off.flux_imbalance
+    assert on.flux_balanced and on.flux_balance_shift != 0.0
+
+    # velocity is (3, nz, ny, nx). The interior -- every cell off a
+    # lateral face -- is untouched, bit for bit.
+    assert np.array_equal(on.velocity[:, :, 1:-1, 1:-1],
+                          off.velocity[:, :, 1:-1, 1:-1])
+    # And w is untouched everywhere: the top takes no share of it.
+    assert np.array_equal(on.velocity[2], off.velocity[2])
+
+    # On each lateral face the normal component moved by side * shift,
+    # except in solid cells, which stay at zero.
+    shift = on.flux_balance_shift
+    solid = t.mask == 1.0
+    for comp, index, side in ((0, (slice(None), slice(None), 0), -1),
+                              (0, (slice(None), slice(None), -1), +1),
+                              (1, (slice(None), 0, slice(None)), -1),
+                              (1, (slice(None), -1, slice(None)), +1)):
+        delta = on.velocity[comp][index] - off.velocity[comp][index]
+        fluid = ~solid[index]
+        assert np.allclose(delta[fluid], side * shift, rtol=0, atol=1e-12)
+        assert np.all(on.velocity[comp][index][solid[index]] == 0.0)
+
+
+# ---------------------------------------------------------------------------
 # No ParmParse leak
 # ---------------------------------------------------------------------------
 

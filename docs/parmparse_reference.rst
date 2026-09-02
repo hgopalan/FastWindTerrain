@@ -150,6 +150,11 @@ See :doc:`inflow`.
    * - ``inflow.z_agl_min``
      - ``z0``
      - Floor on height above ground [m]
+   * - ``inflow.balance_flux``
+     - ``0``
+     - Redistribute the net boundary flux over the open area of
+       ``xlo``/``xhi``/``ylo``/``yhi``, so the initial field conserves
+       mass exactly
 
 ``bc.`` -- boundary conditions
 ==============================

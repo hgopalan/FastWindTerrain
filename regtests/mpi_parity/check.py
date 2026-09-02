@@ -111,6 +111,11 @@ ABS_TOL = {
     "obrien_max_residual":      1.0e-9,     # ditto
     "inflow_flux_net":          1.0e-3,     # against a ~1e7 m^3/s throughflow
     "inflow_flux_imbalance":    1.0e-10,    # that net, normalised
+    # The same two before inflow.balance_flux redistributed anything.
+    # With the option off they ARE the same two numbers, so they are the
+    # same near-cancellation and need the same absolute scale.
+    "inflow_flux_net_raw":      1.0e-3,
+    "inflow_flux_imbalance_raw": 1.0e-10,
     "diag_flux_net":            1.0e-3,
     "diag_flux_imbalance":      1.0e-10,
     "diag_flux_top":            1.0e-4,     # a closed lid: 0 in exact arithmetic
