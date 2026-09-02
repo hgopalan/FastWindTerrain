@@ -76,6 +76,7 @@ __all__ = [
     "initialize",
     "is_initialized",
     "dataset",
+    "levels",
     "run",
     "session",
 ]
@@ -102,3 +103,4 @@ def session(args=None):
 # Imported last: dataset reads __version__ and session out of this module,
 # so the names it needs have to exist before it is loaded.
 from . import dataset          # noqa: E402,F401
+from . import levels           # noqa: E402,F401
