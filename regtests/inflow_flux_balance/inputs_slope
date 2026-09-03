@@ -31,3 +31,17 @@ inflow.z0             = 0.1
 # is given as 0". The checker passes it on the command line.
 
 grid.output_format    = both
+
+# The subject here is the flux balance, which happens inside Inflow::Build.
+# The surface condition runs AFTER it (Solver.cpp) and legitimately
+# perturbs what it produced: it rewrites the first fluid cell above
+# terrain, which changes u and v on the boundary faces and sets w from the
+# kinematic condition. With it on, this checker sees a residual imbalance
+# of 1.8e-4 and a w0 that has moved -- both real, neither a defect in the
+# balancing.
+#
+# That residual is worth keeping in proportion: the raw profile on corpus
+# windows is 0.7-27% out of balance, so 0.018% after both is three orders
+# better, and the projection removes the rest. The two features are not in
+# conflict; this test just needs to isolate the one it is about.
+surface.type = none

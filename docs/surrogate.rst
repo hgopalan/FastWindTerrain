@@ -421,8 +421,10 @@ matter below about 2 %.
 
 The rule, which is more use than the number: **choose the smallest k whose
 ceiling is under a third of the network's own error.** The recommended
-eight-level set has a ceiling near 1.2 %, so it is comfortable for anything
-above about 3 %.
+eight-level set has a ceiling near 1.2 % **on Creek**, so it is
+comfortable for anything above about 3 %. See the revalidation below
+before carrying that number to other terrain -- the ceiling runs 0.4 % to
+1.5 % across the corpus and grows with relief.
 
 Spend the real budget on terrains instead. At 51 s a solve, eight terrains
 by sixty wind conditions is 480 solves -- under an hour on eight cores.
@@ -587,3 +589,171 @@ mass-consistent convention.
 
 **Irrelevant later.** ``n_projections``, the transmissivity ``alpha``, and
 the convergence behaviour above are properties of this solver only.
+
+Revalidation on the corpus, after the surface condition
+========================================================
+
+Everything above was measured on three catalogue cases with **nothing
+constraining the first fluid cell above terrain**. The surface condition
+(:doc:`terrain`) now puts the kinematic ``w`` there by construction, which
+changes ``w`` everywhere the projection carries it, so the results were
+re-measured against the operator that actually runs --
+``cases/revalidate_levels.py``, eight corpus windows spanning 99 m to
+1813 m of relief.
+
+Errors here are RMSE over fluid cells scaled by ``|U_h|max``, and quoted
+in m/s as well, because a dimensionless residual is not something a
+tolerance can be applied to. ``|U_h|max`` runs 14.5-18.7 m/s across these
+windows.
+
+What held
+---------
+
+**Placement.** Inside the 10-160 m band, at eight levels:
+
+=====================  ============  ==========  ======================
+window                  recommended     uniform   engineering-anchored
+=====================  ============  ==========  ======================
+``bootleg_fire:22``          0.0017      0.0086                 0.0043
+``carr_fire:12``             0.0062      0.0195                 0.0134
+``slinkard_fire:22``         0.0170      0.0408                 0.0278
+``ditch_fire:20``            0.0227      0.0526                 0.0306
+=====================  ============  ==========  ======================
+
+Uniform is 2.3-5x worse and engineering-anchored 1.3-2.5x worse, on every
+window. The phase 19 claim survives on terrain it never saw.
+
+**Interpolating** ``w`` **rather than deriving it**, by more than before:
+12-17x against O'Brien, up from 8x. On ``ditch_fire:20`` O'Brien's ``w``
+carries **2.30 m/s** of error against 0.18 m/s interpolated. The kinematic
+seed is now built in, and on steep ground it is large, so reconstruction
+error in ``u`` and ``v`` propagates through it hard.
+
+What did not hold
+-----------------
+
+**The ceiling is not one number.** It scales with relief:
+
+=====================  ==========  ==============  ==========
+window                    relief     column RMSE        m/s
+=====================  ==========  ==============  ==========
+``bootleg_fire:22``          99 m          0.0040       0.058
+``carr_fire:12``            311 m          0.0075       0.114
+``slinkard_fire:22``       1069 m          0.0107       0.185
+``ditch_fire:20``          1813 m          0.0153       0.286
+=====================  ==========  ==============  ==========
+
+**0.4 % to 1.5 %**, or 0.06 to 0.29 m/s -- not the ~1.2 % measured on
+Creek and quoted above as though it were general. The budget rule still
+applies; the number it takes must come from terrain of comparable
+complexity.
+
+**``recommended`` and plain ``log`` are a tie.** Log wins the column on 4
+of 8 windows and recommended wins the band on 6 of 8, with gaps of about
+2 %. Pinning the band to exact octaves is not doing measurable work.
+
+Near the surface
+----------------
+
+The 0-50 m band is the worst one on every window, and it grows with
+relief -- 0.149, 0.308, 0.518, 0.374, 0.416 m/s. Past the ~0.25 m/s that
+CFD practice runs at, from 311 m of relief upward.
+
+**That is expected rather than wrong.** Near-surface flow follows the
+terrain, so it varies on the terrain's own length scale; aloft it is
+smooth and terrain-blind. Both the reconstruction and, later, the network
+will be worst there, and it is where the answer is wanted.
+
+A level at 5 m recovers part of it:
+
+=====================  ===========  =============  ==============
+window                 recommended   + 5 m (k+1)   + 5 m (same k)
+=====================  ===========  =============  ==============
+``carr_fire:12``             0.308          0.220           0.220
+``delta_fire:20``            0.518          0.402           0.402
+``ditch_fire:20``            0.416          0.365           0.365
+=====================  ===========  =============  ==============
+
+12-29 % better, and **only as an extra level**. Swapping it in at fixed
+``k`` costs the aloft level it displaces and wrecks the column -- 0.114 to
+0.392 m/s on ``carr_fire:12``. So the near-surface error is partly
+vertical resolution and mostly not.
+
+What a surrogate has to beat
+=============================
+
+``cases/baseline_study.py`` measures the cheap analytical fields in
+:mod:`fastwindterrain.baseline` on the same windows and metric.
+
+**The undisturbed profile is the baseline.** Terrain-following but
+terrain-blind, it is what the solver starts from:
+
+=====================  ==========  ==========
+window                    relief         m/s
+=====================  ==========  ==========
+``bootleg_fire:22``          99 m       0.251
+``carr_fire:12``            311 m       0.367
+``delta_fire:20``           521 m       0.843
+``slinkard_fire:22``       1069 m       1.460
+``ditch_fire:20``          1813 m       1.462
+=====================  ==========  ==========
+
+Doing nothing costs 0.25 m/s on gentle ground and 1.46 m/s on complex
+ground. **That is the value proposition, quantified**: near nothing on
+easy terrain and roughly six times the tolerance on hard terrain. Against
+it, the reconstruction floor on ``ditch_fire:20`` is 0.29 m/s, so
+stitching preserves about 80 % of the terrain effect and leaves a factor
+of five of headroom for a network.
+
+**The other two baselines are broken and are not quotable.**
+``continuity_speedup`` and ``slope_speedup`` reach ``|U|max`` of 41.7 and
+36.8 m/s on ``ditch_fire:20`` against the solver's 18.65. Both assume a
+shallow hill -- linearised theory, and a column speed-up with no decay in
+height -- and the corpus reaches slopes near 2. They are kept because a
+baseline that fails loudly is more useful than one quietly omitted, but
+any comparison should use ``undisturbed``.
+
+Imposing the log law near the surface: a negative result
+=========================================================
+
+If the reconstruction is good aloft and poor near the ground, an obvious
+repair is to take a level it handles well, invert the log law there for a
+friction velocity, impose the resulting profile below, and taper the
+correction out with height. That is
+:func:`fastwindterrain.levels.log_blend_correction`, and it does not work.
+
+============================  ==============  ==============
+``carr_fire:12`` (311 m)      0-50 m           10-160 m
+============================  ==============  ==============
+no correction                  0.740 m/s        0.444 m/s
+anchor 160 m, 10 % noise       **0.676**        **0.361**
+============================  ==============  ==============
+
+On the gentlest window tested it repairs 10 % noise usefully. On
+``slinkard_fire:22`` and ``ditch_fire:20`` it is worse at every anchor and
+every taper, noisy or not. With *perfect* levels it is worse everywhere,
+which is expected -- ``stitch_levels`` reproduces the level values exactly
+at the levels, so there is nothing to repair and a correction can only
+move a right answer.
+
+**The mechanism is the same physics that makes the band hard.** Near the
+surface the flow follows the terrain rather than a universal profile, so
+imposing a log law there imposes the wrong shape exactly where it matters
+most. It works on gentle ground because gentle ground is where a profile
+is a good description.
+
+Two consequences:
+
+* **do not use it as a decoder** inside the surrogate, and in particular
+  do not drop the sub-40 m levels and derive them -- the log law cannot
+  supply what they carry on complex terrain;
+* the correction is kept, tested and documented so the result is
+  reproducible rather than folklore.
+
+Two implementation notes, if it is ever revisited. Anchor on a level the
+network predicts, not an arbitrary height: interpolating the anchor speed
+from cell centres 20 m apart on a logarithmic profile injects 0.003 m/s
+of bias that propagates down the column. And taper linearly in height --
+the log taper is elegant and far too aggressive, weighting 0.31 at 10 m
+and 0.10 at 40 m for an 80 m anchor, and it repaired only 12 % of a
+deliberate 50 % near-surface error.

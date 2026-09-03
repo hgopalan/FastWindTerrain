@@ -369,3 +369,111 @@ def test_max_agl_measures_the_deepest_column():
     # And it accepts the solver's k-replicated terrain field.
     assert lv.max_agl(z_cc, np.broadcast_to(zt, (50, 2, 2))) == \
         pytest.approx(2000.0)
+
+
+# ---------------------------------------------------------------------------
+# The surface log-blend correction, which is destined to become a decoder
+# inside the surrogate. Its properties are asserted here rather than
+# discovered in a training run.
+# ---------------------------------------------------------------------------
+
+def _ramp_case(slope=0.2, nz=40):
+    """A sloped-terrain case with a log profile, and its geometry."""
+    ny = nx = 16
+    dx = dy = 50.0
+    x = np.arange(nx) * dx
+    zt = slope * x[None, :] * np.ones((ny, 1))
+    z_cc = np.linspace(2.0, 800.0, nz)
+    agl = z_cc[:, None, None] - zt[None]
+    # Built in PERPENDICULAR distance, because that is the variable the
+    # correction works in -- a field that is logarithmic in the vertical
+    # gap is NOT logarithmic normal to a sloped surface, and testing the
+    # identity against the wrong one measures the slope, not the operator.
+    nzc = lv.surface_nz(zt, dx, dy)[None]
+    speed = lv.log_law(10.0, 80.0 * nzc, np.maximum(agl, 0.0) * nzc, 0.1)
+    field = np.stack([speed, np.zeros_like(speed), np.zeros_like(speed)])
+    mask = (agl < 0).astype(np.int32)
+    return field, z_cc, zt, mask, dx, dy
+
+
+def test_log_blend_leaves_a_log_profile_alone():
+    """The correction imposes the log law, so a field that already obeys
+    it must come back essentially unchanged -- otherwise it adds a bias.
+
+    NOT to round-off, and the residual is worth knowing about. The anchor
+    speed is interpolated LINEARLY to `anchor_agl` from cell centres about
+    20 m apart here, while the profile through them is logarithmic, so the
+    anchor carries a small interpolation error that the correction then
+    propagates down the column. It comes to 0.003 m/s on a 10 m/s
+    reference -- 0.03% -- and it shrinks with the grid.
+
+    The design consequence, for when this becomes a decoder: ANCHOR ON A
+    PREDICTED LEVEL, where the value is known outright, rather than on an
+    arbitrary height that has to be interpolated to.
+    """
+    f, z_cc, zt, mask, dx, dy = _ramp_case()
+    out = lv.log_blend_correction(f, z_cc, zt, mask, anchor_agl=80.0,
+                                  dx=dx, dy=dy)
+    fluid = mask == 0
+    worst = np.abs(out[0] - f[0])[fluid].max()
+    assert worst < 0.01, f"bias of {worst:.4f} m/s on a 10 m/s profile"
+
+
+def test_log_blend_pulls_a_wrong_near_surface_field_back():
+    """The case it exists for: the levels below the anchor are wrong, the
+    anchor is right, and the correction has to repair them."""
+    f, z_cc, zt, mask, dx, dy = _ramp_case()
+    agl = z_cc[:, None, None] - zt[None]
+    broken = f.copy()
+    low = agl < 40.0
+    broken[0] = np.where(low, broken[0] * 0.5, broken[0])   # 50% too slow
+
+    before = np.abs(broken[0] - f[0])[(mask == 0) & low].max()
+    out = lv.log_blend_correction(broken, z_cc, zt, mask, anchor_agl=80.0,
+                                  dx=dx, dy=dy)
+    after = np.abs(out[0] - f[0])[(mask == 0) & low].max()
+    assert after < 0.5 * before, (
+        f"correction did not repair the near-surface error: {before:.3f} "
+        f"-> {after:.3f}")
+
+
+def test_log_blend_tapers_to_nothing_at_the_anchor():
+    """Above the anchor nothing may move, or the correction is damaging
+    the part of the profile the reconstruction already gets right."""
+    f, z_cc, zt, mask, dx, dy = _ramp_case()
+    broken = f.copy()
+    broken[0] *= 0.5
+    out = lv.log_blend_correction(broken, z_cc, zt, mask, anchor_agl=80.0,
+                                  dx=dx, dy=dy)
+    agl = z_cc[:, None, None] - zt[None]
+    high = (mask == 0) & (agl > 80.0)
+    assert np.allclose(out[0][high], broken[0][high], rtol=1e-12)
+
+
+def test_log_blend_uses_only_gather_and_elementwise_ops():
+    """It is destined to run inside a training loop, so it has to be
+    differentiable. Everything here is elementwise or a gather; the only
+    index arithmetic comes from the GEOMETRY, which is a fixed input, not
+    from the field being corrected. Asserted by checking the output moves
+    smoothly with the input rather than by inspecting the source."""
+    f, z_cc, zt, mask, dx, dy = _ramp_case()
+    fluid = mask == 0
+    base = lv.log_blend_correction(f, z_cc, zt, mask, anchor_agl=80.0,
+                                   dx=dx, dy=dy)
+    grads = []
+    for eps in (1e-4, 1e-5, 1e-6):
+        g = f.copy()
+        g[0] *= (1.0 + eps)
+        out = lv.log_blend_correction(g, z_cc, zt, mask, anchor_agl=80.0,
+                                      dx=dx, dy=dy)
+        grads.append(float(((out[0] - base[0])[fluid]).sum() / eps))
+    # A finite-difference derivative that converges is what a gradient
+    # needs; a step or a kink would show up as the estimates diverging.
+    assert abs(grads[0] - grads[-1]) < 1e-3 * max(abs(grads[-1]), 1.0)
+
+
+def test_log_blend_leaves_solid_cells_empty():
+    f, z_cc, zt, mask, dx, dy = _ramp_case()
+    out = lv.log_blend_correction(f, z_cc, zt, mask, anchor_agl=80.0,
+                                  dx=dx, dy=dy)
+    assert np.all(out[:, mask == 1] == 0.0)
