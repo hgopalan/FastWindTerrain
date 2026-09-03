@@ -778,6 +778,28 @@ def test_the_reader_refuses_a_directory_with_no_manifest(tmp_path):
 
 
 @needs_manifest
+def test_the_verifier_expects_the_folds_it_was_asked_about():
+    """The demo fold is generated into its own directory, so the verifier
+    has two datasets to check and they have different sizes. Deriving the
+    expectation from the fold names rather than hardcoding the split's
+    count is what lets it check either -- and asking for the wrong fold
+    must give the wrong number, or the check is not checking anything.
+    """
+    import verify_dataset as vd
+
+    m = corpus.load_manifest()
+    split = vd.expected_solved(m, corpus.FOLDS)
+    demo = vd.expected_solved(m, [corpus.DEMO_FOLD])
+    assert split > 0 and demo > 0 and split != demo
+    # Every window belongs to exactly one fold, so the two partition the
+    # corpus: a window counted in both would mean the demo sites were in
+    # the split after all.
+    assert (split + demo
+            == vd.expected_solved(m, list(corpus.FOLDS)
+                                  + [corpus.DEMO_FOLD]))
+
+
+@needs_manifest
 def test_an_unqualified_run_does_not_generate_the_demo_fold():
     """The demo windows live in the same corpus manifest as the split, so
     the only thing keeping them out of a plain ``--out X`` run is the fold
