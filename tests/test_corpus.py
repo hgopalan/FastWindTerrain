@@ -777,6 +777,49 @@ def test_the_reader_refuses_a_directory_with_no_manifest(tmp_path):
         list(bd.load_dataset(str(tmp_path)))
 
 
+@needs_manifest
+def test_an_unqualified_run_does_not_generate_the_demo_fold():
+    """The demo windows live in the same corpus manifest as the split, so
+    the only thing keeping them out of a plain ``--out X`` run is the fold
+    default. If that default ever widens, the sites the paper calls unseen
+    quietly become training data."""
+    import build_dataset as bd
+
+    m = corpus.load_manifest()
+    default = bd.select_windows(m)
+    assert default, "the split folds should select something"
+    assert not [w for w in default if w["fold"] == corpus.DEMO_FOLD]
+
+    asked = bd.select_windows(m, folds=[corpus.DEMO_FOLD])
+    assert asked, "naming the demo fold should select the demo windows"
+    assert all(w["fold"] == corpus.DEMO_FOLD for w in asked)
+
+
+@needs_manifest
+def test_a_run_refuses_to_overwrite_another_run_s_output(tmp_path):
+    """Worker indices restart at 0 on every run, so a second run into a
+    finished directory would overwrite shard_00_* and manifest_00.json --
+    hours of solves gone, the other workers' shards left orphaned, and no
+    error anywhere. It must stop BEFORE solving, which is what returning
+    early rather than raising at the first flush buys.
+    """
+    import build_dataset as bd
+
+    (tmp_path / "manifest_00.json").write_text("{}")
+    argv = ["--out", str(tmp_path), "--fold", corpus.DEMO_FOLD,
+            "--part", "0", "--of", "8"]
+    assert bd.main(argv) == 1
+    # Nothing was written, and in particular the file was not truncated.
+    assert (tmp_path / "manifest_00.json").read_text() == "{}"
+    assert not list(tmp_path.glob("shard_*.npz"))
+
+    # Another worker's files in the same directory are NOT a clash -- that
+    # is exactly how a multi-worker run is laid out. Asserted on the glob
+    # the guard uses rather than by calling main again, which would solve.
+    (tmp_path / "shard_01_00000.npz").write_bytes(b"")
+    assert not list(tmp_path.glob("shard_00_*.npz"))
+
+
 # ---------------------------------------------------------------------------
 # The demonstration sites: unseen terrain that is not in the split at all.
 # ---------------------------------------------------------------------------
