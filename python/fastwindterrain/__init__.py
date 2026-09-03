@@ -77,6 +77,7 @@ __all__ = [
     "is_initialized",
     "dataset",
     "baseline",
+    "evaluate",
     "levels",
     "run",
     "session",
@@ -106,3 +107,4 @@ def session(args=None):
 from . import dataset          # noqa: E402,F401
 from . import levels           # noqa: E402,F401
 from . import baseline         # noqa: E402,F401
+from . import evaluate         # noqa: E402,F401
