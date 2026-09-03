@@ -378,3 +378,39 @@ def test_the_solver_reads_our_terrain_file(amrex, tmp_path):
 
     assert from_file.n_points == from_array.n_points > 0
     assert np.array_equal(from_file.z_terrain, from_array.z_terrain)
+
+
+def test_the_fit_guard_tolerates_the_terrain_file_write_precision():
+    """The failure that killed a worker 28 solves into a dataset run.
+
+    write_terrain rounds to casegen._DECIMALS places, so a point read back
+    can sit half a quantum below the floor the grid was derived from. On
+    coastal_fire:20 that was 3.3e-05 m and the guard aborted the run --
+    working exactly as designed, on something that is not a geometry error.
+
+    Which windows it hits is luck: a minimum that rounds DOWN trips, one
+    that rounds up does not.
+    """
+    floor, top = 100.0, 1100.0
+    quantum = casegen.FIT_TOL_M
+
+    # Just inside the write precision: tolerated.
+    casegen.assert_fits(np.array([floor - 0.4 * quantum, 500.0]), floor, top)
+    casegen.assert_fits(np.array([500.0, top + 0.4 * quantum]), floor, top)
+
+    # Well outside it: still caught, which is the point of keeping the
+    # tolerance at the quantum rather than making it generous.
+    with pytest.raises(ValueError, match="below the domain floor"):
+        casegen.assert_fits(np.array([floor - 1.0, 500.0]), floor, top)
+    with pytest.raises(ValueError, match="above the domain top"):
+        casegen.assert_fits(np.array([500.0, top + 1.0]), floor, top)
+
+
+def test_the_fit_guard_still_catches_a_real_miss():
+    """The tolerance must not blunt what the guard exists for: terrain
+    below the mesh or a column entirely solid, which are hundreds of
+    metres out, not microns."""
+    with pytest.raises(ValueError, match="entirely\n?\\s*FLUID|FLUID"):
+        casegen.assert_fits(np.array([-500.0, 10.0]), 0.0, 1000.0)
+    with pytest.raises(ValueError, match="SOLID"):
+        casegen.assert_fits(np.array([10.0, 5000.0]), 0.0, 1000.0)
