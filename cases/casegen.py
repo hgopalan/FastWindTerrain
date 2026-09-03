@@ -257,7 +257,7 @@ def grid_from_relief(z_min, z_max, n_cell=N_CELL, dz0=DZ0,
 # The guard the solver does not have
 # ---------------------------------------------------------------------------
 
-def assert_fits(z, prob_lo_z, prob_hi_z, what="terrain"):
+def assert_fits(z, prob_lo_z, prob_hi_z, what="terrain", tol=None):
     """Refuse terrain that does not straddle the domain.
 
     The solver will not tell you. Terrain below prob_lo[2] leaves every cell
@@ -269,14 +269,15 @@ def assert_fits(z, prob_lo_z, prob_hi_z, what="terrain"):
     import numpy as np
 
     z = np.asarray(z)
+    tol = FIT_TOL_M if tol is None else tol
     lo, hi = float(np.min(z)), float(np.max(z))
-    if lo < prob_lo_z:
+    if lo < prob_lo_z - tol:
         raise ValueError(
             f"{what} reaches {lo:.2f} m, below the domain floor "
             f"{prob_lo_z:.2f} m. Those columns would come out entirely "
             f"FLUID with the ground beneath the mesh, silently -- the "
             f"immersed boundary would do nothing there.")
-    if hi > prob_hi_z:
+    if hi > prob_hi_z + tol:
         raise ValueError(
             f"{what} reaches {hi:.2f} m, above the domain top "
             f"{prob_hi_z:.2f} m. Those columns would come out entirely "
@@ -321,6 +322,26 @@ SURVEY_FILE = "survey.json"
 CASE_FILE = "case.json"
 
 _DECIMALS = 4      # 0.1 mm; SRTM is integer metres before interpolation
+
+#: How far terrain may sit outside the domain before it counts as a real
+#: fit failure rather than a rounding artefact.
+#:
+#: write_terrain rounds to _DECIMALS places, so a point read back from a
+#: terrain file can differ from the value the grid was derived from by half
+#: a quantum. On coastal_fire:20 that was enough to put the terrain 3.3e-05
+#: m below its own floor and abort a dataset run 28 solves in -- the guard
+#: working exactly as intended, on an inconsistency that is not a geometry
+#: error at all.
+#:
+#: It is luck which windows this hits: a minimum that rounds DOWN trips,
+#: one that rounds up does not. coastal_fire's z_min is 0.3333... and
+#: rounded down; most others rounded up.
+#:
+#: The tolerance is the quantum itself, not a fudge factor. What the guard
+#: is for -- terrain below the mesh, or a column entirely solid -- is
+#: hundreds of metres out, so nothing it catches is lost.
+FIT_TOL_M = 10.0 ** (-_DECIMALS)
+
 
 
 def write_terrain(path, points, header_lines=()):
