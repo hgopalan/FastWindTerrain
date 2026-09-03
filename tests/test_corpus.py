@@ -718,3 +718,48 @@ def test_the_reader_filters_by_fold(tmp_path):
     bd = _fake_dataset(tmp_path)
     assert len(list(bd.load_dataset(str(tmp_path), fold="train"))) == 2
     assert len(list(bd.load_dataset(str(tmp_path), fold="test"))) == 0
+
+
+def test_the_reader_stitches_several_workers_together(tmp_path):
+    """The layout a real run produces: one shard file and one manifest per
+    worker, dealt round-robin, all in one directory.
+
+    Worth its own test because the single-worker layout is what a smoke
+    run exercises, and the naming differs -- shard_NN_MMMMM.npz and
+    manifest_NN.json against shard_MMMMM.npz and manifest.json. A reader
+    that only understood the smoke layout would return an empty dataset
+    from a real run, which looks like a training bug rather than an I/O
+    one.
+    """
+    import build_dataset as bd
+
+    rng = np.random.default_rng(7)
+    for part in range(3):
+        sid = f"w:{part}0@000"
+        arrays = {
+            "u_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+            "terrain": rng.standard_normal((4, 4)).astype("float32"),
+        }
+        np.savez_compressed(tmp_path / f"shard_{part:02d}_00000.npz",
+                            **{f"{sid}|{k}": v for k, v in arrays.items()})
+        man = {"shards": 1, "samples": [
+            {"id": sid, "derived": False, "fold": "train", "has_3d": False},
+            {"id": f"w:{part}0@180", "derived": True, "derived_from": sid,
+             "fold": "train", "has_3d": False},
+        ]}
+        (tmp_path / f"manifest_{part:02d}.json").write_text(json.dumps(man))
+
+    got = list(bd.load_dataset(str(tmp_path)))
+    assert len(got) == 6, "three workers x two directions"
+    assert len({i["id"] for i, _ in got}) == 6
+    # And the derived halves still negate velocity only.
+    d = {i["id"]: a for i, a in got}
+    assert np.array_equal(d["w:10@180"]["u_lev"], -d["w:10@000"]["u_lev"])
+    assert np.array_equal(d["w:10@180"]["terrain"], d["w:10@000"]["terrain"])
+
+
+def test_the_reader_refuses_a_directory_with_no_manifest(tmp_path):
+    import build_dataset as bd
+
+    with pytest.raises(FileNotFoundError, match="no manifest"):
+        list(bd.load_dataset(str(tmp_path)))
