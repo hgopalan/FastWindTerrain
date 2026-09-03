@@ -76,6 +76,7 @@ __all__ = [
     "initialize",
     "is_initialized",
     "dataset",
+    "baseline",
     "levels",
     "run",
     "session",
@@ -104,3 +105,4 @@ def session(args=None):
 # so the names it needs have to exist before it is loaded.
 from . import dataset          # noqa: E402,F401
 from . import levels           # noqa: E402,F401
+from . import baseline         # noqa: E402,F401

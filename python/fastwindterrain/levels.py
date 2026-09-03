@@ -49,7 +49,9 @@ __all__ = [
     "extract_levels",
     "first_fluid_k",
     "height_above_ground",
+    "log_blend_correction",
     "log_law",
+    "surface_nz",
     "max_agl",
     "obrien_w",
     "recommended_levels",
@@ -168,6 +170,39 @@ def height_above_ground(z_cc, z_terrain):
     return z_cc[:, None, None] - zt[None, :, :]
 
 
+def surface_nz(z_terrain, dx, dy):
+    """``(ny, nx)`` cosine of the terrain slope angle, ``n_z``.
+
+    The z component of the surface normal
+    ``n = (-dh/dx, -dh/dy, 1)/sqrt(1 + |grad h|^2)``, which is also the
+    factor that turns a VERTICAL gap above the surface into a
+    PERPENDICULAR distance from it.
+
+    That distinction is not cosmetic near the ground. The solver's surface
+    condition (``Source/Surface.cpp``) applies its log law in perpendicular
+    distance, because the terrain is an immersed sloped surface and not a
+    flat wall. A reconstruction that fills the same region using the
+    vertical gap is evaluating a different logarithm: on a slope of 1.89 --
+    which the terrain corpus reaches -- the two differ by a factor of 2.1
+    inside ``ln(z/z0)``.
+
+    Central differences with clamped edges, the stencil the solver uses
+    (``Anisotropy.cpp:125`` and ``Surface.cpp``), so the terrain gradient
+    has one definition across C++ and Python.
+    """
+    zt = np.asarray(z_terrain, dtype=np.float64)
+    if zt.ndim == 3:
+        zt = zt[0]
+    ny, nx = zt.shape
+    ip1 = np.minimum(np.arange(nx) + 1, nx - 1)
+    im1 = np.maximum(np.arange(nx) - 1, 0)
+    jp1 = np.minimum(np.arange(ny) + 1, ny - 1)
+    jm1 = np.maximum(np.arange(ny) - 1, 0)
+    dhdx = (zt[:, ip1] - zt[:, im1]) / ((ip1 - im1)[None, :] * dx)
+    dhdy = (zt[jp1, :] - zt[jm1, :]) / ((jp1 - jm1)[:, None] * dy)
+    return 1.0 / np.sqrt(1.0 + dhdx * dhdx + dhdy * dhdy)
+
+
 def first_fluid_k(mask):
     """``(ny, nx)`` index of the lowest fluid cell in each column.
 
@@ -201,7 +236,7 @@ def log_law(u_ref, z_ref, z, z0=0.1):
 # ---------------------------------------------------------------------------
 
 def extract_levels(field, z_cc, z_terrain, levels, mask=None, frame="agl",
-                   method="linear", z0=0.1):
+                   method="linear", z0=0.1, dx=None, dy=None):
     """Sample a ``(nz, ny, nx)`` field on ``levels``, giving ``(nlev, ny, nx)``.
 
     ``frame='agl'`` reads ``levels`` as heights above ground and
@@ -217,6 +252,11 @@ def extract_levels(field, z_cc, z_terrain, levels, mask=None, frame="agl",
     Passing ``mask`` is what makes that possible; without it the lowest
     cell centre in the column is used, which is inside the terrain over
     real ground.
+
+    ``dx`` and ``dy`` put that log law in PERPENDICULAR distance from the
+    sloped surface rather than the vertical gap, matching the solver's own
+    surface condition -- see :func:`surface_nz`. Optional only so existing
+    callers keep working.
     """
     field = np.asarray(field, dtype=np.float64)
     z_cc = np.asarray(z_cc, dtype=np.float64)
@@ -231,14 +271,19 @@ def extract_levels(field, z_cc, z_terrain, levels, mask=None, frame="agl",
           else np.zeros((ny, nx), dtype=np.int64))
     k0 = np.minimum(k0, nz - 1)
 
+    nz_c = (surface_nz(zt, dx, dy)
+            if (dx is not None and dy is not None) else None)
+
     out = np.empty((levels.size, ny, nx), dtype=np.float64)
     for n, level in enumerate(levels):
         z_target = (zt + level) if frame == "agl" else np.full((ny, nx), level)
-        out[n] = _sample_column(field, z_cc, z_target, zt, k0, method, z0)
+        out[n] = _sample_column(field, z_cc, z_target, zt, k0, method, z0,
+                                nz_c)
     return out
 
 
-def _sample_column(field, z_cc, z_target, zt, k0, method, z0):
+def _sample_column(field, z_cc, z_target, zt, k0, method, z0,
+                   nz_c=None):
     """One level, interpolated in z per column."""
     nz, ny, nx = field.shape
 
@@ -276,6 +321,11 @@ def _sample_column(field, z_cc, z_target, zt, k0, method, z0):
         anchor = np.take_along_axis(field, k_anchor[None], axis=0)[0]
         z_anchor = np.maximum(z_cc[k_anchor] - zt, 1e-6)
         z_want = np.maximum(z_target - zt, 0.0)
+        if nz_c is not None:
+            # Perpendicular distance, as the solver's surface condition
+            # uses -- see surface_nz.
+            z_anchor = np.maximum(z_anchor * nz_c, 1e-6)
+            z_want = z_want * nz_c
         value = np.where(below, log_law(anchor, z_anchor, z_want, z0), value)
 
     return value
@@ -286,7 +336,7 @@ def _sample_column(field, z_cc, z_target, zt, k0, method, z0):
 # ---------------------------------------------------------------------------
 
 def stitch_levels(values, levels, z_cc, z_terrain, mask=None, frame="agl",
-                  method="loglinear", z0=0.1, fill=0.0):
+                  method="loglinear", z0=0.1, fill=0.0, dx=None, dy=None):
     """Rebuild a ``(nz, ny, nx)`` field from ``(nlev, ny, nx)`` level values.
 
     The inverse of :func:`extract_levels`, and the operator a surrogate's
@@ -299,6 +349,16 @@ def stitch_levels(values, levels, z_cc, z_terrain, mask=None, frame="agl",
     * **below the lowest level** -- the log law anchored at that level.
       Extrapolating a straight line down from 10 m puts a sign error in
       the bottom cells.
+
+      PASS ``dx`` AND ``dy`` HERE. With them the log law is evaluated in
+      PERPENDICULAR distance from the sloped surface, ``agl * n_z``, which
+      is what the solver's own surface condition uses
+      (``Source/Surface.cpp``). Without them it uses the vertical gap,
+      which is a different logarithm over the same cells -- a factor of
+      2.1 different on the steepest terrain in the corpus -- and the
+      reconstruction fights the field it is trying to reproduce. The
+      arguments are optional only so that existing callers keep working;
+      new ones should pass them.
     * **above the highest level** -- hold the top value. Defensible only
       because ``ALOFT_LEVELS`` reaches 1200 m, where the terrain's
       influence has largely gone; with engineering levels alone this is
@@ -345,11 +405,19 @@ def stitch_levels(values, levels, z_cc, z_terrain, mask=None, frame="agl",
     fu = np.take_along_axis(values, ku.reshape(nz, ny, nx), axis=0)
     out = fl + wgt * (fu - fl)
 
-    # Below the lowest level: the log law, anchored there.
+    # Below the lowest level: the log law, anchored there. In
+    # perpendicular distance when the geometry is available, because that
+    # is the variable the solver's surface condition made the field follow.
     low = coord < levels[0]
     if low.any():
-        out = np.where(low, log_law(values[0][None], levels[0],
-                                    np.maximum(coord, 0.0), z0), out)
+        if dx is not None and dy is not None and frame == "agl":
+            nz_c = surface_nz(zt, dx, dy)[None]         # (1, ny, nx)
+            d_here = np.maximum(coord, 0.0) * nz_c
+            d_ref = levels[0] * nz_c
+        else:
+            d_here = np.maximum(coord, 0.0)
+            d_ref = levels[0]
+        out = np.where(low, log_law(values[0][None], d_ref, d_here, z0), out)
 
     # Above the highest: hold.
     high = coord > levels[-1]
@@ -478,4 +546,112 @@ def obrien_w(u, v, w, dz, dx, dy, mask):
         frac = (k - k0) / span
         out[k] = np.where(above[k], acc - frac * frac * E, out[k])
 
+    return out
+
+
+def log_blend_correction(field, z_cc, z_terrain, mask, anchor_agl=80.0,
+                         z0=0.1, dx=None, dy=None, blend="linear"):
+    """Impose log-law consistency near the ground, blended out with height.
+
+    Take the speed the reconstruction gives at ``anchor_agl`` -- a height it
+    handles well -- invert the log law there for a friction velocity, and
+    use that to say what the wind SHOULD be nearer the ground. The
+    difference between that and what was reconstructed is a correction,
+    applied in full at the surface and tapered to nothing at the anchor so
+    the good part of the profile is left alone:
+
+        u*        = kappa * U_recon(d_a) / ln((d_a + z0)/z0)
+        U_log(d)  = (u*/kappa) * ln((d + z0)/z0)
+        U(d)     <- U_recon(d) + f(d) * (U_log(d) - U_recon(d))
+
+    with ``f`` running 1 at the surface to 0 at the anchor. TWO TAPERS,
+    and the choice matters more than it looks:
+
+        ``blend="linear"``  f = 1 - d/d_a. Weight 0.88 at 10 m and 0.50 at
+                            40 m for an 80 m anchor, so the correction is
+                            actually applied over the region where the
+                            near-surface error lives.
+        ``blend="log"``     f = 1 - ln(d/z0+1)/ln(d_a/z0+1). Elegant, in
+                            that it tapers in the profile's own coordinate
+                            -- and far too aggressive: weight 0.31 at 10 m
+                            and 0.10 at 40 m, concentrating the whole
+                            correction into the bottom metre where there
+                            are no cells. It repaired only 12% of a
+                            deliberate 50% near-surface error in testing.
+
+    ``linear`` is the default for that reason.
+
+    Distances are PERPENDICULAR to the sloped surface when ``dx``/``dy``
+    are given, for the same reason the solver's surface condition uses them
+    -- see :func:`surface_nz`.
+
+    WHERE THIS DOES AND DOES NOT PAY. :func:`stitch_levels` reproduces the
+    level values exactly AT the levels, so on perfect level data there is
+    nothing to correct at 10 or 20 m and this can only move a right answer.
+    Its value is at deployment: a surrogate's lowest levels are its worst,
+    because the near-surface field varies on the terrain's own length scale,
+    and anchoring on a well-predicted level aloft to fix a badly-predicted
+    one below is correcting real error. Measure it in both settings before
+    quoting it -- they are different experiments with different answers.
+
+    Only the horizontal components are touched. ``w`` near the surface is
+    set by the kinematic condition, which is a statement about terrain
+    slope rather than about the surface layer's profile.
+    """
+    field = np.asarray(field, dtype=np.float64)
+    z_cc = np.asarray(z_cc, dtype=np.float64)
+    zt = np.asarray(z_terrain, dtype=np.float64)
+    if zt.ndim == 3:
+        zt = zt[0]
+
+    agl = z_cc[:, None, None] - zt[None]
+    nz_c = (surface_nz(zt, dx, dy)[None]
+            if (dx is not None and dy is not None) else 1.0)
+    d = np.maximum(agl, 0.0) * nz_c
+    d_a = anchor_agl * (nz_c if np.ndim(nz_c) else 1.0)
+
+    speed = np.sqrt(field[0] ** 2 + field[1] ** 2)
+    anchor_speed = _level_speed(speed, agl, anchor_agl)
+
+    la = np.log(np.maximum(d_a, 1e-9) / z0 + 1.0)
+    ustar_over_k = anchor_speed[None] / np.maximum(la, 1e-12)
+    target = ustar_over_k * np.log(d / z0 + 1.0)
+
+    if blend == "log":
+        t = np.log(d / z0 + 1.0) / np.maximum(la, 1e-12)
+    elif blend == "linear":
+        t = d / np.maximum(d_a, 1e-9)
+    else:
+        raise ValueError("blend must be 'linear' or 'log', got "
+                         + repr(blend))
+    f = np.clip(1.0 - t, 0.0, 1.0)
+
+    out = np.array(field, copy=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(speed > 1e-12,
+                         (speed + f * (target - speed)) / np.maximum(speed,
+                                                                     1e-12),
+                         1.0)
+    out[0] *= ratio
+    out[1] *= ratio
+    if mask is not None:
+        solid = np.asarray(mask) == 1
+        out[:, solid] = 0.0
+    return out
+
+
+def _level_speed(speed, agl, level):
+    """``(ny, nx)`` speed interpolated to one height above ground."""
+    nz = speed.shape[0]
+    out = np.zeros(speed.shape[1:], dtype=np.float64)
+    above = agl >= level
+    ku = np.clip(np.argmax(above, axis=0), 1, nz - 1)
+    kl = ku - 1
+    zl = np.take_along_axis(agl, kl[None], axis=0)[0]
+    zu = np.take_along_axis(agl, ku[None], axis=0)[0]
+    fl = np.take_along_axis(speed, kl[None], axis=0)[0]
+    fu = np.take_along_axis(speed, ku[None], axis=0)[0]
+    wgt = np.where(zu > zl, (level - zl) / np.where(zu > zl, zu - zl, 1.0),
+                   0.0)
+    out[:] = fl + np.clip(wgt, 0.0, 1.0) * (fu - fl)
     return out
