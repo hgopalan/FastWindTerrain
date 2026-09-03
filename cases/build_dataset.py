@@ -29,11 +29,19 @@ is seven gigabytes. It is needed only to check the reconstruction, which
 is a validation question and not a training one, so --store-3d defaults to
 the test fold alone.
 
+THE DEMO FOLD IS NOT PART OF "EVERYTHING". `--fold` defaults to the three
+split folds; demo windows are generated only when asked for by name, into
+their own directory. Two reasons, and the second is the important one:
+they carry the full 3D field, which the split folds mostly do not; and a
+directory that holds no demo samples cannot leak them into training by an
+absent-minded glob. Keeping them apart is cheaper than remembering.
+
 Usage:
 
-    python3 cases/build_dataset.py --out data/corpus            # everything
+    python3 cases/build_dataset.py --out data/corpus            # the split
     python3 cases/build_dataset.py --out data/small --fold test --limit 8
     python3 cases/build_dataset.py --out data/x --store-3d all
+    python3 cases/build_dataset.py --out data/demo --fold demo --store-3d all
 """
 
 import argparse
@@ -130,6 +138,22 @@ def build_one(manifest, wid, direction, levels_fn, store_3d,
     return out, info
 
 
+def select_windows(manifest, folds=None, limit=None, part=0, of=1):
+    """The windows one worker solves.
+
+    ``folds`` defaults to the three split folds, which is what keeps the
+    demo sites out of an unqualified run: they are in the corpus manifest
+    and would otherwise be swept up by it.
+    """
+    folds = list(corpus.FOLDS) if not folds else list(folds)
+    windows = [w for w in manifest["windows"] if w["fold"] in folds]
+    if limit:
+        windows = windows[:limit]
+    if of > 1:
+        windows = windows[part::of]
+    return windows
+
+
 def load_dataset(path, fold=None, with_3d=None):
     """Read a dataset back, materialising the derived reverse directions.
 
@@ -189,8 +213,10 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True, metavar="DIR")
     p.add_argument("--fold", action="append", default=None,
-                   choices=list(corpus.FOLDS),
-                   help="restrict to these folds (default: all)")
+                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD],
+                   help="restrict to these folds. Default is the three split "
+                        "folds; 'demo' is never included unless named, and "
+                        "belongs in its own --out directory")
     p.add_argument("--limit", type=int, default=None,
                    help="stop after this many windows, for a smoke run")
     p.add_argument("--part", type=int, default=0, metavar="I",
@@ -212,21 +238,43 @@ def main(argv=None):
                         "every sample comes from one operator")
     p.add_argument("--shard", type=int, default=32,
                    help="samples per shard file (default 32)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace this worker's existing shards and manifest. "
+                        "Without it a run that would overwrite them stops "
+                        "before solving anything")
     args = p.parse_args(argv)
 
     manifest = corpus.load_manifest()
-    folds = args.fold or list(corpus.FOLDS)
-    windows = [w for w in manifest["windows"] if w["fold"] in folds]
-    if args.limit:
-        windows = windows[:args.limit]
-    if args.of > 1:
-        windows = windows[args.part::args.of]
+    windows = select_windows(manifest, args.fold, args.limit,
+                             args.part, args.of)
 
     def levels_fn(z_cc, zt, mask):
         agl = L.height_above_ground(z_cc, zt)
         return L.recommended_levels(float(agl[mask == 0].max()))
 
     os.makedirs(args.out, exist_ok=True)
+
+    man_name = ("manifest.json" if args.of == 1
+                else f"manifest_{args.part:02d}.json")
+
+    # Refuse to clobber, and refuse BEFORE solving rather than at the first
+    # flush. Worker indices restart at 0 for every run, so a second run into
+    # a finished directory silently overwrites shard_00_* and its manifest --
+    # hours of solves, gone, with the remaining workers' shards left orphaned
+    # and no error anywhere. Fail fast and name the directory.
+    import glob
+    clash = ([os.path.join(args.out, man_name)]
+             if os.path.exists(os.path.join(args.out, man_name)) else [])
+    clash += sorted(glob.glob(
+        os.path.join(args.out, f"shard_{args.part:02d}_*.npz")))
+    if clash and not args.overwrite:
+        print(f"error: worker {args.part} would overwrite "
+              f"{len(clash)} existing file(s) in {args.out}, starting with "
+              f"{os.path.basename(clash[0])}.\n"
+              f"  Write to a different --out, or pass --overwrite if that "
+              f"data really is meant to be replaced.", file=sys.stderr)
+        return 1
+
     n_dir = len(corpus.INDEPENDENT_DIRECTIONS)
     total = len(windows) * n_dir
     print(f"{len(windows)} windows x {n_dir} solved directions = {total} "
@@ -298,8 +346,6 @@ def main(argv=None):
         "wind_speed_is_a_free_scaling": True,
         "reverse_direction_is_a_negation": True,
     }
-    man_name = ("manifest.json" if args.of == 1
-                else f"manifest_{args.part:02d}.json")
     with open(os.path.join(args.out, man_name), "w") as f:
         json.dump(man, f, indent=1, sort_keys=True)
         f.write("\n")
