@@ -757,3 +757,86 @@ of bias that propagates down the column. And taper linearly in height --
 the log taper is elegant and far too aggressive, weighting 0.31 at 10 m
 and 0.10 at 40 m for an 80 m anchor, and it repaired only 12 % of a
 deliberate 50 % near-surface error.
+
+What a surrogate has to beat, over the corpus
+=============================================
+
+Phase 22a. Everything above measured a handful of windows at one
+direction. This is the whole test fold -- 216 independent solves, 54
+windows at four directions -- scored with
+:mod:`fastwindterrain.evaluate` by ``cases/eval_harness.py``.
+
+The metric is **vector RMSE in metres per second**, over fluid cells,
+against the solver's own field. Vector, not speed: a field with the right
+magnitude and the wrong direction is wrong, and a speed metric scores it
+perfectly.
+
+Two fields bracket what a surrogate can do. The **baseline** is the
+undisturbed profile -- terrain-following but terrain-blind, the field
+available for nothing. The **floor** is the dataset's own nine levels
+stitched back into the sixty-layer grid: a perfect network reproducing
+the stored levels exactly still lands there, because nine levels do not
+carry sixty.
+
+==========  ===========  ====  ============  =========  ==========
+group       relief (m)      n      baseline      floor    headroom
+==========  ===========  ====  ============  =========  ==========
+gentle           0-200     84         0.542      0.070       0.473
+moderate       200-500     28         0.755      0.075       0.680
+complex        500-900     64         2.069      0.197       1.872
+extreme           900+     40         2.552      0.259       2.292
+==========  ===========  ====  ============  =========  ==========
+
+Means, in m/s. The worst single sample in each bin runs to 1.23, 1.54,
+3.02 and 3.22 m/s of baseline error and 0.17, 0.15, 0.28 and 0.34 m/s of
+floor.
+
+**The headroom is much larger than the eight-window studies suggested.**
+Those measured 0.25 to 1.46 m/s of baseline error; over the corpus it
+reaches 3.2. The earlier windows simply did not include the steepest
+ground. The floor moved far less -- 0.06-0.29 became 0.05-0.34 -- so the
+gap a surrogate is being asked to close is wider, not narrower, than the
+groundwork implied.
+
+**Relief predicts both, and predicts them differently.** From gentle to
+extreme the baseline error grows 4.7x and the floor 3.7x, so the ratio
+between them is roughly flat: the floor is one part in 7.8 of the
+baseline on gentle ground and one in 9.8 to 10.5 on everything steeper,
+so a fixed tenth or so of the terrain effect is unrecoverable from nine
+levels whatever the terrain. That is the useful invariant -- it means the
+level placement is not quietly failing on steep ground, it is failing
+proportionately. If anything it does slightly *better* there.
+
+**Do not report one aggregate number.** The mean over all 216 samples is
+1.394 m/s of baseline and 0.143 m/s of floor, and it describes no bin: it
+is 2.6x too high for gentle terrain and 1.8x too low for extreme. Every
+table in the paper should be grouped.
+
+The demonstration sites, scored the same way, land where their relief
+says they should:
+
+==========  ===========  ====  ============  =========  ==========
+group       relief (m)      n      baseline      floor    headroom
+==========  ===========  ====  ============  =========  ==========
+complex        500-900     36         1.991      0.177       1.814
+extreme           900+     36         2.446      0.229       2.217
+==========  ===========  ====  ============  =========  ==========
+
+Both bins sit slightly *better* than the matching test-fold bins (0.177
+against 0.197, 0.229 against 0.259). Unseen terrain is not pathological
+terrain -- the difficulty is set by relief, not by whether the corpus has
+seen the site. A model that transfers should therefore land near its
+test-fold numbers on these, and a large gap would be evidence of
+memorisation rather than of hard ground.
+
+Reproducing it
+--------------
+
+.. code-block:: console
+
+   $ python3 cases/eval_harness.py
+   $ python3 cases/eval_harness.py --data data/demo --fold demo
+
+About thirty seconds for the test fold. It scores only the solved half:
+the derived samples are exact negations and both the baseline and the
+stitch are odd in the wind direction, so they measure identically.
