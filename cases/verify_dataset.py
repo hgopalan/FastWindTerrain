@@ -25,13 +25,21 @@ What it checks, in the order the failures actually happen:
               that halved the compute.
   finite      no NaN or inf anywhere. A single bad sample poisons a
               training run and is tedious to find later.
-  covered     every fold is present, including the demo sites, and no
-              window appears in two folds.
+  covered     exactly the folds asked for are present, and no window
+              appears in two of them.
+
+WHICH FOLDS. The demo sites are generated separately, into their own
+directory, so a dataset holds either the three split folds or the demo
+fold and never both. `--fold` says which was intended; the counts are
+then derived from the corpus manifest for those folds. It is deliberately
+not inferred from what is on disk -- a run that dropped an entire fold
+would then define its own expectation and pass.
 
 Usage:
 
     python3 cases/verify_dataset.py                     # data/corpus
     python3 cases/verify_dataset.py --data other/dir
+    python3 cases/verify_dataset.py --data data/demo --fold demo --workers 6
 """
 
 import argparse
@@ -54,12 +62,26 @@ EXPECT_SHAPES = {
 }
 
 
+def expected_solved(manifest, folds):
+    """How many independent solves a run over ``folds`` should produce.
+
+    Independent, not total: the reverse of every solve is its exact
+    negation, so a dataset holds twice this many samples.
+    """
+    n = len([w for w in manifest["windows"] if w["fold"] in set(folds)])
+    return n * len(corpus.INDEPENDENT_DIRECTIONS)
+
+
 def main(argv=None):
     import numpy as np
 
     p = argparse.ArgumentParser()
     p.add_argument("--data", default=os.path.join(ROOT, "data", "corpus"))
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--fold", action="append", default=None,
+                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD],
+                   help="the folds this run was meant to produce "
+                        "(default: the three split folds)")
     p.add_argument("--full", action="store_true",
                    help="load every sample, not a sample of them")
     args = p.parse_args(argv)
@@ -100,8 +122,8 @@ def main(argv=None):
 
     # -- countable --------------------------------------------------------
     man = corpus.load_manifest()
-    split = [w for w in man["windows"] if w["fold"] != corpus.DEMO_FOLD]
-    want_solved = len(split) * len(corpus.INDEPENDENT_DIRECTIONS)
+    want_folds = set(args.fold or corpus.FOLDS)
+    want_solved = expected_solved(man, want_folds)
     solved = [s for s in samples if not s.get("derived")]
     derived = [s for s in samples if s.get("derived")]
     check("countable",
@@ -155,11 +177,18 @@ def main(argv=None):
           f"terrain differs by {worst_ter:.1e}")
 
     # -- covered ----------------------------------------------------------
-    folds = {}
+    folds, of_window = {}, {}
     for s in samples:
-        folds[s.get("fold", "?")] = folds.get(s.get("fold", "?"), 0) + 1
-    check("covered", set(folds) >= set(corpus.FOLDS),
-          ", ".join(f"{k} {v}" for k, v in sorted(folds.items())))
+        f = s.get("fold", "?")
+        folds[f] = folds.get(f, 0) + 1
+        of_window.setdefault(s["id"].split("@")[0], set()).add(f)
+    straddle = sorted(w for w, fs in of_window.items() if len(fs) > 1)
+    detail = ", ".join(f"{k} {v}" for k, v in sorted(folds.items()))
+    if set(folds) != want_folds:
+        detail += f" -- expected {', '.join(sorted(want_folds))}"
+    if straddle:
+        detail += f"; {len(straddle)} window(s) in two folds: {straddle[:3]}"
+    check("covered", set(folds) == want_folds and not straddle, detail)
 
     if fail:
         print(f"\n{len(fail)} check(s) failed: {fail}")
