@@ -126,6 +126,46 @@ REFERENCE_HEIGHT_M = 80.0
 #: samples, and a paper should not claim otherwise.
 WIND_DIRECTIONS = tuple(float(45 * k) for k in range(8))
 
+#: The directions actually worth SOLVING. Half the rose, because the other
+#: half is free.
+#:
+#: THE SOLVER IS EXACTLY ODD IN THE INFLOW. Reversing the wind negates the
+#: entire field -- measured on ditch_fire:20, the corpus's steepest window:
+#:
+#:     u(  0 deg) vs -u(180 deg)   relative 8.58e-16
+#:     u( 90 deg) vs -u(270 deg)   relative 1.33e-15
+#:
+#: which is round-off, not approximation. Every operator in the chain is
+#: odd or invariant: the profile scales with u_ref, O'Brien integrates a
+#: divergence linear in (u, v), alpha depends on |terrain slope| and not on
+#: direction, the Poisson right-hand side and its correction both flip
+#: sign, and the surface condition's rescale is a RATIO of speeds and so
+#: leaves the sign alone.
+#:
+#: TWO CONSEQUENCES, and the second matters more than the first.
+#:
+#: 1. Generate four directions and derive the reverse by negation. Half the
+#:    compute for the same information.
+#: 2. **A dataset of 252 windows x 8 directions is 1008 independent
+#:    samples, not 2016.** Quoting 2016 would be counting each sample
+#:    twice, and it is the kind of claim a reader checks.
+#:
+#: This is a property of a mass-consistent operator with no advection and
+#: no stability dependence. A fractional-step solver has neither of those
+#: properties and will NOT be odd; re-measure before assuming it there.
+INDEPENDENT_DIRECTIONS = tuple(float(45 * k) for k in range(4))
+
+
+def reverse_of(field):
+    """The field for the opposite wind direction, exactly.
+
+    See INDEPENDENT_DIRECTIONS: the operator is odd in the inflow, so the
+    reverse is the negation and needs no solve.
+    """
+    import numpy as np
+
+    return -np.asarray(field)
+
 #: Projection passes the corpus is generated at.
 #:
 #: Phase 17 froze this at 4 on Creek, where the outer iteration falls

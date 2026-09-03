@@ -602,3 +602,59 @@ def test_json_round_trips_without_losing_the_grid_precision():
     again = json.loads(json.dumps(manifest))
     for a, b in zip(manifest["windows"], again["windows"]):
         assert a["stretching_ratio"] == b["stretching_ratio"]
+
+
+# ---------------------------------------------------------------------------
+# The solver is odd in the inflow direction, which halves the dataset.
+# ---------------------------------------------------------------------------
+
+def test_independent_directions_are_half_the_rose():
+    assert len(corpus.INDEPENDENT_DIRECTIONS) * 2 == len(
+        corpus.WIND_DIRECTIONS)
+    # Every direction in the full rose is either generated or the reverse
+    # of one that is.
+    for d in corpus.WIND_DIRECTIONS:
+        assert (d in corpus.INDEPENDENT_DIRECTIONS
+                or (d - 180.0) % 360.0 in corpus.INDEPENDENT_DIRECTIONS), d
+
+
+def test_reverse_of_is_negation():
+    a = np.arange(24, dtype=np.float64).reshape(3, 2, 2, 2)
+    assert np.array_equal(corpus.reverse_of(a), -a)
+    assert np.array_equal(corpus.reverse_of(corpus.reverse_of(a)), a)
+
+
+@pytest.mark.slow
+def test_the_solver_really_is_odd_in_the_inflow(amrex):
+    """The measurement the halving rests on, run rather than trusted.
+
+    If this ever fails, INDEPENDENT_DIRECTIONS is wrong and every dataset
+    built on it is missing half its conditions. Worth a solve.
+
+    Skipped without a corpus manifest and tile, like the other cases that
+    need real terrain.
+    """
+    import fastwindterrain as fwt
+
+    if not os.path.isfile(corpus.MANIFEST):
+        pytest.skip("no corpus manifest")
+    manifest = corpus.load_manifest()
+    wid = manifest["windows"][0]["id"]
+    if not os.path.isfile(corpus.tile_path(manifest["windows"][0]["site"])):
+        pytest.skip("no tile for the first corpus window")
+
+    fields = {}
+    for d in (0.0, 180.0):
+        s = fwt.Solver(corpus.window_config(manifest, wid,
+                                            wind_direction=d,
+                                            poisson={"n_projections": 2}))
+        s.setup()
+        s.solve()
+        fields[d] = np.stack([np.array(f) for f in s.velocity])
+        fluid = s.mask == 0
+
+    scale = np.abs(fields[0.0])[:, fluid].max()
+    worst = np.abs(fields[0.0] + fields[180.0])[:, fluid].max()
+    assert worst / scale < 1e-12, (
+        f"reversing the wind is not exactly a negation: {worst/scale:.2e} "
+        f"relative. INDEPENDENT_DIRECTIONS assumes it is.")

@@ -249,8 +249,29 @@ column is 80 m above the lowest terrain.
 Counting samples honestly
 -------------------------
 
-252 windows × 8 directions is 2016 solves, before the convergence screen
-below removes any. It is **not** 2016 independent samples. On a square domain the physics is very nearly
+**The solver is exactly odd in the inflow direction.** Reversing the wind
+negates the whole field, measured on the corpus's steepest window:
+
+===========================  ==============
+comparison                       relative
+===========================  ==============
+``u(0°)`` vs ``-u(180°)``          8.58e-16
+``u(90°)`` vs ``-u(270°)``         1.33e-15
+===========================  ==============
+
+That is round-off, not approximation, and every operator in the chain
+explains it: the profile scales with ``u_ref``, O'Brien integrates a
+divergence linear in ``(u, v)``, ``alpha`` depends on the terrain slope
+magnitude and not on direction, the Poisson right-hand side and its
+correction both flip sign, and the surface condition's rescale is a ratio
+of speeds.
+
+So **generate four directions and derive the other four by negation** --
+``corpus.INDEPENDENT_DIRECTIONS`` and ``corpus.reverse_of`` -- which
+halves the compute for the same information.
+
+And **252 windows × 8 directions is 1008 independent samples, not 2016**.
+Quoting 2016 counts every sample twice. It is On a square domain the physics is very nearly
 rotation-equivariant, so a terrain at 90° and a quarter-turn of that
 terrain at 180° are close to the same problem: the four axis-aligned
 directions act partly as a rotation augmentation of the terrain rather
