@@ -36,3 +36,8 @@ cases/corpus/*/plt_*/
 
 # Sphinx
 docs/_build/
+
+# Generated datasets (cases/build_dataset.py). The corpus at nine levels is
+# a couple of gigabytes; the manifest and the code that makes it are what
+# is worth committing.
+data/

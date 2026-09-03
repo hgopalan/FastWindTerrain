@@ -658,3 +658,63 @@ def test_the_solver_really_is_odd_in_the_inflow(amrex):
     assert worst / scale < 1e-12, (
         f"reversing the wind is not exactly a negation: {worst/scale:.2e} "
         f"relative. INDEPENDENT_DIRECTIONS assumes it is.")
+
+
+# ---------------------------------------------------------------------------
+# The dataset format (cases/build_dataset.py). The reader is what the
+# training harness will use, so its invariants are asserted here.
+# ---------------------------------------------------------------------------
+
+def _fake_dataset(tmp_path):
+    """A two-sample dataset on disk, one solved and one derived."""
+    import build_dataset as bd
+
+    rng = np.random.default_rng(4)
+    arrays = {
+        "u_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "v_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "w_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "terrain": rng.standard_normal((4, 4)).astype("float32"),
+        "k_first": np.zeros((4, 4), dtype="int16"),
+        "z_cc": np.linspace(0.0, 100.0, 6),
+        "levels": np.asarray([5.0, 10, 20, 40, 80, 160, 400, 900, 2000]),
+    }
+    sid = "w:00@000"
+    np.savez_compressed(tmp_path / "shard_00000.npz",
+                        **{f"{sid}|{k}": v for k, v in arrays.items()})
+    man = {
+        "shards": 1,
+        "samples": [
+            {"id": sid, "derived": False, "fold": "train", "has_3d": False},
+            {"id": "w:00@180", "derived": True, "derived_from": sid,
+             "fold": "train", "has_3d": False},
+        ],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(man))
+    return bd
+
+
+def test_the_reader_materialises_the_reverse_directions(tmp_path):
+    """Four directions on disk, eight to a consumer."""
+    bd = _fake_dataset(tmp_path)
+    got = list(bd.load_dataset(str(tmp_path)))
+    assert len(got) == 2
+    assert sum(1 for i, _ in got if i["derived"]) == 1
+
+
+def test_the_reader_negates_velocity_and_not_geometry(tmp_path):
+    """The failure this guards against would flip the ground upside down
+    and still look plausible in a loss curve."""
+    bd = _fake_dataset(tmp_path)
+    d = {i["id"]: a for i, a in bd.load_dataset(str(tmp_path))}
+    a, b = d["w:00@000"], d["w:00@180"]
+    for k in ("u_lev", "v_lev", "w_lev"):
+        assert np.array_equal(b[k], -a[k]), k
+    for k in ("terrain", "k_first", "z_cc", "levels"):
+        assert np.array_equal(b[k], a[k]), k
+
+
+def test_the_reader_filters_by_fold(tmp_path):
+    bd = _fake_dataset(tmp_path)
+    assert len(list(bd.load_dataset(str(tmp_path), fold="train"))) == 2
+    assert len(list(bd.load_dataset(str(tmp_path), fold="test"))) == 0
