@@ -506,8 +506,17 @@ def test_the_committed_manifest_is_free_of_leakage():
 
 @needs_manifest
 def test_every_window_belongs_to_its_site_fold():
+    """Every SPLIT window's fold comes from its site's cluster assignment.
+
+    Demo windows are excluded on purpose: they are not in the split, take
+    no share of the fractions, and their sites are deliberately absent from
+    fold_of -- that absence is what stops them being trained on.
+    """
     manifest = corpus.load_manifest()
     for w in manifest["windows"]:
+        if w["fold"] == corpus.DEMO_FOLD:
+            assert w["site"] not in manifest["fold_of"], w["id"]
+            continue
         assert w["fold"] == manifest["fold_of"][w["site"]], w["id"]
 
 
@@ -587,8 +596,11 @@ def test_the_manifest_is_the_one_build_corpus_would_write_today():
         radius_km=committed["cluster_radius_km"])
     assert rebuilt["folds"] == committed["folds"]
     assert rebuilt["sites"] == committed["sites"]
-    assert [w["id"] for w in rebuilt["windows"]] == \
-        [w["id"] for w in committed["windows"]]
+    # Only the split windows: --demo appends its own afterwards, and
+    # rebuilding the split does not and should not reproduce them.
+    committed_split = [w["id"] for w in committed["windows"]
+                       if w["fold"] != corpus.DEMO_FOLD]
+    assert [w["id"] for w in rebuilt["windows"]] == committed_split
 
 
 @needs_manifest
@@ -763,3 +775,67 @@ def test_the_reader_refuses_a_directory_with_no_manifest(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="no manifest"):
         list(bd.load_dataset(str(tmp_path)))
+
+
+# ---------------------------------------------------------------------------
+# The demonstration sites: unseen terrain that is not in the split at all.
+# ---------------------------------------------------------------------------
+
+def test_demo_sites_are_not_in_the_reference_list():
+    """The point of them. A held-out row from the same CSV is a weaker
+    claim than a site the corpus never contained."""
+    ref = casegen.read_reference()
+    for c in corpus.demo_sites():
+        assert c.slug not in ref, f"{c.slug} is in the reference CSV"
+
+
+def test_demo_sites_take_no_share_of_the_split():
+    assert corpus.DEMO_FOLD not in corpus.FOLDS
+    assert corpus.DEMO_FOLD not in corpus.DEFAULT_FRACTIONS
+
+
+@needs_manifest
+def test_demo_windows_are_far_from_every_fold(): 
+    """Checked against EVERY fold, not just training.
+
+    A demo site next to a TEST site would make the test result look better
+    than it is, which is the subtler of the two failures and the easier one
+    to miss.
+    """
+    far = corpus.assert_demo_is_unseen()
+    for km, slug, near, fold in far:
+        assert km >= corpus.CLUSTER_RADIUS_KM, (slug, near, fold, km)
+
+
+def test_a_demo_site_too_close_to_the_corpus_is_refused():
+    """The guard, seen to fire.
+
+    Mosquito Fire 2022 sits 45 km from King Fire, which is in training --
+    inside the clustering radius the whole leakage design rests on. It was
+    rejected for exactly this reason.
+    """
+    manifest = {"fold_of": {"king_fire": "train"}}
+    saved = dict(corpus.DEMO_SITES)
+    try:
+        corpus.DEMO_SITES.clear()
+        corpus.DEMO_SITES["mosquito_fire"] = {
+            "name": "Mosquito", "state": "California", "year": 2022,
+            "lat": 39.02, "lon": -120.75}
+        with pytest.raises(ValueError, match="not unseen terrain"):
+            corpus.assert_demo_is_unseen(manifest=manifest)
+    finally:
+        corpus.DEMO_SITES.clear()
+        corpus.DEMO_SITES.update(saved)
+
+
+@needs_manifest
+def test_demo_windows_carry_the_demo_fold_and_nothing_else_does():
+    manifest = corpus.load_manifest()
+    demo = [w for w in manifest["windows"]
+            if w["fold"] == corpus.DEMO_FOLD]
+    assert demo, "no demo windows in the manifest"
+    sites = {w["site"] for w in demo}
+    assert sites == set(corpus.DEMO_SITES)
+    # and no demo site appears in the split
+    for s in sites:
+        assert s not in manifest["fold_of"]
