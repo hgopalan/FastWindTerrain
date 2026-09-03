@@ -621,6 +621,93 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2.0 * EARTH_R_KM * math.asin(math.sqrt(min(1.0, h)))
 
 
+# ---------------------------------------------------------------------------
+# The demonstration sites
+#
+# Fires that are in NEITHER the training nor the test set, and not in the
+# reference CSV at all. The point of the paper is a prediction on terrain
+# the network has never seen, and a held-out row from the same list is a
+# weaker version of that claim than a site the corpus never contained.
+#
+# Both were chosen against two hard criteria, measured rather than assumed:
+#
+#   FAR ENOUGH. Distance to the nearest corpus site of ANY fold, since
+#   contaminating the test set would be as bad as contaminating training.
+#   Mosquito 2022 (45 km from King, training), Caldor 2021 (25 km from
+#   King), Camp 2018 (10 km from Park, test) and Dolan 2020 (42 km from
+#   Soberanes, test) were all rejected on this -- every one sits inside the
+#   50 km radius the whole leakage design rests on.
+#
+#   SIMILAR ENOUGH. Every terrain descriptor inside the range the TRAINING
+#   fold spans. A site rougher or steeper than anything trained on tests
+#   extrapolation, which is a different and weaker claim. KNP Complex 2021
+#   was rejected here: 1644 m of relief against a training maximum of
+#   1378 m.
+#
+# What each one adds:
+#
+#   chetco_bar      210 km from the nearest corpus site, and in the Klamath
+#                   /Siskiyou range -- a mountain system NOTHING in training
+#                   comes from. The strongest single unseen claim.
+#   cameron_peak    Colorado Front Range. Training is 16 of 18 California
+#                   sites, so this is the one that tests whether the map is
+#                   California-specific rather than terrain-general.
+#
+# COORDINATES ARE APPROXIMATE FIRE CENTROIDS and should be checked against
+# the actual burn perimeters before the figures are made: a few kilometres
+# either way changes which canyon is being demonstrated on.
+DEMO_SITES = {
+    "chetco_bar": {
+        "name": "Chetco Bar", "state": "Oregon", "year": 2017,
+        "lat": 42.28, "lon": -124.02,
+    },
+    "cameron_peak": {
+        "name": "Cameron Peak", "state": "Colorado", "year": 2020,
+        "lat": 40.60, "lon": -105.88,
+    },
+}
+
+#: The fold demo sites carry. Deliberately not one of FOLDS: they are not
+#: part of the split, take no share of the fractions, and must never be
+#: trained or validated on.
+DEMO_FOLD = "demo"
+
+
+def demo_sites():
+    """The demonstration sites as Cases, in a stable order."""
+    return [casegen.Case(slug=k, **v) for k, v in sorted(DEMO_SITES.items())]
+
+
+def assert_demo_is_unseen(radius_km=None, manifest=None):
+    """Refuse a demo site that is too close to anything in the corpus.
+
+    The guard that makes the demonstration mean what it says. Checked
+    against EVERY fold, not just training -- a demo site sitting next to a
+    test site would make the test result look better than it is, which is
+    the subtler of the two failures.
+    """
+    radius_km = CLUSTER_RADIUS_KM if radius_km is None else radius_km
+    manifest = load_manifest() if manifest is None else manifest
+    ref = casegen.read_reference()
+
+    worst = []
+    for d in demo_sites():
+        near, near_d, near_fold = None, 1e9, None
+        for slug, fold in manifest["fold_of"].items():
+            r = ref[slug]
+            km = haversine_km(d.lat, d.lon, r["lat"], r["lon"])
+            if km < near_d:
+                near, near_d, near_fold = slug, km, fold
+        if near_d < radius_km:
+            raise ValueError(
+                f"demo site {d.slug} is {near_d:.1f} km from {near} "
+                f"({near_fold}), inside the {radius_km:.0f} km clustering "
+                f"radius. It is not unseen terrain, and a result on it "
+                f"would not mean what the paper says it means.")
+        worst.append((near_d, d.slug, near, near_fold))
+    return sorted(worst)
+
+
 def candidate_sites(path=casegen.REFERENCE_CSV):
     """Every row of the reference CSV as a Case, in file order.
 

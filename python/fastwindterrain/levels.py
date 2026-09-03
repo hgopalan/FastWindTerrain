@@ -89,11 +89,26 @@ DEFAULT_LEVELS = ENGINEERING_LEVELS + ALOFT_LEVELS
 RECOMMENDED_LEVELS = (10.0, 20.0, 40.0, 80.0, 160.0, 345.0, 743.0, 1600.0)
 
 #: The band the engineering levels live in, and the base of the set.
-BAND_BASE_M = 10.0
+#:
+#: The base is 5 m, not the 10 m phase 19 settled on. Adding a level there
+#: costs one output channel and recovers 12-29 % of the 0-50 m band error,
+#: which is the worst band on every window and the one the deliverable
+#: lives in -- measured across eight corpus windows in
+#: cases/revalidate_levels.py.
+#:
+#: It also lands exactly: 5, 10, 20, 40, 80, 160 is geomspace(5, 160, 6)
+#: with a ratio of exactly 2, so the extra level extends the octave
+#: sequence downward rather than disturbing it.
+#:
+#: IT MUST BE AN EXTRA LEVEL, NOT A SUBSTITUTION. Taking it out of a fixed
+#: budget costs the aloft level it displaces, and that takes the column
+#: error from 0.114 to 0.392 m/s on carr_fire:12. n_band goes up; n_aloft
+#: stays.
+BAND_BASE_M = 5.0
 BAND_TOP_M = 160.0
 
 
-def recommended_levels(top_agl, n_band=5, n_aloft=3, base=BAND_BASE_M,
+def recommended_levels(top_agl, n_band=6, n_aloft=3, base=BAND_BASE_M,
                        band_top=BAND_TOP_M):
     """The recommended set, with its TOP LEVEL SCALED TO THE COLUMN.
 
@@ -126,10 +141,10 @@ def recommended_levels(top_agl, n_band=5, n_aloft=3, base=BAND_BASE_M,
     ``prob_hi[2]`` minus the LOWEST terrain, since that is the deepest
     column and the one with the most to reconstruct.
 
-    Structure, preserved from the tuned set: ``n_band`` levels geometrically
-    spaced across 10-160 m (exact octaves at the default of 5, and the set
-    still contains 10, 80 and 160 m outright), then ``n_aloft`` continuing
-    geometrically from 160 m to ``top_agl``.
+    Structure: ``n_band`` levels geometrically spaced from ``base`` to
+    160 m -- exact octaves at the defaults, 5/10/20/40/80/160, so the set
+    contains 10, 80 and 160 m outright -- then ``n_aloft`` continuing
+    geometrically from 160 m to ``top_agl``. Nine levels in all.
     """
     if top_agl <= band_top:
         raise ValueError(

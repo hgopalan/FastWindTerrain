@@ -419,6 +419,13 @@ def build_manifest(fractions=None, seed=corpus.DEFAULT_SEED,
     # before the measurement is distinguishable from one built after it.
     solvability = read_solvability(corpus_dir)
 
+    # Demo-site surveys live in the same directory but are NOT part of the
+    # split: they are not in the reference list, take no share of the
+    # fractions, and their absence from fold_of is what stops them being
+    # trained on. --demo appends them afterwards.
+    surveys = {k: v for k, v in surveys.items()
+               if k not in corpus.DEMO_SITES}
+
     rejected, accepted, keep = {}, {}, {}
     for slug, survey in surveys.items():
         ok, reason, kept = corpus.screen_site(survey, solvability=solvability)
@@ -500,6 +507,63 @@ def descriptor_coverage(manifest, stream=None):
                 continue
             print(f"    {fold:6s} {v.min():10.3f} {np.median(v):10.3f} "
                   f"{v.max():10.3f}", file=out)
+
+
+def run_demo(args):
+    """Survey the demonstration sites and append them to the manifest.
+
+    They are NOT part of the split: they take no share of the fractions,
+    carry corpus.DEMO_FOLD, and assert_demo_is_unseen refuses any that sits
+    inside the clustering radius of a corpus site of any fold.
+    """
+    manifest = corpus.load_manifest()
+    far = corpus.assert_demo_is_unseen(manifest=manifest)
+    print("demo sites, and the nearest corpus terrain to each:")
+    for km, slug, near, fold in far:
+        print(f"  {slug:16s} {km:7.1f} km from {near} ({fold})")
+    print()
+
+    windows = [w for w in manifest["windows"]
+               if w.get("fold") != corpus.DEMO_FOLD]
+    added = 0
+    for case in corpus.demo_sites():
+        path = corpus.site_survey_path(case.slug)
+        if os.path.isfile(path) and not args.force:
+            print(f"{case.slug:16s} already surveyed")
+            survey = json.load(open(path))
+        else:
+            t0 = time.time()
+            print(f"{case.slug:16s} downloading ... ", end="", flush=True)
+            survey = survey_site(case, subsample=args.subsample,
+                                 keep_tile=not args.no_tile)
+            print(f"{survey['relief']:.0f} m relief, "
+                  f"{time.time() - t0:.1f} s")
+
+        ok, reason, kept = corpus.screen_site(survey)
+        if not ok:
+            raise RuntimeError(
+                f"{case.slug} fails the same screen the corpus uses: "
+                f"{reason}. A demonstration site has to clear the bar the "
+                f"training data cleared.")
+
+        for w in survey["windows"]:
+            if w["id"] not in set(kept):
+                continue
+            e = dict(w)
+            e["fold"] = corpus.DEMO_FOLD
+            windows.append(e)
+            added += 1
+
+    manifest["windows"] = windows
+    manifest["demo_sites"] = sorted(corpus.DEMO_SITES)
+    manifest["demo_nearest_km"] = {s: round(km, 1)
+                                   for km, s, _, _ in far}
+    with open(corpus.MANIFEST, "w") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print(f"\nadded {added} demo windows to "
+          f"{os.path.relpath(corpus.MANIFEST, ROOT)}")
+    return 0
 
 
 def run_split(args):
@@ -636,6 +700,9 @@ def main(argv=None):
                       help="cluster and split the surveyed sites (offline)")
     mode.add_argument("--summary", action="store_true",
                       help="print the existing manifest")
+    mode.add_argument("--demo", action="store_true",
+                      help="survey the demonstration sites and add them to "
+                           "the manifest under the demo fold")
     mode.add_argument("--check", action="store_true",
                       help="solve a sample of windows and check them")
     mode.add_argument("--solvability", action="store_true",
@@ -677,6 +744,8 @@ def main(argv=None):
         return run_survey(args)
     if args.split:
         return run_split(args)
+    if args.demo:
+        return run_demo(args)
     if args.check:
         return run_check(args)
     if args.solvability:

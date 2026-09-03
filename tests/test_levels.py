@@ -321,7 +321,10 @@ def test_recommended_levels_reproduces_the_tuned_set_at_its_own_column():
     levels rounded to whole metres (345 and 743 against 344.71 and
     742.654), which is how they were written down.
     """
-    got = lv.recommended_levels(1600.0)
+    # RECOMMENDED_LEVELS is the phase 19 set: eight levels from 10 m. The
+    # default is now nine from 5 m, so the historic set comes back by
+    # asking for its own shape.
+    got = lv.recommended_levels(1600.0, n_band=5, base=10.0)
     assert np.allclose(got, lv.RECOMMENDED_LEVELS, rtol=1e-3)
 
 
@@ -342,8 +345,10 @@ def test_the_band_is_unchanged_whatever_the_column():
     identical with and without the extra aloft levels."""
     a = lv.recommended_levels(1600.0)
     b = lv.recommended_levels(3200.0)
-    assert np.allclose(a[:5], b[:5], rtol=0, atol=1e-12)
-    assert np.allclose(a[:5], lv.RECOMMENDED_LEVELS[:5], rtol=1e-12)
+    n = 6                                   # the band, at the new default
+    assert np.allclose(a[:n], b[:n], rtol=0, atol=1e-12)
+    assert np.allclose(a[:n], (5.0, 10.0, 20.0, 40.0, 80.0, 160.0),
+                       rtol=1e-12)
 
 
 def test_levels_stay_sorted_and_positive():
@@ -477,3 +482,20 @@ def test_log_blend_leaves_solid_cells_empty():
     out = lv.log_blend_correction(f, z_cc, zt, mask, anchor_agl=80.0,
                                   dx=dx, dy=dy)
     assert np.all(out[:, mask == 1] == 0.0)
+
+
+def test_the_default_set_is_nine_levels_from_five_metres():
+    """The 5 m level buys 12-29% of the 0-50 m band -- the worst band on
+    every corpus window, and the one the deliverable lives in. It has to
+    be an EXTRA level: taken out of a fixed budget it costs the aloft
+    level it displaces and the column error more than triples."""
+    lvls = lv.recommended_levels(2738.0)
+    assert len(lvls) == 9
+    assert lvls[0] == 5.0
+    # The band stays exact octaves, so the extra level extends the
+    # sequence downward rather than disturbing it.
+    band = np.array(lvls[:6])
+    assert np.allclose(band, (5.0, 10.0, 20.0, 40.0, 80.0, 160.0))
+    assert np.allclose(band[1:] / band[:-1], 2.0)
+    # And the aloft count is unchanged: n_band went up, n_aloft did not.
+    assert len(lvls) - 6 == 3

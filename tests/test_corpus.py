@@ -506,8 +506,17 @@ def test_the_committed_manifest_is_free_of_leakage():
 
 @needs_manifest
 def test_every_window_belongs_to_its_site_fold():
+    """Every SPLIT window's fold comes from its site's cluster assignment.
+
+    Demo windows are excluded on purpose: they are not in the split, take
+    no share of the fractions, and their sites are deliberately absent from
+    fold_of -- that absence is what stops them being trained on.
+    """
     manifest = corpus.load_manifest()
     for w in manifest["windows"]:
+        if w["fold"] == corpus.DEMO_FOLD:
+            assert w["site"] not in manifest["fold_of"], w["id"]
+            continue
         assert w["fold"] == manifest["fold_of"][w["site"]], w["id"]
 
 
@@ -587,8 +596,11 @@ def test_the_manifest_is_the_one_build_corpus_would_write_today():
         radius_km=committed["cluster_radius_km"])
     assert rebuilt["folds"] == committed["folds"]
     assert rebuilt["sites"] == committed["sites"]
-    assert [w["id"] for w in rebuilt["windows"]] == \
-        [w["id"] for w in committed["windows"]]
+    # Only the split windows: --demo appends its own afterwards, and
+    # rebuilding the split does not and should not reproduce them.
+    committed_split = [w["id"] for w in committed["windows"]
+                       if w["fold"] != corpus.DEMO_FOLD]
+    assert [w["id"] for w in rebuilt["windows"]] == committed_split
 
 
 @needs_manifest
@@ -658,3 +670,172 @@ def test_the_solver_really_is_odd_in_the_inflow(amrex):
     assert worst / scale < 1e-12, (
         f"reversing the wind is not exactly a negation: {worst/scale:.2e} "
         f"relative. INDEPENDENT_DIRECTIONS assumes it is.")
+
+
+# ---------------------------------------------------------------------------
+# The dataset format (cases/build_dataset.py). The reader is what the
+# training harness will use, so its invariants are asserted here.
+# ---------------------------------------------------------------------------
+
+def _fake_dataset(tmp_path):
+    """A two-sample dataset on disk, one solved and one derived."""
+    import build_dataset as bd
+
+    rng = np.random.default_rng(4)
+    arrays = {
+        "u_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "v_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "w_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+        "terrain": rng.standard_normal((4, 4)).astype("float32"),
+        "k_first": np.zeros((4, 4), dtype="int16"),
+        "z_cc": np.linspace(0.0, 100.0, 6),
+        "levels": np.asarray([5.0, 10, 20, 40, 80, 160, 400, 900, 2000]),
+    }
+    sid = "w:00@000"
+    np.savez_compressed(tmp_path / "shard_00000.npz",
+                        **{f"{sid}|{k}": v for k, v in arrays.items()})
+    man = {
+        "shards": 1,
+        "samples": [
+            {"id": sid, "derived": False, "fold": "train", "has_3d": False},
+            {"id": "w:00@180", "derived": True, "derived_from": sid,
+             "fold": "train", "has_3d": False},
+        ],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(man))
+    return bd
+
+
+def test_the_reader_materialises_the_reverse_directions(tmp_path):
+    """Four directions on disk, eight to a consumer."""
+    bd = _fake_dataset(tmp_path)
+    got = list(bd.load_dataset(str(tmp_path)))
+    assert len(got) == 2
+    assert sum(1 for i, _ in got if i["derived"]) == 1
+
+
+def test_the_reader_negates_velocity_and_not_geometry(tmp_path):
+    """The failure this guards against would flip the ground upside down
+    and still look plausible in a loss curve."""
+    bd = _fake_dataset(tmp_path)
+    d = {i["id"]: a for i, a in bd.load_dataset(str(tmp_path))}
+    a, b = d["w:00@000"], d["w:00@180"]
+    for k in ("u_lev", "v_lev", "w_lev"):
+        assert np.array_equal(b[k], -a[k]), k
+    for k in ("terrain", "k_first", "z_cc", "levels"):
+        assert np.array_equal(b[k], a[k]), k
+
+
+def test_the_reader_filters_by_fold(tmp_path):
+    bd = _fake_dataset(tmp_path)
+    assert len(list(bd.load_dataset(str(tmp_path), fold="train"))) == 2
+    assert len(list(bd.load_dataset(str(tmp_path), fold="test"))) == 0
+
+
+def test_the_reader_stitches_several_workers_together(tmp_path):
+    """The layout a real run produces: one shard file and one manifest per
+    worker, dealt round-robin, all in one directory.
+
+    Worth its own test because the single-worker layout is what a smoke
+    run exercises, and the naming differs -- shard_NN_MMMMM.npz and
+    manifest_NN.json against shard_MMMMM.npz and manifest.json. A reader
+    that only understood the smoke layout would return an empty dataset
+    from a real run, which looks like a training bug rather than an I/O
+    one.
+    """
+    import build_dataset as bd
+
+    rng = np.random.default_rng(7)
+    for part in range(3):
+        sid = f"w:{part}0@000"
+        arrays = {
+            "u_lev": rng.standard_normal((9, 4, 4)).astype("float32"),
+            "terrain": rng.standard_normal((4, 4)).astype("float32"),
+        }
+        np.savez_compressed(tmp_path / f"shard_{part:02d}_00000.npz",
+                            **{f"{sid}|{k}": v for k, v in arrays.items()})
+        man = {"shards": 1, "samples": [
+            {"id": sid, "derived": False, "fold": "train", "has_3d": False},
+            {"id": f"w:{part}0@180", "derived": True, "derived_from": sid,
+             "fold": "train", "has_3d": False},
+        ]}
+        (tmp_path / f"manifest_{part:02d}.json").write_text(json.dumps(man))
+
+    got = list(bd.load_dataset(str(tmp_path)))
+    assert len(got) == 6, "three workers x two directions"
+    assert len({i["id"] for i, _ in got}) == 6
+    # And the derived halves still negate velocity only.
+    d = {i["id"]: a for i, a in got}
+    assert np.array_equal(d["w:10@180"]["u_lev"], -d["w:10@000"]["u_lev"])
+    assert np.array_equal(d["w:10@180"]["terrain"], d["w:10@000"]["terrain"])
+
+
+def test_the_reader_refuses_a_directory_with_no_manifest(tmp_path):
+    import build_dataset as bd
+
+    with pytest.raises(FileNotFoundError, match="no manifest"):
+        list(bd.load_dataset(str(tmp_path)))
+
+
+# ---------------------------------------------------------------------------
+# The demonstration sites: unseen terrain that is not in the split at all.
+# ---------------------------------------------------------------------------
+
+def test_demo_sites_are_not_in_the_reference_list():
+    """The point of them. A held-out row from the same CSV is a weaker
+    claim than a site the corpus never contained."""
+    ref = casegen.read_reference()
+    for c in corpus.demo_sites():
+        assert c.slug not in ref, f"{c.slug} is in the reference CSV"
+
+
+def test_demo_sites_take_no_share_of_the_split():
+    assert corpus.DEMO_FOLD not in corpus.FOLDS
+    assert corpus.DEMO_FOLD not in corpus.DEFAULT_FRACTIONS
+
+
+@needs_manifest
+def test_demo_windows_are_far_from_every_fold(): 
+    """Checked against EVERY fold, not just training.
+
+    A demo site next to a TEST site would make the test result look better
+    than it is, which is the subtler of the two failures and the easier one
+    to miss.
+    """
+    far = corpus.assert_demo_is_unseen()
+    for km, slug, near, fold in far:
+        assert km >= corpus.CLUSTER_RADIUS_KM, (slug, near, fold, km)
+
+
+def test_a_demo_site_too_close_to_the_corpus_is_refused():
+    """The guard, seen to fire.
+
+    Mosquito Fire 2022 sits 45 km from King Fire, which is in training --
+    inside the clustering radius the whole leakage design rests on. It was
+    rejected for exactly this reason.
+    """
+    manifest = {"fold_of": {"king_fire": "train"}}
+    saved = dict(corpus.DEMO_SITES)
+    try:
+        corpus.DEMO_SITES.clear()
+        corpus.DEMO_SITES["mosquito_fire"] = {
+            "name": "Mosquito", "state": "California", "year": 2022,
+            "lat": 39.02, "lon": -120.75}
+        with pytest.raises(ValueError, match="not unseen terrain"):
+            corpus.assert_demo_is_unseen(manifest=manifest)
+    finally:
+        corpus.DEMO_SITES.clear()
+        corpus.DEMO_SITES.update(saved)
+
+
+@needs_manifest
+def test_demo_windows_carry_the_demo_fold_and_nothing_else_does():
+    manifest = corpus.load_manifest()
+    demo = [w for w in manifest["windows"]
+            if w["fold"] == corpus.DEMO_FOLD]
+    assert demo, "no demo windows in the manifest"
+    sites = {w["site"] for w in demo}
+    assert sites == set(corpus.DEMO_SITES)
+    # and no demo site appears in the split
+    for s in sites:
+        assert s not in manifest["fold_of"]
