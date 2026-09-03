@@ -840,3 +840,189 @@ Reproducing it
 About thirty seconds for the test fold. It scores only the solved half:
 the derived samples are exact negations and both the baseline and the
 stitch are odd in the wind direction, so they measure identically.
+
+Where in the column the floor error lives
+-----------------------------------------
+
+``--by-height`` breaks the same samples down by height above ground. The
+question is not how error varies with height but whether it lands where
+the answer is wanted.
+
+==========  ========  ========  ==========  ==========
+band (AGL)      RMSE       p95    max cell    baseline
+==========  ========  ========  ==========  ==========
+0-10 m         0.372     0.760       8.749       2.179
+10-50 m        0.187     0.397       4.351       1.593
+50-160 m       0.128     0.258       5.576       1.644
+160-500 m      0.048     0.096       2.134       1.585
+500+ m         0.093     0.189       2.482       0.984
+==========  ========  ========  ==========  ==========
+
+**The error is worst at the surface, on every statistic.** It is not
+concentrated aloft, which would have been the comfortable answer: the
+floor falls monotonically from 0.372 m/s at the surface to 0.048 m/s at
+160-500 m, then rises again above 500 m where the aloft levels are widely
+spaced.
+
+**But the cause is extrapolation, not resolution.** Splitting the column
+at the lowest level, 5 m AGL:
+
+==============================================  ==========  ============
+region                                                RMSE   fluid cells
+==============================================  ==========  ============
+below the lowest level -- log-law FILL               0.467         1.4 %
+at or above it -- INTERPOLATED                       0.112        98.6 %
+==============================================  ==========  ============
+
+The fill is **4.2x** the interpolated error. Nothing between the levels is
+struggling; the whole near-surface penalty is the log law imposed below
+the lowest one -- the same wrong-shape-near-the-surface mechanism that
+made ``log_blend_correction`` a negative result, confirmed here from a
+different direction.
+
+**In relative terms it is inside tolerance.** Below 5 m the mean speed is
+4.25 m/s against 0.467 m/s of error: **11.7 %**, worst sample 20.7 %.
+Judged in m/s alone the surface band looks like a failure; judged against
+the 20-30 % that turbulent flow carries in the field, it is not. Convert
+before concluding.
+
+**Name the statistic every time.** The single worst cell runs 23-44x the
+RMSE in every band. That is the same phenomenon that killed warm starting
+-- ~1.3 % RMSE against ~44 % max-norm error -- so a max-norm criterion
+will always look alarming here while an RMSE one looks fine. Neither is
+wrong; they measure different things.
+
+One experiment this suggests for the training phase: **add a level below
+5 m**, so the bottom cell is interpolated rather than extrapolated. One
+extra output channel, aimed at the only band outside tolerance in
+absolute terms.
+
+How much of the domain is over half a metre per second
+------------------------------------------------------
+
+An RMSE of 0.19 m/s can be a uniform 0.19 or a quiet field with two per
+cent of it at 1.5 m/s, and those are different problems with different
+fixes. ``cases/error_maps.py --histogram`` bins the absolute vector error
+per level over the whole test fold.
+
+========  ==========  ==========  ============
+level           slab    over 0.5      over 1.0
+========  ==========  ==========  ============
+5 m            0-7 m     13.78 %        2.81 %
+10 m          7-14 m      2.65 %        0.13 %
+20 m         14-28 m      3.68 %        0.66 %
+40 m         28-57 m      4.86 %        1.13 %
+80 m        57-113 m      2.13 %        0.40 %
+160 m      113-261 m      0.64 %        0.09 %
+312 m      261-691 m      0.10 %        0.01 %
+607 m     691-1831 m      1.00 %        0.07 %
+1184 m      1831-top      2.18 %        0.12 %
+all                       1.60 %        0.24 %
+========  ==========  ==========  ============
+
+**98.4 % of all fluid cells are under 0.5 m/s.** The reconstruction is
+not marginal; it is good nearly everywhere and bad in a small, locatable
+minority.
+
+**The tail tracks slab thickness, not height.** 40 m is the second-worst
+level, worse than 10 or 20 m, because it owns 28-57 m -- the widest gap
+inside the band, so its cells sit farthest from any stored level. The
+same effect appears at 607 and 1184 m aloft. Only the 5 m level breaks
+the pattern, and that one is the log-law fill rather than interpolation.
+
+For contrast, the undisturbed baseline has just **19.1 %** of cells under
+0.5 m/s at 5 m and 30.9 % over 2.0. The terrain-blind profile is not
+merely worse on average near the ground; it is wrong almost everywhere.
+
+Maps rather than numbers
+------------------------
+
+``cases/error_maps.py`` draws the same error as one panel per level. The
+stitch reproduces the stored values exactly AT a level, so a map at 80 m
+would be zero by construction; each level is instead given the slab
+between the geometric midpoints either side of it -- geometric because
+the levels are octaves, so the midpoint between 40 and 80 m belongs at
+57 m, not 60.
+
+What they show, on ``ditch_fire:10`` (1970 m relief, the steepest window
+in the corpus):
+
+* the near-surface panels are **speckled, not patterned** -- those slabs
+  are one or two cells deep, and the error is isolated cells rather than
+  a coherent field. That is the same thing the 23-44x max-to-RMSE ratio
+  says, and it is why a max-norm criterion is the wrong one here;
+* from 40 m upward the error becomes clearly **terrain-following**,
+  concentrating on the steepest quadrant and along ridge lines. That part
+  is structured, which is what makes it learnable;
+* a column with no cell in a slab is drawn flat grey, not white. The two
+  must not be confused: no data is not zero error.
+
+Does the error follow the slope?
+--------------------------------
+
+``cases/slope_error.py`` correlates the per-column error against three
+descriptors of the ground beneath it, over the whole test fold. Pearson
+r, with the mean error on near-flat columns for scale. "slope" is the
+slope magnitude ``sqrt(dh/dx^2 + dh/dy^2)``:
+
+========  ==========  ============  ===========  ===========
+level         slope     along-wind    curvature  flat-ground
+========  ==========  ============  ===========  ===========
+5 m            0.241        -0.003       -0.035        0.230
+10 m           0.133         0.008        0.081        0.121
+20 m           0.498        -0.010        0.179        0.042
+40 m           0.563        -0.027        0.108        0.031
+80 m           0.547        -0.045        0.031        0.022
+160 m          0.549        -0.060       -0.005        0.014
+312 m          0.716        -0.074        0.022        0.011
+607 m          0.706        -0.065        0.008        0.022
+1184 m         0.654        -0.050        0.108        0.036
+========  ==========  ============  ===========  ===========
+
+**Slope magnitude predicts the error, and predicts it strongly** --
+r = 0.50 to 0.72 at every level from 20 m up. That is the single most
+useful feature a network could be given.
+
+**The along-wind slope correlates at essentially zero, and that is not
+the absence of a pattern.** The dependence is a clean symmetric V with
+its minimum at zero slope: 0.031 m/s on flat ground at 40 m rising to
+0.62 m/s at a slope of 1.3, and the same on both sides. Pearson r reads a
+U-shape as no correlation. This is why the binned means are the primary
+output of that script and r is only a summary -- read alone, r would have
+said the wind direction does not matter, when what it actually shows is
+that only the *magnitude* does.
+
+**Lee and windward faces are indistinguishable**, where the along-wind
+slope exceeds 0.2 in magnitude:
+
+========  =========  ==========  ==========
+level           lee    windward    lee/wind
+========  =========  ==========  ==========
+5 m           0.414       0.421        0.98
+20 m          0.293       0.302        0.97
+40 m          0.407       0.403        1.01
+80 m          0.294       0.283        1.04
+160 m         0.170       0.161        1.06
+1184 m        0.314       0.304        1.03
+========  =========  ==========  ==========
+
+That deserves to be stated rather than passed over. A momentum solver
+would separate in the lee and the two columns would differ strongly. A
+mass-consistent solver has no momentum equation and cannot separate, so
+orientation-independence is what its physics predicts, and the
+measurement confirms it. A surrogate trained on this data is learning an
+orientation-independent operator because the operator is one.
+
+**The two lowest levels break the pattern in the established way.** Their
+slope correlation is weak (0.24 and 0.13) and they carry a large error
+floor on flat ground -- 0.230 and 0.121 m/s where every level above sits
+at 0.011 to 0.042. That is the log-law fill: a systematic offset, not a
+terrain effect. It is the third independent confirmation of the same
+mechanism, after the by-height split and the negative
+``log_blend_correction`` result.
+
+**Curvature adds nothing** (``|r|`` at most 0.18 everywhere).
+
+Two consequences for the training phase: feed the network **slope
+magnitude**, not a signed or directional slope; and do not spend a
+channel on curvature.

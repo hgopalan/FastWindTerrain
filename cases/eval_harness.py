@@ -58,6 +58,14 @@ PRIOR = {
     "reconstruction": (0.06, 0.29),
 }
 
+#: Height-above-ground bands for --by-height, in metres. Split around the
+#: engineering band rather than uniformly: the question is not "how does
+#: error vary with height" but "does it land where the answer is wanted".
+#: 0-10 m is the sub-grid end, 10-160 m is the deliverable, and everything
+#: above it is air nobody is asking about.
+AGL_BANDS = [(0.0, 10.0), (10.0, 50.0), (50.0, 160.0),
+             (160.0, 500.0), (500.0, float("inf"))]
+
 
 def main(argv=None):
     import numpy as np
@@ -75,12 +83,17 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--csv", default=None, metavar="PATH",
                    help="also write the per-sample rows")
+    p.add_argument("--by-height", action="store_true",
+                   help="also break the error down by height above ground. "
+                        "The question this answers is whether the error "
+                        "lives where the deliverable is -- error concentrated "
+                        "aloft is cheap, error at 10 m is not")
     args = p.parse_args(argv)
 
     man = corpus.load_manifest()
     relief = {w["id"]: float(w["relief"]) for w in man["windows"]}
 
-    rows, t0 = [], time.time()
+    rows, by_height, t0 = [], {}, time.time()
     for info, a in bd.load_dataset(args.data, fold=args.fold, with_3d=True):
         # The derived half is the exact negation of its partner, and both
         # the baseline and the stitch are odd in the wind direction, so it
@@ -111,6 +124,17 @@ def main(argv=None):
                             dx=dx, dy=dy)
             for k in ("u_lev", "v_lev", "w_lev")])
         e_recon = E.error_stats(stitched, ref, sel=fluid)
+
+        if args.by_height:
+            agl = L.height_above_ground(z_cc, zt)
+            for lo, hi in AGL_BANDS:
+                sel = fluid & (agl >= lo) & (agl < hi)
+                if not sel.any():
+                    continue
+                by_height.setdefault((lo, hi), []).append((
+                    E.error_stats(base, ref, sel=sel)["rmse"],
+                    E.error_stats(stitched, ref, sel=sel)["rmse"],
+                    int(sel.sum())))
 
         wid = info["id"].split("@")[0]
         rows.append({
@@ -149,6 +173,33 @@ def main(argv=None):
         print(E.table(E.group_by_relief(rows, key=key),
                       ["group", "relief", "n", "mean", "worst"], W))
         print()
+
+    if by_height:
+        print("BY HEIGHT ABOVE GROUND -- does the error land where the "
+              "answer is wanted?")
+        hrows = []
+        for lo, hi in AGL_BANDS:
+            got = by_height.get((lo, hi))
+            if not got:
+                continue
+            b = [x[0] for x in got]
+            f = [x[1] for x in got]
+            hrows.append({
+                "band": f"{lo:.0f}-{hi:.0f} m" if np.isfinite(hi)
+                        else f"{lo:.0f}+ m",
+                "n": len(got),
+                "cells": int(np.mean([x[2] for x in got])),
+                "baseline": float(np.mean(b)),
+                "floor": float(np.mean(f)),
+                "worst": float(np.max(f)),
+            })
+        print(E.table(hrows,
+                      ["band", "n", "cells", "baseline", "floor", "worst"],
+                      {"band": 10, "n": 4, "cells": 7, "baseline": 9,
+                       "floor": 7, "worst": 7}))
+        print("  cells: mean fluid cells per sample in the band, so a band "
+              "with few cells\n  carries little of the column total whatever "
+              "its error.\n")
 
     # -- the check this harness exists for --------------------------------
     print("against the earlier studies (different windows and direction, "
