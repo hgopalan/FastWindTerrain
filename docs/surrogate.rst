@@ -1026,3 +1026,107 @@ mechanism, after the by-height split and the negative
 Two consequences for the training phase: feed the network **slope
 magnitude**, not a signed or directional slope; and do not spend a
 channel on curvature.
+
+Training a surrogate on it
+==========================
+
+Phase 22b. ``fastwindterrain.training`` turns the dataset into what a
+network sees, ``fastwindterrain.models`` holds three architectures behind
+one signature, and ``cases/train_surrogate.py`` runs them.
+
+The pipeline was written before any architecture, for the reason the
+scoring was: a data bug does not announce itself. A terrain channel
+negated along with the velocity turns every ridge into a valley and still
+produces a falling loss curve, so ``tests/test_training.py`` asserts it
+rather than hoping.
+
+Four pipeline decisions, each resting on something already measured:
+
+* **normalise by** ``u_ref``. The solve is exactly linear in it, so wind
+  speed is not an input and not an axis of the dataset.
+* **direction as sin/cos**, not eight classes. The operator is odd, so
+  negating the encoding must negate the target. Two continuous channels
+  express that; a one-hot cannot, and the network would have to
+  rediscover from data a symmetry it could be handed.
+* **terrain scaled by a CONSTANT**, not by its own relief. Per-sample
+  scaling divides away the amplitude that decides how much the flow
+  deflects, so a 50 m hill and a 1500 m ridge would arrive identical.
+* **targets scaled per channel, by RMS, with no mean removed.** ``w`` is
+  six times smaller than ``u`` and ``v``, and the 5 m level 2.7 times
+  smaller than the top; unweighted, the loss is dominated by the aloft
+  horizontal channels, which are the easiest part of the column and the
+  part nobody asked for. No mean is subtracted because the dataset
+  contains every sample with its exact negation, so the mean is
+  identically zero -- subtracting an estimate would break the oddness.
+
+Two runs died before the cause was found
+----------------------------------------
+
+Worth recording because the first fix was the wrong one. Run one diverged
+at epoch 11. I blamed the learning rate, lowered it, added gradient
+clipping and the per-channel scaling. Run two died at epoch 5 -- earlier.
+Both learned to about 2.1 m/s and then collapsed to the zero solution:
+loss exactly 1.0 on unit-variance targets, weights frozen, gradients an
+order of magnitude below normal.
+
+Instrumenting per step found the moment: a gradient norm of 390 against a
+typical 0.3. Clipping did not prevent the death, because by then the
+model was already in a dead region -- the gradient had been ten times
+normal for fifty steps before the spike.
+
+**The defect was the architecture, not the optimiser or the data.** The
+Fourier blocks had no normalisation at all, so their output was
+unbounded. Over the same 1400 steps, everything else held fixed:
+
+==============  ==============  ==================  ==============
+blocks              final loss     worst step loss      worst grad
+==============  ==============  ==================  ==============
+no norm                 1.0005               23.30           390.0
+GroupNorm               0.2945                1.17             2.5
+==============  ==============  ==================  ==============
+
+It was not an outlier sample: 648 solved training samples, maximum
+23.8 m/s, every one finite. Diagnosing that first would have saved a run.
+
+First results
+-------------
+
+Sixty epochs each, published defaults, nothing tuned. Validation is
+vector RMSE at the levels, in m/s; the skill columns are against the
+undisturbed baseline, where 0 is no better than doing nothing:
+
+========  ============  ==========  =============  ==========  ==========
+arch        parameters     s/epoch   best val m/s     complex     extreme
+========  ============  ==========  =============  ==========  ==========
+unet         4,898,171         8.7          1.050       +0.49       +0.51
+ufno         2,235,003        24.3          1.666       +0.19       +0.22
+fno          2,105,659        23.2          2.009       -0.10       +0.05
+========  ============  ==========  =============  ==========  ==========
+
+**The convolutional baseline wins, clearly, and it is three times faster
+per epoch.** That is not the expected result for an FNO paper and it is
+reported as measured.
+
+The ORDERING is more informative than the winner. Going ``fno`` to
+``ufno`` adds the U-Net branch and improves things substantially; going
+``ufno`` to ``unet`` removes the spectral path entirely and improves them
+again. Every step that moves weight from the spectral path to local
+convolution helps.
+
+**A mechanism that fits, and is testable.** These runs truncate at 16
+modes on a 100-cell grid, which keeps features coarser than about six
+cells -- 300 m and up -- and discards everything below. But the error was
+measured to be controlled by LOCAL slope (r = 0.50-0.72) and to live at
+the surface, and 50 m SRTM terrain carries most of its power below 300 m.
+On that reading the spectral path is discarding exactly the scales that
+decide the answer, and the U-Net branch is what puts some of them back.
+
+Two caveats before this becomes a claim: the U-Net carries 2.2 times the
+parameters, and none of the three is tuned. The mode count and a
+parameter-matched comparison are the two experiments that would settle
+it.
+
+**And none of them is close to useful yet.** The best model is 1.05 m/s
+against a floor of 0.20 and a baseline of 2.07 -- about half the terrain
+effect explained, where the reconstruction allows 90 %. This is a working
+harness and a first number, not a result.
