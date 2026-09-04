@@ -1130,3 +1130,101 @@ it.
 against a floor of 0.20 and a baseline of 2.07 -- about half the terrain
 effect explained, where the reconstruction allows 90 %. This is a working
 harness and a first number, not a result.
+
+The whole chain: terrain in, 3D field out
+=========================================
+
+Phase 23, and the paper's second contribution. Everything before this
+measured one link. ``eval_harness.py`` measured what stitching costs from
+PERFECT levels; ``train_surrogate.py`` measured what the network costs AT
+the levels. ``cases/end_to_end.py`` composes them:
+
+    terrain + direction  ->  9 levels  ->  60-layer 3D field
+
+The question is whether stitching AMPLIFIES the model's error. It is not
+a rhetorical one: the floor was measured from level values the solver
+produced, which are smooth and mutually consistent, while a predicted
+level field is neither, and interpolating between two independently wrong
+levels can be worse than either. If the errors merely combine, the
+pipeline is sound and only the model needs work. ``amplification`` is the
+end-to-end error over ``sqrt(floor^2 + levels^2)``: 1.0 means the two
+simply combined.
+
+Test fold, 216 samples, the U-Net of phase 22b. Vector RMSE in m/s
+against the solver's own 3D field:
+
+==========  =====  =========  ========  ========  ===========  =========  ========
+group           n   baseline     floor    levels   end to end    amplif.     skill
+==========  =====  =========  ========  ========  ===========  =========  ========
+gentle         84      0.542     0.070     0.439        0.380      0.858    +0.241
+moderate       28      0.755     0.075     0.491        0.386      0.783    +0.463
+complex        64      2.069     0.197     1.124        0.949      0.826    +0.539
+extreme        40      2.552     0.259     1.553        1.367      0.867    +0.463
+all           216      1.394     0.143     0.855        0.732      0.841    +0.399
+==========  =====  =========  ========  ========  ===========  =========  ========
+
+**Stitching does not amplify the model's error -- it reduces it.**
+Amplification is 0.84, consistently, in every relief bin and on both
+folds. Two reasons, and both are properties of the geometry rather than
+luck: most of the 3D column lies between and above the levels, where the
+model is more accurate than it is near the surface, while the level
+metric weights all nine equally; and interpolating between levels whose
+errors are independent averages some of them away.
+
+So the 2D-to-3D step is not a tax on the surrogate. That is the
+contribution-2 result, and it is a stronger version of it than expected:
+the composition is favourable, not merely neutral.
+
+Unseen terrain
+--------------
+
+The demonstration sites, never in any fold, scored identically:
+
+==========  =====  =========  ========  ========  ===========  =========  ========
+group           n   baseline     floor    levels   end to end    amplif.     skill
+==========  =====  =========  ========  ========  ===========  =========  ========
+complex        36      1.991     0.177     1.120        0.940      0.822    +0.520
+extreme        36      2.446     0.229     1.341        1.169      0.857    +0.517
+all            72      2.219     0.203     1.231        1.054      0.839    +0.518
+==========  =====  =========  ========  ========  ===========  =========  ========
+
+**The transfer prediction holds.** Phase 22a measured the demo terrain
+and predicted that a model which generalises should land near its
+test-fold numbers there, because difficulty is set by relief and not by
+familiarity. It does: 0.940 against 0.949 on complex ground, and 1.169
+against 1.367 on extreme -- the unseen sites score BETTER than the
+matching test bin. Skill against the baseline is +0.52 on unseen terrain
+against +0.46 to +0.54 on the test fold.
+
+That prediction was registered before the model existed, which is what
+makes it worth something. A gap would have been evidence of memorisation;
+its absence is evidence against.
+
+A fix that failed: replicate padding
+------------------------------------
+
+The prediction maps show a bright frame around the domain edge, and
+trimming three border cells cuts the RMSE by 4.6 %, so the artefact is
+real. The obvious cause is zero padding: a zero border tells the network
+the terrain drops to the mean elevation just outside the window, which is
+an artificial cliff around every domain. Replicate padding should fix it.
+
+It does, and it loses anyway:
+
+============  =========  ==========  =========  ============
+padding             all    interior     border    border/int
+============  =========  ==========  =========  ============
+zeros            0.7817      0.7608     0.9232         1.21x
+replicate        0.7953      0.7803     0.8996         1.15x
+============  =========  ==========  =========  ============
+
+The border penalty falls from 1.21x to 1.15x -- the intended effect -- but
+the interior gets worse and the net is worse. The likely reason is that
+zero padding leaks absolute position into a convolutional network, which
+networks are known to exploit; replicate padding removes that cue along
+with the cliff.
+
+**Reverted.** Recorded because the reasoning was sound and the result was
+still negative, and because the principled fix is now obvious: supply
+coordinate channels explicitly, so position is available without the
+artificial border, and then replicate padding costs nothing. Untested.
