@@ -688,6 +688,32 @@ DEMO_SITES = {
         "state": "Oregon/Washington", "year": 0,
         "lat": 45.71, "lon": -121.52,
     },
+    # Perdigao, Portugal: the canonical complex-terrain field campaign, and
+    # 7845 km from the nearest corpus site of any fold. Nothing else in this
+    # study is remotely as far, so it is the strongest unseen-terrain claim
+    # available -- a different continent, a different climate, and a terrain
+    # form the corpus does not contain: two roughly parallel ridges about
+    # 1.4 km apart, rather than the broken ridge-and-valley of the fire
+    # sites.
+    #
+    # IT IS A DEMO SITE DESPITE HAVING MEASUREMENTS, and the distinction is
+    # worth stating because Flatirons is the other way round. The fold
+    # records how far the terrain is from training, because that is what
+    # decides which claim a number supports. Whether observations exist is
+    # orthogonal metadata: Perdigao clears the strict bar AND has the 2017
+    # campaign behind it, which makes it more useful, not differently
+    # labelled. Flatirons is a measurement site because observations are its
+    # ONLY justification -- it fails the demo bar at 11 km from a test site.
+    #
+    # Centred on the ridge itself. The coordinate first proposed, 39.6853,
+    # sits 2.6 km south, which the +-9.2 km tile still covers -- but only
+    # the northern row of the 3x3 window grid would have sampled the
+    # ridges. Centring puts them in every window, and lines the geometry up
+    # with the 2017 tower array, which stands on and between the two crests.
+    "perdigao": {
+        "name": "Perdigao 2017", "state": "Portugal", "year": 0,
+        "lat": 39.7086, "lon": -7.7336,
+    },
 }
 
 #: The fold demo sites carry. Deliberately not one of FOLDS: they are not
