@@ -79,6 +79,7 @@ __all__ = [
     "baseline",
     "evaluate",
     "levels",
+    "training",
     "run",
     "session",
 ]
@@ -108,3 +109,4 @@ from . import dataset          # noqa: E402,F401
 from . import levels           # noqa: E402,F401
 from . import baseline         # noqa: E402,F401
 from . import evaluate         # noqa: E402,F401
+from . import training         # noqa: E402,F401
