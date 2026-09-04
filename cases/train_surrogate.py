@@ -153,6 +153,13 @@ def main(argv=None):
                         "died on a single loss spike, which is exactly "
                         "what this prevents")
     p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--spectral-lr", type=float, default=None,
+                   help="separate learning rate for the complex spectral "
+                        "weights. They are the only complex parameters in "
+                        "the model and Adam's per-parameter scaling behaves "
+                        "differently on them, so a representation limit and "
+                        "an optimisation one look identical without this "
+                        "knob")
     p.add_argument("--width", type=int, default=32)
     p.add_argument("--modes", type=int, default=16)
     p.add_argument("--blocks", type=int, default=4)
@@ -198,7 +205,18 @@ def main(argv=None):
     print(f"{args.arch} on {device}: "
           f"{M.count_parameters(model):,} parameters\n")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
+    if args.spectral_lr is None:
+        groups = model.parameters()
+    else:
+        spec = [q for n, q in model.named_parameters() if ".spectral." in n]
+        rest = [q for n, q in model.named_parameters()
+                if ".spectral." not in n]
+        print(f"  spectral params {sum(q.numel() for q in spec):,} at lr "
+              f"{args.spectral_lr}, the other "
+              f"{sum(q.numel() for q in rest):,} at {args.lr}")
+        groups = [{"params": spec, "lr": args.spectral_lr},
+                  {"params": rest, "lr": args.lr}]
+    opt = torch.optim.AdamW(groups, lr=args.lr,
                             weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
     loader = DataLoader(ds_tr, batch_size=args.batch, shuffle=True)
