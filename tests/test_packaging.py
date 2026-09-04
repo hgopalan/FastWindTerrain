@@ -10,6 +10,7 @@ maintained by hand, so they drift, and a wheel labelled 0.1.0 reporting
 manifest has to be trusted.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -66,10 +67,20 @@ def test_module_entry_point_prints_usage_without_arguments():
 
     Exit 2 rather than 0: a script that forgot its arguments should fail
     a shell's `set -e`, not look like a successful no-op.
+
+    The child gets the parent's ``sys.path``, the way the ``run_py``
+    fixture does. Without it an in-tree build fails here for the wrong
+    reason -- exit 1, "No module named fastwindterrain" -- because
+    ``build/python`` is on the parent's path only because conftest put it
+    there, and a bare subprocess does not inherit that.
     """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(
+        os.pathsep)
     proc = subprocess.run([sys.executable, "-m", "fastwindterrain"],
-                          capture_output=True, text=True)
-    assert proc.returncode == 2
+                          capture_output=True, text=True, env=env)
+    assert proc.returncode == 2, proc.stderr
     assert "usage:" in proc.stderr
 
 
