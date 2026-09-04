@@ -213,7 +213,8 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True, metavar="DIR")
     p.add_argument("--fold", action="append", default=None,
-                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD],
+                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD,
+                                                 corpus.MEASUREMENT_FOLD],
                    help="restrict to these folds. Default is the three split "
                         "folds; 'demo' is never included unless named, and "
                         "belongs in its own --out directory")

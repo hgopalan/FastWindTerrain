@@ -398,31 +398,30 @@ def read_terrain(path):
 # ---------------------------------------------------------------------------
 
 def _fetch_tile(srtm, box, tif_path):
-    """Download the SRTM window, and clip it without needing a GDAL CLI.
+    """Download the SRTM window and clip it with rasterio, not a GDAL CLI.
 
     The vendored download_srtm calls elevation.clip, which shells out to
     gdal_translate through a Makefile. That is fine when the system GDAL
-    binaries are healthy and is a common thing for them not to be -- on the
-    machine this was written on, gdal_translate aborts because Homebrew's
-    libheif references an x265 dylib a later upgrade removed. Nothing about
-    that is our terrain's fault, and it is not something a user of this
-    catalogue should have to debug.
+    binaries are healthy, and it is a common thing for them not to be -- on
+    the machine this was written on gdal_translate aborts because
+    Homebrew's libheif references an x265 dylib a later upgrade removed.
+    Nothing about that is our terrain's fault and it is not something a
+    user of this catalogue should have to debug.
 
-    So: try the vendored path first, and on failure fall back to seeding the
-    tiles with the same library and doing the window read with rasterio,
-    which ships its own GDAL and never touches the command line. Either way
-    the result is a GeoTIFF for the same bounds, handed on to the vendored
-    tiff_to_xyz_utm so the elevation processing is identical.
+    So the command line is not used at all. `elevation` still fetches and
+    caches the SRTM tiles, which is the part it is good at; the windowing
+    and merge are done with rasterio, which ships its own GDAL and never
+    execs a binary. The result is a GeoTIFF for the same bounds, handed to
+    the vendored tiff_to_xyz_utm, so the elevation processing downstream is
+    identical either way.
+
+    ``FWT_USE_GDAL_CLI=1`` restores the old path, for anyone whose GDAL
+    works and who would rather use it.
     """
-    try:
+    if os.environ.get("FWT_USE_GDAL_CLI") == "1":
         srtm.download_srtm(box["lat_min"], box["lat_max"],
                            box["lon_min"], box["lon_max"], tif_path)
         return "elevation.clip"
-    except Exception as exc:
-        sys.stderr.write(
-            "note: elevation.clip failed (%s: %s); falling back to a "
-            "rasterio window read, which needs no GDAL command line\n"
-            % (type(exc).__name__, str(exc).splitlines()[0][:120]))
 
     import elevation
     import elevation.datasource

@@ -424,7 +424,8 @@ def build_manifest(fractions=None, seed=corpus.DEFAULT_SEED,
     # fractions, and their absence from fold_of is what stops them being
     # trained on. --demo appends them afterwards.
     surveys = {k: v for k, v in surveys.items()
-               if k not in corpus.DEMO_SITES}
+               if k not in corpus.DEMO_SITES
+               and k not in corpus.MEASUREMENT_SITES}
 
     rejected, accepted, keep = {}, {}, {}
     for slug, survey in surveys.items():
@@ -566,6 +567,70 @@ def run_demo(args):
     return 0
 
 
+def run_measurement(args):
+    """Survey the measurement sites and append them under their own fold.
+
+    Deliberately NOT run_demo with a different constant. A demo site must
+    be far from every fold; a measurement site must be far from TRAINING,
+    and may sit beside a test site because the reference is a met tower
+    rather than the corpus. The nearest site in every fold is printed so
+    the caveat travels with the data.
+    """
+    manifest = corpus.load_manifest()
+    near = corpus.assert_measurement_is_untrained(manifest=manifest)
+    print("measurement sites, and the nearest corpus terrain by fold:")
+    for slug, by_fold in near:
+        print(f"  {slug}")
+        for fold in sorted(by_fold):
+            km, s_ = by_fold[fold]
+            flag = "  <- training" if fold == "train" else ""
+            print(f"      {fold:6s} {km:8.1f} km  {s_}{flag}")
+    print("\n  A measurement site is NOT a demonstration site: it may sit\n"
+          "  close to test terrain, so do not pool it with the demo fold\n"
+          "  or count it as an independent unseen sample.\n")
+
+    windows = [w for w in manifest["windows"]
+               if w.get("fold") != corpus.MEASUREMENT_FOLD]
+    added = 0
+    for case in corpus.measurement_sites():
+        path = corpus.site_survey_path(case.slug)
+        if os.path.isfile(path) and not args.force:
+            print(f"{case.slug:16s} already surveyed")
+            survey = json.load(open(path))
+        else:
+            t0 = time.time()
+            print(f"{case.slug:16s} downloading ... ", end="", flush=True)
+            survey = survey_site(case, subsample=args.subsample,
+                                 keep_tile=not args.no_tile)
+            print(f"{survey['relief']:.0f} m relief, "
+                  f"{time.time() - t0:.1f} s")
+
+        ok, reason, kept = corpus.screen_site(survey)
+        if not ok:
+            raise RuntimeError(
+                f"{case.slug} fails the screen the corpus uses: {reason}.")
+
+        for w in survey["windows"]:
+            if w["id"] not in set(kept):
+                continue
+            e = dict(w)
+            e["fold"] = corpus.MEASUREMENT_FOLD
+            windows.append(e)
+            added += 1
+
+    manifest["windows"] = windows
+    manifest["measurement_sites"] = sorted(corpus.MEASUREMENT_SITES)
+    manifest["measurement_nearest_km"] = {
+        slug: {f: round(km, 1) for f, (km, _) in by_fold.items()}
+        for slug, by_fold in near}
+    with open(corpus.MANIFEST, "w") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print(f"\nadded {added} measurement windows to "
+          f"{os.path.relpath(corpus.MANIFEST, ROOT)}")
+    return 0
+
+
 def run_split(args):
     fractions = None
     if args.fractions:
@@ -700,6 +765,10 @@ def main(argv=None):
                       help="cluster and split the surveyed sites (offline)")
     mode.add_argument("--summary", action="store_true",
                       help="print the existing manifest")
+    mode.add_argument("--measurement", action="store_true",
+                      help="survey the measurement sites (real terrain "
+                           "with observations) and add them under the "
+                           "measurement fold")
     mode.add_argument("--demo", action="store_true",
                       help="survey the demonstration sites and add them to "
                            "the manifest under the demo fold")
@@ -746,6 +815,8 @@ def main(argv=None):
         return run_split(args)
     if args.demo:
         return run_demo(args)
+    if args.measurement:
+        return run_measurement(args)
     if args.check:
         return run_check(args)
     if args.solvability:
