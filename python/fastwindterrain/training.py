@@ -63,6 +63,9 @@ __all__ = [
     "make_input",
     "make_target",
     "channel_rms",
+    "D4_OPS",
+    "transform_field",
+    "transform_vector",
     "to_ms",
     "LevelDataset",
 ]
@@ -80,6 +83,54 @@ INPUT_CHANNELS = ("terrain", "slope", "sin_dir", "cos_dir")
 #: The three velocity components, each on every level. Stacked in this
 #: order, so the target is ``(3 * nlev, ny, nx)``.
 TARGET_FIELDS = ("u_lev", "v_lev", "w_lev")
+
+
+#: The eight symmetries of the square, as ``(rotation in degrees,
+#: mirror in x)``. Identity first, so ``D4_OPS[0]`` is a no-op and an
+#: unaugmented dataset is exactly the augmented one truncated.
+#:
+#: THIS IS EXACT, NOT APPROXIMATE. ``cases/rotation_test.py`` measured the
+#: solver against every one of these on three windows spanning 52 m to
+#: 1970 m of relief, at two wind directions: agreement to 1.6e-13 to
+#: 7.3e-13 relative, with the identity at exactly zero. Rotations by 90
+#: degrees and reflections map a Cartesian grid onto itself, so there is
+#: no interpolation and nothing to approximate -- which is why this is
+#: augmentation rather than a regulariser that happens to help.
+D4_OPS = ((0, False), (90, False), (180, False), (270, False),
+          (0, True), (90, True), (180, True), (270, True))
+
+
+def transform_field(f, angle_deg, mirror):
+    """A symmetry of the square applied to a scalar field ``[..., j, i]``.
+
+    ``i`` runs with x and ``j`` with y. A counter-clockwise rotation by 90
+    degrees sends the value at (x, y) to (L - y, x), which in indices is
+    ``G[j, i] = F[N - 1 - i, j]``.
+    """
+    g = np.asarray(f)
+    if mirror:
+        g = g[..., ::-1]
+    for _ in range(int(round(angle_deg)) % 360 // 90):
+        g = np.swapaxes(g[..., ::-1, :], -2, -1)
+    return g
+
+
+def transform_vector(u, v, angle_deg, mirror):
+    """The same symmetry applied to a pair of horizontal components.
+
+    The grid moves AND the components rotate. Moving the grid without
+    rotating the components is the mistake this function exists to make
+    impossible: it produces a field that looks right and points the wrong
+    way, which no loss curve would reveal.
+    """
+    uu = transform_field(u, angle_deg, mirror)
+    vv = transform_field(v, angle_deg, mirror)
+    if mirror:
+        uu = -np.asarray(uu)
+    t = np.radians(float(angle_deg))
+    c, s = np.cos(t), np.sin(t)
+    return (np.asarray(uu) * c - np.asarray(vv) * s,
+            np.asarray(uu) * s + np.asarray(vv) * c)
 
 
 def direction_channels(direction_deg, shape):
@@ -175,13 +226,19 @@ class LevelDataset:
 
     def __init__(self, samples, u_ref=10.0, window_m=5000.0,
                  scale=TERRAIN_SCALE_M, derive_reverses=False,
-                 as_tensor=True, scales=None):
+                 as_tensor=True, scales=None, augment_d4=False):
         self.u_ref = float(u_ref)
         self.scales = (None if scales is None
                        else np.asarray(scales, dtype=np.float32))
         self.window_m = float(window_m)
         self.scale = float(scale)
         self.as_tensor = bool(as_tensor)
+
+        # D4 augmentation multiplies the index, never the storage: the
+        # transform is a couple of array views and a 2x2 rotation of the
+        # horizontal components, cheaper than holding eight copies.
+        self.augment_d4 = bool(augment_d4)
+        ops = D4_OPS if self.augment_d4 else ((0, False),)
 
         items = list(samples)
         if derive_reverses:
@@ -196,11 +253,15 @@ class LevelDataset:
             # its exact negation (0.00e+00 over 1080 pairs), so this
             # costs one multiply and no memory.
             self._items = solved
-            self._index = ([(k, 1.0) for k in range(len(solved))]
-                           + [(k, -1.0) for k in range(len(solved))])
+            self._index = [(k, sign, op)
+                           for sign in (1.0, -1.0)
+                           for op in ops
+                           for k in range(len(solved))]
         else:
             self._items = items
-            self._index = [(k, 1.0) for k in range(len(items))]
+            self._index = [(k, 1.0, op)
+                           for op in ops
+                           for k in range(len(items))]
 
     def __len__(self):
         return len(self._index)
@@ -208,8 +269,10 @@ class LevelDataset:
     def info(self, i):
         """The manifest entry for sample ``i``, with the derived half
         labelled as such rather than silently sharing its partner's id."""
-        k, sign = self._index[i]
+        k, sign, op = self._index[i]
         info = dict(self._items[k][0])
+        if op != (0, False):
+            info["d4"] = f"rot{op[0]}" + ("_mirror" if op[1] else "")
         if sign < 0:
             d = (float(info["direction"]) + 180.0) % 360.0
             info.update(id=f"{info['id'].split('@')[0]}@{d:03.0f}",
@@ -224,11 +287,11 @@ class LevelDataset:
         the engineering levels, and the aloft levels scale with each
         window's own column, so this is not a constant.
         """
-        k, _ = self._index[i]
+        k = self._index[i][0]
         return np.asarray(self._items[k][1]["levels"], dtype=np.float64)
 
     def __getitem__(self, i):
-        k, sign = self._index[i]
+        k, sign, op = self._index[i]
         info, arrays = self._items[k]
         direction = float(info["direction"])
         if sign < 0:
@@ -245,6 +308,25 @@ class LevelDataset:
         y = make_target(arrays, self.u_ref) * np.float32(sign)
         if self.scales is not None:
             y = y / self.scales[:, None, None]
+
+        ang, mir = op
+        if op != (0, False):
+            # Terrain and slope are scalars and only move. The direction
+            # channels ARE the flow vector, so they rotate as one -- which
+            # is why the wind direction never has to be recomputed here,
+            # and one convention cannot disagree with another.
+            ter = transform_field(x[0], ang, mir)
+            slope = transform_field(x[1], ang, mir)
+            dx_, dy_ = transform_vector(x[2], x[3], ang, mir)
+            x = np.stack([ter, slope, dx_, dy_]).astype(np.float32)
+
+            n = y.shape[0] // 3
+            uy_, vy_ = transform_vector(y[:n], y[n:2 * n], ang, mir)
+            wy_ = transform_field(y[2 * n:], ang, mir)
+            y = np.concatenate([uy_, vy_, wy_]).astype(np.float32)
+
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        y = np.ascontiguousarray(y, dtype=np.float32)
 
         if not self.as_tensor:
             return x, y

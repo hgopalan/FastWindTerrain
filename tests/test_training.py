@@ -205,3 +205,109 @@ def test_the_dataset_works_with_a_torch_dataloader():
     x, y = next(iter(DataLoader(ds, batch_size=4, shuffle=False)))
     assert x.shape == (4, len(T.INPUT_CHANNELS), 8, 8)
     assert y.shape == (4, 27, 8, 8)
+
+
+# ---------------------------------------------------------------------------
+# D4 augmentation. Exact, because rotations by 90 degrees and reflections
+# map a Cartesian grid onto itself -- verified against the solver itself in
+# cases/rotation_test.py at 1e-13.
+# ---------------------------------------------------------------------------
+
+def test_the_eight_symmetries_are_a_group_under_the_transform():
+    """If applying an operation four times (or twice, for a mirror) is not
+    the identity, the transform is not the symmetry it claims to be."""
+    rng = np.random.default_rng(1)
+    f = rng.standard_normal((3, 7, 7))
+    g = f
+    for _ in range(4):
+        g = T.transform_field(g, 90, False)
+    assert np.array_equal(g, f), "rot90 four times must be the identity"
+    assert np.array_equal(
+        T.transform_field(T.transform_field(f, 0, True), 0, True), f)
+
+
+def test_the_vector_transform_rotates_components_not_only_the_grid():
+    """The failure mode this exists to prevent: a field that looks right
+    and points the wrong way. Moving the grid without rotating the
+    components is invisible in any scalar plot and in every loss curve.
+    """
+    u = np.ones((4, 4))
+    v = np.zeros((4, 4))
+    uu, vv = T.transform_vector(u, v, 90, False)
+    # A vector pointing +x, rotated a quarter turn, points +y.
+    assert np.allclose(uu, 0.0, atol=1e-12)
+    assert np.allclose(vv, 1.0)
+    # A mirror in x flips the x component and leaves y alone.
+    uu, vv = T.transform_vector(u, v, 0, True)
+    assert np.allclose(uu, -1.0) and np.allclose(vv, 0.0)
+
+
+def test_augmentation_multiplies_the_dataset_by_eight():
+    solved = _samples()
+    plain = T.LevelDataset(solved, derive_reverses=True, as_tensor=False)
+    aug = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                         augment_d4=True)
+    assert len(aug) == 8 * len(plain)
+
+
+def test_the_unaugmented_samples_are_unchanged_by_turning_it_on():
+    """D4_OPS starts with the identity, so the first block of an augmented
+    dataset must be bit-identical to the unaugmented one. If it is not,
+    augmentation is changing the original data as well as adding to it.
+    """
+    solved = _samples()
+    plain = T.LevelDataset(solved, derive_reverses=True, as_tensor=False)
+    aug = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                         augment_d4=True)
+    n = len(solved)
+    for i in range(n):
+        xp, yp = plain[i]
+        xa, ya = aug[i]
+        assert np.array_equal(xp, xa), i
+        assert np.array_equal(yp, ya), i
+
+
+def test_augmentation_preserves_wind_speed_and_terrain_statistics():
+    """A symmetry moves the field; it must not change what is in it. The
+    distribution of speeds and of terrain heights is invariant under every
+    one of the eight, which is a cheap check that no interpolation or
+    clipping crept in."""
+    solved = _samples()
+    aug = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                         augment_d4=True)
+    n = len(solved)
+    x0, y0 = aug[0]
+    for op in range(8):
+        x, y = aug[op * n]
+        assert np.allclose(np.sort(x[0].ravel()), np.sort(x0[0].ravel()))
+        speed0 = np.hypot(y0[:9], y0[9:18])
+        speed = np.hypot(y[:9], y[9:18])
+        assert np.allclose(np.sort(speed.ravel()),
+                           np.sort(speed0.ravel()), atol=1e-6), op
+
+
+def test_augmentation_and_negation_stay_independent():
+    """Both multiply the index and they must compose, not collide: eight
+    symmetries times two signs is sixteen distinct samples per solve, and
+    the negated block must still be the exact negation of its partner."""
+    solved = _samples()
+    aug = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                         augment_d4=True)
+    n, half = len(solved), len(aug) // 2
+    for op in range(8):
+        i = op * n
+        x0, y0 = aug[i]
+        x1, y1 = aug[i + half]
+        assert np.allclose(y1, -y0, atol=0), f"op {op} velocity"
+        assert np.array_equal(x1[0], x0[0]), f"op {op} terrain must not flip"
+        assert np.allclose(x1[2:], -x0[2:], atol=1e-6), f"op {op} direction"
+
+
+def test_the_augmented_index_labels_which_symmetry_it_used():
+    solved = _samples()
+    aug = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                         augment_d4=True)
+    n = len(solved)
+    assert "d4" not in aug.info(0), "the identity block is not relabelled"
+    assert aug.info(n)["d4"] == "rot90"
+    assert aug.info(4 * n)["d4"] == "rot0_mirror"
