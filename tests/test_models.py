@@ -190,3 +190,86 @@ def test_frame_averaging_is_exactly_equivariant():
 def test_frame_averaging_preserves_the_output_shape():
     wrapped = M.d4_average(M.build("unet", IN, OUT, width=8), n_levels=9)
     assert wrapped(torch.randn(2, IN, 100, 100)).shape == (2, OUT, 100, 100)
+
+
+# ---------------------------------------------------------------------------
+# The group-equivariant CNN. Equivariance is a property of the weights
+# here, not of an averaging wrapper -- so it has to be tested, and the
+# test found three separate bugs before it passed.
+# ---------------------------------------------------------------------------
+
+def _d4_in(x, ang, mir):
+    from fastwindterrain import training as T
+    s = torch.from_numpy(np.ascontiguousarray(
+        T.transform_field(x[:, :2].numpy(), ang, mir)))
+    u, v = T.transform_vector(x[:, 2:3].numpy(), x[:, 3:4].numpy(), ang, mir)
+    return torch.cat([s, torch.from_numpy(np.ascontiguousarray(u)),
+                      torch.from_numpy(np.ascontiguousarray(v))],
+                     dim=1).float()
+
+
+def _d4_out(y, ang, mir, n=9):
+    from fastwindterrain import training as T
+    u, v = T.transform_vector(y[:, :n].numpy(), y[:, n:2 * n].numpy(),
+                              ang, mir)
+    w = T.transform_field(y[:, 2 * n:].numpy(), ang, mir)
+    return torch.from_numpy(np.ascontiguousarray(
+        np.concatenate([u, v, w], axis=1))).float()
+
+
+def test_the_group_table_matches_the_array_transforms():
+    """Not self-consistency -- the composition rule is checked against the
+    transforms it is supposed to describe. A table wrong by a transpose
+    gives a network that is ALMOST equivariant, which is harder to notice
+    than one that obviously is not."""
+    from fastwindterrain import training as T
+
+    f = np.arange(36.0).reshape(6, 6)
+    act = lambda x, g: T.transform_field(x, 90 * g[0], bool(g[1]))
+    for g1 in M.D4_ELEMENTS:
+        for g2 in M.D4_ELEMENTS:
+            assert np.array_equal(act(act(f, g2), g1),
+                                  act(f, M.d4_compose(g1, g2))), (g1, g2)
+    assert all(M.d4_compose(g, M.d4_inverse(g)) == (0, 0)
+               for g in M.D4_ELEMENTS)
+    assert len({M.d4_compose(a, b)
+                for a in M.D4_ELEMENTS for b in M.D4_ELEMENTS}) == 8
+
+
+@pytest.mark.parametrize("size", [32, 100])
+def test_the_gcnn_is_equivariant_by_construction(size):
+    """No averaging wrapper: the weights themselves carry the symmetry.
+
+    Three bugs had to be fixed before this passed, and none was visible
+    except through this test -- a convention mismatch between the lifting
+    and the group convolution (0.48 relative), a weight layout that paired
+    (i, h) against (h, i) (0.16), and a skip connection whose plain
+    torch.cat destroyed the group blocking.
+    """
+    torch.manual_seed(0)
+    m = M.build("gcnn", IN, OUT, width=8).eval()
+    x = torch.randn(2, IN, size, size)
+    from fastwindterrain import training as T
+    with torch.no_grad():
+        y0 = m(x)
+        worst = max(float((m(_d4_in(x, a, mi)) - _d4_out(y0, a, mi))
+                          .abs().max()) for a, mi in T.D4_OPS)
+    assert worst / float(y0.abs().max()) < 1e-5, f"{worst:.2e}"
+
+
+def test_the_gcnn_shares_weights_across_the_group():
+    """The parameter saving is the reason to prefer this over frame
+    averaging. A D4 group convolution of a given width holds eight times
+    fewer parameters than the plain convolution it replaces."""
+    from fastwindterrain.models import _modules
+    _, _, _ = _modules()
+    g = M.build("gcnn", IN, OUT, width=32)
+    u = M.build("unet", IN, OUT, width=32)
+    # Same width, but the gcnn carries 8 feature maps per channel, so it
+    # is larger overall -- the fair statement is per feature map.
+    assert M.count_parameters(g) < 8 * M.count_parameters(u)
+
+
+def test_the_gcnn_handles_the_corpus_grid():
+    m = M.build("gcnn", IN, OUT, width=8)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)

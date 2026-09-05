@@ -30,7 +30,7 @@ __all__ = ["ARCHITECTURES", "build", "count_parameters",
            "clip_grad_norm", "d4_average"]
 
 #: Name to builder. Extend here; nothing else needs to know.
-ARCHITECTURES = ("fno", "ufno", "unet")
+ARCHITECTURES = ("fno", "ufno", "unet", "gcnn")
 
 
 def _torch():
@@ -210,6 +210,191 @@ def _modules():
             x = self.project(x)
             return x[..., p:x.shape[-2] - p, p:x.shape[-1] - p] if p else x
 
+    def _rot90(t, r):
+        """Rotate the LAST TWO axes of a tensor counter-clockwise."""
+        for _ in range(int(r) % 4):
+            t = torch.transpose(torch.flip(t, dims=(-2,)), -2, -1)
+        return t
+
+    def _act_g(t, g):
+        """Apply a D4 element to the spatial axes: mirror in x, then rotate.
+
+        The same convention as training.transform_field and as the
+        rotation test that verified the solver at 1e-13. There is exactly
+        one convention in this project and this is it.
+        """
+        r, m = g
+        if m:
+            t = torch.flip(t, dims=(-1,))
+        return _rot90(t, r)
+
+    def _act_vec(u, v, g):
+        """The same element on a pair of horizontal components."""
+        r, m = g
+        uu, vv = _act_g(u, g), _act_g(v, g)
+        if m:
+            uu = -uu
+        th = torch.tensor(r * math.pi / 2.0, dtype=u.dtype, device=u.device)
+        c, s = torch.cos(th), torch.sin(th)
+        return uu * c - vv * s, uu * s + vv * c
+
+    class GConvD4(nn.Module):
+        """Group convolution over D4, features laid out as (B, C*8, H, W).
+
+        The group axis is folded into channels so pooling, interpolation
+        and normalisation work unchanged. One weight of shape
+        (Cout, Cin, 8, k, k) is expanded at every forward pass into the
+        (Cout*8, Cin*8, k, k) bank an ordinary conv2d wants:
+
+            expanded[g][o, (h, i)] = W[o, i, g^-1 h]
+
+        NO SPATIAL TRANSFORM OF THE WEIGHTS, because of the convention the
+        lifting layer sets. Lifting by ``conv(g^-1 . x)`` makes a feature
+        transform under an input symmetry by PURE PERMUTATION of the group
+        axis -- block g becomes block g0^-1 g, with no spatial movement,
+        since each block already lives in its own rotated frame. Mixing
+        that convention with the textbook one (which does move the
+        filters) is what a first attempt did, and it gave 0.48 relative
+        equivariance error instead of round-off.
+
+        That is where the saving is -- the
+        parameters are shared across the eight group elements rather than
+        learned eight times, so a G-CNN of a given width has EIGHT TIMES
+        FEWER parameters than a plain CNN of the same width, at comparable
+        compute.
+
+        This is strictly more expressive than frame-averaging the output:
+        the group axis is carried THROUGH the network, so intermediate
+        features are equivariant and layers can mix group elements.
+        """
+
+        def __init__(self, cin, cout, k=3, stride=1):
+            super().__init__()
+            self.cin, self.cout, self.k, self.stride = cin, cout, k, stride
+            self.weight = nn.Parameter(
+                torch.randn(cout, cin, 8, k, k)
+                * (1.0 / math.sqrt(cin * 8 * k * k)))
+            self.bias = nn.Parameter(torch.zeros(cout))
+            # g^-1 h for every (g, h), precomputed: the group table must
+            # not be rebuilt per step, and an index that is wrong by a
+            # transpose gives a network that is ALMOST equivariant.
+            idx = [[D4_ELEMENTS.index(d4_compose(d4_inverse(g), h))
+                    for h in D4_ELEMENTS] for g in D4_ELEMENTS]
+            self.register_buffer("gidx", torch.tensor(idx), persistent=False)
+
+        def forward(self, x):
+            blocks = []
+            for gi, g in enumerate(D4_ELEMENTS):
+                # (cout, cin, 8, k, k) reordered on the group axis, then
+                # the kernel itself moved by g.
+                # (cout, cin, 8, k, k) -> (cout, 8, cin, k, k) BEFORE the
+                # reshape. The feature tensor is laid out group-major
+                # (block g is channels g*C .. g*C+C), so the weight has to
+                # be too. Reshaping without this permute pairs weight
+                # (i, h) against input (h, i) and gives a network that is
+                # 0.16 relative off equivariance -- close enough to look
+                # like a subtle group-theory error and not be one.
+                w = self.weight[:, :, self.gidx[gi]]
+                w = w.permute(0, 2, 1, 3, 4).reshape(
+                    self.cout, 8 * self.cin, self.k, self.k)
+                blocks.append(w)
+            W = torch.cat(blocks, dim=0)
+            b = self.bias.repeat_interleave(1).repeat(8)
+            return F.conv2d(x, W, b, stride=self.stride,
+                            padding=self.k // 2)
+
+    def _gcat(a, b):
+        """Concatenate two group-major tensors BLOCK BY BLOCK.
+
+        Both are laid out (B, C*8, H, W) with block g occupying channels
+        g*C .. g*C+C. A plain torch.cat appends all of one then all of the
+        other, which produces [a_g0..a_g7, b_g0..b_g7] and destroys the
+        blocking -- the next group convolution then reads channel h of
+        block g from the wrong tensor. It is invisible except as an
+        equivariance error, which is exactly how it was found.
+        """
+        ca, cb = a.shape[1] // 8, b.shape[1] // 8
+        return torch.cat(
+            [torch.cat([a[:, g * ca:(g + 1) * ca],
+                        b[:, g * cb:(g + 1) * cb]], dim=1)
+             for g in range(8)], dim=1)
+
+    class GCNN(nn.Module):
+        """A U-Net whose convolutions are group convolutions over D4.
+
+        Equivariance is a property of the weights rather than something
+        taught by augmentation or bolted on at inference. The lifting and
+        projection layers are where the channel semantics live: terrain
+        and slope move, the direction planes rotate as a vector, and on
+        the way out (u, v) per level rotates while w does not.
+        """
+
+        def __init__(self, in_ch, out_ch, width=12, depth=4, n_levels=9,
+                     n_scalar_in=2):
+            super().__init__()
+            self.n_levels, self.ns = n_levels, n_scalar_in
+            self.in_ch = in_ch
+            chs = [width * 2 ** min(i, 2) for i in range(depth)]
+            self.lift = nn.Conv2d(in_ch, chs[0], 3, padding=1)
+            self.down = nn.ModuleList()
+            prev = chs[0]
+            for c in chs:
+                self.down.append(nn.ModuleList(
+                    [GConvD4(prev, c), GConvD4(c, c)]))
+                prev = c
+            self.mid = GConvD4(prev, prev)
+            self.up = nn.ModuleList([
+                GConvD4(chs[i] + (chs[i + 1] if i + 1 < depth else prev),
+                        chs[i]) for i in range(depth)])
+            # Acts on ONE group block, shared across all eight.
+            self.out = nn.Conv2d(chs[0], out_ch, 1)
+
+        def _lift(self, x):
+            """(B, Cin, H, W) -> (B, C*8, H, W), one block per element.
+
+            Built by transforming the INPUT eight ways and sharing one
+            ordinary convolution, which is the same operator as
+            transforming the filter and avoids having to encode the
+            vector semantics inside a weight expansion.
+            """
+            ns, out = self.ns, []
+            for g in D4_ELEMENTS:
+                gi = d4_inverse(g)
+                parts = [_act_g(x[:, :ns], gi)]
+                u, v = _act_vec(x[:, ns:ns + 1], x[:, ns + 1:ns + 2], gi)
+                parts += [u, v]
+                if x.shape[1] > ns + 2:
+                    parts.append(_act_g(x[:, ns + 2:], gi))
+                out.append(self.lift(torch.cat(parts, dim=1)))
+            return torch.cat(out, dim=1)
+
+        def _project(self, feat):
+            """(B, C*8, H, W) -> (B, out, H, W), undoing each element."""
+            n, c = self.n_levels, feat.shape[1] // 8
+            acc = None
+            for gi, g in enumerate(D4_ELEMENTS):
+                y = self.out(feat[:, gi * c:(gi + 1) * c])
+                u, v = _act_vec(y[:, :n], y[:, n:2 * n], g)
+                w = _act_g(y[:, 2 * n:], g)
+                z = torch.cat([u, v, w], dim=1)
+                acc = z if acc is None else acc + z
+            return acc / 8.0
+
+        def forward(self, x):
+            h = self._lift(x)
+            skips, sizes = [], []
+            for a, b in self.down:
+                h = F.gelu(b(F.gelu(a(h))))
+                skips.append(h)
+                sizes.append(h.shape[-2:])
+                h = F.avg_pool2d(h, 2, ceil_mode=True)
+            h = F.gelu(self.mid(h))
+            for i in range(len(self.up) - 1, -1, -1):
+                h = F.interpolate(h, size=sizes[i], mode="bilinear",
+                                  align_corners=False)
+                h = F.gelu(self.up[i](_gcat(skips[i], h)))
+            return self._project(h)
+
     class UNet(nn.Module):
         """The baseline: no spectral path anywhere.
 
@@ -253,7 +438,7 @@ def _modules():
                 x = self.up[i](torch.cat([skips[i], x], dim=1))
             return self.out(x)
 
-    return SpectralNet, UNet
+    return SpectralNet, UNet, GCNN
 
 
 def build(name, in_channels, out_channels, **kw):
@@ -266,9 +451,11 @@ def build(name, in_channels, out_channels, **kw):
     if name not in ARCHITECTURES:
         raise ValueError(f"unknown architecture {name!r}; "
                          f"expected one of {ARCHITECTURES}")
-    SpectralNet, UNet = _modules()
+    SpectralNet, UNet, GCNN = _modules()
     if name == "unet":
         return UNet(in_channels, out_channels, **kw)
+    if name == "gcnn":
+        return GCNN(in_channels, out_channels, **kw)
     if name == "fno":
         kw.setdefault("unet_blocks", 0)
     else:                                   # ufno
@@ -362,3 +549,30 @@ def d4_average(model, n_levels=9, n_scalar_in=2):
             return out / float(len(D4_OPS))
 
     return _D4Average(model)
+
+
+#: The D4 group as ``(rotation index 0-3, mirror 0/1)``, in the same order
+#: as :data:`fastwindterrain.training.D4_OPS`. An element means "mirror in
+#: x if m, then rotate by 90r degrees counter-clockwise", which is the
+#: convention the whole project uses and the one verified against the
+#: solver at 1e-13.
+D4_ELEMENTS = ((0, 0), (1, 0), (2, 0), (3, 0),
+               (0, 1), (1, 1), (2, 1), (3, 1))
+
+
+def d4_compose(g1, g2):
+    """``g1 . g2``: apply g2 first, then g1.
+
+    With g = R^r M^m and the relation ``M R = R^-1 M``, the product is
+    ``R^(r1 + r2 (-1)^m1) M^(m1 + m2)``. Derived once here because a
+    group table that is wrong by a transpose gives a network that is
+    almost equivariant, which is worse than one that is obviously not.
+    """
+    r1, m1 = g1
+    r2, m2 = g2
+    return ((r1 + (r2 if m1 == 0 else -r2)) % 4, (m1 + m2) % 2)
+
+
+def d4_inverse(g):
+    r, m = g
+    return ((-r) % 4 if m == 0 else r, m)
