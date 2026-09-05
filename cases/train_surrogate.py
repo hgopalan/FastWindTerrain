@@ -153,11 +153,39 @@ def main(argv=None):
                         "died on a single loss spike, which is exactly "
                         "what this prevents")
     p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--spectral-lr", type=float, default=None,
+                   help="separate learning rate for the complex spectral "
+                        "weights. They are the only complex parameters in "
+                        "the model and Adam's per-parameter scaling behaves "
+                        "differently on them, so a representation limit and "
+                        "an optimisation one look identical without this "
+                        "knob")
     p.add_argument("--width", type=int, default=32)
     p.add_argument("--modes", type=int, default=16)
     p.add_argument("--blocks", type=int, default=4)
     p.add_argument("--limit", type=int, default=None,
                    help="windows per fold, for a smoke run")
+    p.add_argument("--frac", type=float, default=None, metavar="F",
+                   help="train on this fraction of the training windows, "
+                        "chosen at random with --seed. For the learning "
+                        "curve. Validation is never subsampled.")
+    p.add_argument("--steps", type=int, default=None, metavar="N",
+                   help="total gradient steps, converted to epochs. Use "
+                        "this rather than --epochs whenever dataset SIZE "
+                        "is the variable: at fixed epochs a smaller set "
+                        "gets fewer updates, and the comparison then "
+                        "measures training amount as much as data amount.")
+    p.add_argument("--spectral", action="store_true",
+                   help="six global spectral descriptors as extra input "
+                        "planes. Motivated by measurement: Chetco Bar's "
+                        "gentle cells are 3.7x worse than Flatirons' at "
+                        "identical LOCAL slope, so the region's ruggedness "
+                        "matters and a bounded receptive field cannot see "
+                        "it. All six are D4-invariant.")
+    p.add_argument("--augment-d4", action="store_true",
+                   help="the eight symmetries of the square, exact and "
+                        "verified against the solver at 1e-13. Training "
+                        "only; validation is never augmented.")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=None, metavar="DIR",
@@ -175,6 +203,19 @@ def main(argv=None):
 
     t0 = time.time()
     train_raw = load_fold(args.data, "train", args.limit)
+    if args.frac is not None:
+        # Whole WINDOWS, not samples: the four directions of one window
+        # share its terrain, so splitting them would leave a window
+        # partly in and partly out and overstate how much ground the
+        # model saw.
+        wins = sorted({i["id"].split("@")[0] for i, _ in train_raw})
+        rng = np.random.default_rng(args.seed)
+        keep = set(rng.permutation(wins)[:max(1, int(round(
+            args.frac * len(wins))))])
+        train_raw = [(i, a) for i, a in train_raw
+                     if i["id"].split("@")[0] in keep]
+        print(f"--frac {args.frac}: {len(keep)} of {len(wins)} windows, "
+              f"{len(train_raw)} solved samples")
     val_raw = load_fold(args.data, "val", args.limit)
     u_ref = corpus.REFERENCE_SPEED_MS
     # Fit the channel scales on TRAIN ONLY. w is 6x smaller than u and v
@@ -183,9 +224,12 @@ def main(argv=None):
     # part of the column and the part nobody asked for.
     scales = T.channel_rms(train_raw, u_ref)
     ds_tr = T.LevelDataset(train_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
-                           derive_reverses=True, scales=scales)
+                           derive_reverses=True, scales=scales,
+                           augment_d4=args.augment_d4,
+                           spectral=args.spectral)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
-                           derive_reverses=True, scales=scales)
+                           derive_reverses=True, scales=scales,
+                           spectral=args.spectral)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")
@@ -198,7 +242,24 @@ def main(argv=None):
     print(f"{args.arch} on {device}: "
           f"{M.count_parameters(model):,} parameters\n")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
+    if args.spectral_lr is None:
+        groups = model.parameters()
+    else:
+        spec = [q for n, q in model.named_parameters() if ".spectral." in n]
+        rest = [q for n, q in model.named_parameters()
+                if ".spectral." not in n]
+        print(f"  spectral params {sum(q.numel() for q in spec):,} at lr "
+              f"{args.spectral_lr}, the other "
+              f"{sum(q.numel() for q in rest):,} at {args.lr}")
+        groups = [{"params": spec, "lr": args.spectral_lr},
+                  {"params": rest, "lr": args.lr}]
+    if args.steps:
+        per_epoch = max(1, -(-len(ds_tr) // args.batch))
+        args.epochs = max(1, int(round(args.steps / per_epoch)))
+        print(f"--steps {args.steps}: {per_epoch} steps/epoch -> "
+              f"{args.epochs} epochs")
+
+    opt = torch.optim.AdamW(groups, lr=args.lr,
                             weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
     loader = DataLoader(ds_tr, batch_size=args.batch, shuffle=True)

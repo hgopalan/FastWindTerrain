@@ -665,12 +665,137 @@ DEMO_SITES = {
         "name": "Cameron Peak", "state": "Colorado", "year": 2020,
         "lat": 40.60, "lon": -105.88,
     },
+    # Not a fire. The Columbia River Gorge at Hood River, inside the WFIP2
+    # domain -- 113 km from the nearest corpus site of any fold and 541 km
+    # from the nearest TRAINING site, so it clears the demonstration bar
+    # comfortably.
+    #
+    # It is here for the terrain, which is a regime the corpus does not
+    # contain: a plateau cut by a deep confined channel, rather than the
+    # ridge-and-valley country every fire site is drawn from.
+    #
+    # WFIP2 also left profiling lidars, sodars and radiosondes across this
+    # domain, which makes an observational comparison POSSIBLE and not
+    # advisable without care. The Gorge's defining flow is marine air
+    # forced through a constriction -- a pressure-driven gap flow with a
+    # large momentum component. A mass-consistent solver has no momentum
+    # equation: it will channel flow through the Gorge because the geometry
+    # forces mass through, but the acceleration is kinematic bookkeeping
+    # rather than physics. Comparing that to a lidar tests the SOLVER, and
+    # it should not be expected to do well. See MEASUREMENT_SITES.
+    "columbia_gorge": {
+        "name": "Columbia River Gorge (WFIP2)",
+        "state": "Oregon/Washington", "year": 0,
+        "lat": 45.71, "lon": -121.52,
+    },
+    # Perdigao, Portugal: the canonical complex-terrain field campaign, and
+    # 7845 km from the nearest corpus site of any fold. Nothing else in this
+    # study is remotely as far, so it is the strongest unseen-terrain claim
+    # available -- a different continent, a different climate, and a terrain
+    # form the corpus does not contain: two roughly parallel ridges about
+    # 1.4 km apart, rather than the broken ridge-and-valley of the fire
+    # sites.
+    #
+    # IT IS A DEMO SITE DESPITE HAVING MEASUREMENTS, and the distinction is
+    # worth stating because Flatirons is the other way round. The fold
+    # records how far the terrain is from training, because that is what
+    # decides which claim a number supports. Whether observations exist is
+    # orthogonal metadata: Perdigao clears the strict bar AND has the 2017
+    # campaign behind it, which makes it more useful, not differently
+    # labelled. Flatirons is a measurement site because observations are its
+    # ONLY justification -- it fails the demo bar at 11 km from a test site.
+    #
+    # Centred on the ridge itself. The coordinate first proposed, 39.6853,
+    # sits 2.6 km south, which the +-9.2 km tile still covers -- but only
+    # the northern row of the 3x3 window grid would have sampled the
+    # ridges. Centring puts them in every window, and lines the geometry up
+    # with the 2017 tower array, which stands on and between the two crests.
+    "perdigao": {
+        "name": "Perdigao 2017", "state": "Portugal", "year": 0,
+        "lat": 39.7086, "lon": -7.7336,
+    },
 }
 
 #: The fold demo sites carry. Deliberately not one of FOLDS: they are not
 #: part of the split, take no share of the fractions, and must never be
 #: trained or validated on.
 DEMO_FOLD = "demo"
+
+# ---------------------------------------------------------------------------
+# Measurement sites: real terrain where somebody has actually measured the
+# wind. Kept apart from DEMO_SITES because they answer a different question
+# and clear a different bar.
+#
+# A demonstration site exists to show the surrogate reproducing the SOLVER
+# on ground the corpus never contained, and must be far from every fold so
+# the claim is clean. A measurement site exists to compare against
+# OBSERVATIONS, and for that purpose distance from the test fold is
+# irrelevant -- the reference is a met tower, not the corpus.
+#
+# THE THREE COMPARISONS MUST NOT BE CONFLATED, and this is the whole reason
+# these sites are labelled separately:
+#
+#   surrogate vs solver        emulation fidelity. What every number in
+#                              docs/surrogate.rst measures. About 1 m/s.
+#   solver vs measurement      whether a mass-consistent solve resembles
+#                              the real atmosphere. NEVER MEASURED in this
+#                              project, and expected to dominate.
+#   surrogate vs measurement   both errors compounded. A poor result here
+#                              says nothing about the surrogate on its own.
+MEASUREMENT_SITES = {
+    "nrel_flatirons": {
+        "name": "NREL Flatirons Campus", "state": "Colorado", "year": 0,
+        "lat": 39.91394, "lon": -105.21350,
+    },
+}
+
+#: The fold measurement sites carry. Like DEMO_FOLD, not one of FOLDS.
+MEASUREMENT_FOLD = "measurement"
+
+
+def measurement_sites():
+    """The measurement sites as Cases, in a stable order."""
+    return [casegen.Case(slug=k, **v)
+            for k, v in sorted(MEASUREMENT_SITES.items())]
+
+
+def assert_measurement_is_untrained(radius_km=None, manifest=None):
+    """Refuse a measurement site the model was effectively trained on.
+
+    Checked against the TRAINING fold only, which is the weaker bar
+    ``assert_demo_is_unseen`` deliberately does not settle for -- and the
+    difference is the point. A measurement site may sit beside a test site
+    without spoiling anything, because the comparison is against
+    observations rather than against the corpus. It may NOT sit beside
+    training terrain, or the model has seen the ground before.
+
+    Returns the nearest site in EVERY fold, not just training, so the
+    caveat is visible in the output rather than buried here. For
+    nrel_flatirons that matters: marshall_fire is 11.3 km away and is in
+    the test fold, so Flatirons must not be pooled with the demo sites or
+    counted as an independent unseen sample alongside it.
+    """
+    radius_km = CLUSTER_RADIUS_KM if radius_km is None else radius_km
+    manifest = load_manifest() if manifest is None else manifest
+    ref = casegen.read_reference()
+
+    out = []
+    for m in measurement_sites():
+        by_fold = {}
+        for slug, fold in manifest["fold_of"].items():
+            r = ref[slug]
+            km = haversine_km(m.lat, m.lon, r["lat"], r["lon"])
+            if fold not in by_fold or km < by_fold[fold][0]:
+                by_fold[fold] = (km, slug)
+        train_km, train_slug = by_fold.get("train", (1e9, None))
+        if train_km < radius_km:
+            raise ValueError(
+                f"measurement site {m.slug} is {train_km:.1f} km from "
+                f"{train_slug}, which is TRAINING terrain, inside the "
+                f"{radius_km:.0f} km clustering radius. The model has "
+                f"effectively seen this ground.")
+        out.append((m.slug, by_fold))
+    return out
 
 
 def demo_sites():

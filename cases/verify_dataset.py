@@ -79,7 +79,8 @@ def main(argv=None):
     p.add_argument("--data", default=os.path.join(ROOT, "data", "corpus"))
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--fold", action="append", default=None,
-                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD],
+                   choices=list(corpus.FOLDS) + [corpus.DEMO_FOLD,
+                                                 corpus.MEASUREMENT_FOLD],
                    help="the folds this run was meant to produce "
                         "(default: the three split folds)")
     p.add_argument("--full", action="store_true",

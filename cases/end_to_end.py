@@ -69,6 +69,10 @@ def main(argv=None):
     p.add_argument("--fold", default="test")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--csv", default=None, metavar="PATH")
+    p.add_argument("--by-site", action="store_true",
+                   help="group by site rather than by relief. Relief bins "
+                       "are the right axis across a fold; when the point is "
+                       "a handful of named places, the site is")
     args = p.parse_args(argv)
 
     device = torch.device("mps" if torch.backends.mps.is_available()
@@ -98,7 +102,8 @@ def main(argv=None):
         nlev = lv.size
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
-                            window_m=corpus.WINDOW_M, scales=scales)
+                            window_m=corpus.WINDOW_M, scales=scales,
+                            spectral=bool(ck["args"].get("spectral")))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]
@@ -123,6 +128,7 @@ def main(argv=None):
         quad = float(np.hypot(e_floor, e_lev))
         rows.append({
             "id": info["id"],
+            "site": info["id"].split(":")[0],
             "relief": relief_of.get(info["id"].split("@")[0], float("nan")),
             "baseline": e_base,
             "floor": e_floor,
@@ -147,7 +153,21 @@ def main(argv=None):
           f"from {args.run}")
     print("vector RMSE against the solver's 3D field, in m/s\n")
 
-    W = {"group": 9, "relief": 10, "n": 4, "mean": 8, "worst": 8}
+    def grouped(key):
+        if not args.by_site:
+            return (E.group_by_relief(rows, key=key),
+                    ["group", "relief", "n", "mean", "worst"])
+        out = []
+        for site in sorted({r["site"] for r in rows}):
+            v = [r[key] for r in rows if r["site"] == site]
+            rel = [r["relief"] for r in rows if r["site"] == site]
+            out.append({"group": site,
+                        "relief": f"{min(rel):.0f}-{max(rel):.0f}",
+                        "n": len(v), "mean": float(np.mean(v)),
+                        "worst": float(np.max(v))})
+        return out, ["group", "relief", "n", "mean", "worst"]
+
+    W = {"group": 16, "relief": 10, "n": 4, "mean": 8, "worst": 8}
     for key, title in (
             ("baseline", "BASELINE  the undisturbed profile"),
             ("floor", "FLOOR  stitched from TRUE levels -- the limit"),
@@ -156,8 +176,8 @@ def main(argv=None):
             ("amplification", "AMPLIFICATION  end-to-end / quadrature; "
                               "1.0 means stitching added nothing")):
         print(title)
-        print(E.table(E.group_by_relief(rows, key=key),
-                      ["group", "relief", "n", "mean", "worst"], W))
+        tbl, cols = grouped(key)
+        print(E.table(tbl, cols, W))
         print()
 
     import numpy as np

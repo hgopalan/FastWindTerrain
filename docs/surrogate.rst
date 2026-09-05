@@ -1228,3 +1228,149 @@ with the cliff.
 still negative, and because the principled fix is now obvious: supply
 coordinate channels explicitly, so position is available without the
 artificial border, and then replicate padding costs nothing. Untested.
+
+How much data does this actually need?
+======================================
+
+The question the corpus was built without an answer to. Five fractions of
+the training fold, with and without D4 augmentation, at a fixed 30 000
+gradient steps -- steps rather than epochs, because at fixed epochs a
+smaller set gets fewer updates and the comparison would measure training
+amount as much as data amount. Whole windows are held in or out; splitting
+the four directions of one window would overstate how much ground the
+model saw. Validation error in m/s:
+
+=========  ========  =========  =========  ========
+windows      solves      no D4    with D4      gain
+=========  ========  =========  =========  ========
+10               40     1.1348     0.8947   -21.2 %
+20               81     0.9788     0.8248   -15.7 %
+40              162     0.8660     0.7709   -11.0 %
+81              324     0.8181     0.7568    -7.5 %
+162             648     0.8211     0.7616    -7.2 %
+=========  ========  =========  =========  ========
+
+**Doubling from 81 to 162 windows bought nothing** -- marginally negative
+on both curves. 324 solves reached what 648 reached, and with D4
+augmentation 162 solves came within 2 % of the full corpus. The overnight
+generation run could have been ninety minutes.
+
+**D4 augmentation is worth about four times the data**, at every scale:
+20 windows augmented (0.825) beats 40 plain (0.866); 40 augmented (0.771)
+beats 81 plain (0.818). The gain decays smoothly -- 21, 16, 11, 7.5,
+7.2 % -- which is the signature of genuine augmentation rather than a
+regulariser that happens to help. Eight solves of diagnostic bought it.
+
+**And 7 % of it survives at the plateau.** The model never fully learns
+the symmetry from data alone, even with the whole corpus. An architecture
+with D4 equivariance built in rather than taught should recover that for
+free, which is a motivated next step in a way the architecture sweep was
+not.
+
+One seed per point. The plateau is far larger than the +/-0.005 wobble at
+the top of the curve, but each point wants three seeds before this is
+quoted.
+
+Global spectral descriptors: a negative result
+----------------------------------------------
+
+Chetco Bar's gentle cells carry 0.750 m/s against 0.205 at Flatirons at
+identical LOCAL slope, so the region's overall ruggedness clearly matters
+and a bounded receptive field cannot see it. Six D4-invariant scalars --
+spectral slope, power in three wavelength bands, spectral anisotropy,
+detrended RMS height -- were added as constant planes to supply it.
+Scored on the unseen sites, where the hypothesis lives:
+
+=========  =====  ==========  =========  =========  =========  =========  ========
+spectral      D4    perdigao      gorge    cameron     chetco        ALL     ratio
+=========  =====  ==========  =========  =========  =========  =========  ========
+no            no      0.3835     0.4397     0.5800     0.7959     0.5498      2.08
+yes           no      0.3897     0.4357     0.5318     0.7715     0.5321      1.98
+no           yes      0.3448     0.3859     0.4745     0.6709     0.4690      1.95
+yes          yes      0.3716     0.4109     0.5050     0.7062     0.4984      1.90
+=========  =====  ==========  =========  =========  =========  =========  ========
+
+The last column is Chetco over Perdigao, the hard-to-easy spread the
+descriptors were built to narrow. It does narrow, monotonically, 2.08 to
+1.98 and 1.95 to 1.90. But the mean improves 3 % without augmentation and
+gets 6 % WORSE with it, and augmented is the configuration that matters.
+
+**Verdict: no.** The reasoning was sound and the prediction was specific;
+the measurement declines it. Kept and documented, because the alternative
+is somebody having the same good idea again in a year. For scale, D4
+augmentation improves the same unseen mean by 14.7 %.
+
+What terrain explains, per scale and height
+===========================================
+
+``cases/coherence_study.py``. The field's cross-spectrum with terrain,
+ensemble-averaged per mode over 162 windows and then binned radially --
+the question linearised flow theory has answered analytically since
+Jackson and Hunt (1975), and the basis of models that transform the
+terrain, multiply by a transfer function and transform back.
+
+Coherence is the fraction of wind variance at wavenumber k explained by
+terrain at the SAME wavenumber:
+
+========  ========  ========  ========  ========  ========  ========  ========
+level         3536      1768      1000       632       400       253       141
+========  ========  ========  ========  ========  ========  ========  ========
+5 m          0.288     0.238     0.210     0.264     0.308     0.297     0.187
+40 m         0.452     0.387     0.307     0.291     0.242     0.168     0.067
+160 m        0.618     0.660     0.667     0.655     0.570     0.503     0.184
+308 m        0.668     0.773     0.815     0.842     0.814     0.806     0.539
+592 m        0.664     0.748     0.777     0.854     0.860     0.854     0.734
+========  ========  ========  ========  ========  ========  ========  ========
+
+Columns are terrain wavelength in metres. Direction 45 degrees agrees with
+direction 0 throughout.
+
+**Terrain explains about a quarter of the near-surface wind variance and
+about 85 % of it aloft.**
+
+THE CONTROL RULES OUT THE OBVIOUS OBJECTION. The same machinery, the same
+levels, the same samples give ``w`` a coherence of 0.61-0.89 at 5 m with
+an admittance slope of +0.94 against the kinematic theory's +1. So
+windowing and non-periodicity are not suppressing coherence: near the
+surface ``w`` is a clean diagonal linear function of terrain and ``u`` is
+not.
+
+That control also caught a real error. The first implementation formed the
+coherence AFTER radially averaging the cross-spectrum and returned 0.000
+with a slope of +0.13. The kinematic response flips phase with the sign of
+u.k, so a radial bin sums modes of opposite phase and they cancel.
+Coherence must be ensemble-averaged per mode and binned afterwards.
+
+Influence decays with height as potential flow predicts in scaling, but
+deeper:
+
+============  =========  ==================
+wavelength        L/2pi     measured e-fold
+============  =========  ==================
+632 m               101                 240
+400 m                64                 101
+253 m                40                  64
+141 m                23                  46
+============  =========  ==================
+
+A factor of 1.6 to 2.4 deeper than exp(-kz), which is what suppressed
+vertical transmissivity should do -- the solver pushes air around
+obstacles rather than over them, and the influence spreads further.
+
+Why the spectral architecture lost
+----------------------------------
+
+An FNO's spectral layer multiplies each mode independently: it is
+diagonal in wavenumber by construction. The coherence says the operator
+IS diagonal and near-linear above about 300 m, and is neither below it.
+
+So the architecture is well matched to the part of the column that is easy
+and that nobody asked for, and structurally mismatched to the 5-160 m band
+where the deliverable is and where the error lives. That turns the
+architecture result from "a U-Net beat a U-FNO in our runs" into a
+statement about the operator, measured before and independently of any
+training.
+
+It also bounds the linear-spectral-baseline idea usefully: a transfer
+function would reproduce most of the field above 300 m for nothing, and
+almost none of what matters below it.

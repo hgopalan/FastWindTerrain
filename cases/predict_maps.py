@@ -38,6 +38,22 @@ import corpus                                               # noqa: E402
 SHOW_LEVELS = (10.0, 80.0, 160.0)
 
 
+def input_channels(ck):
+    """How many input planes a checkpoint's model expects.
+
+    Derived from the run's own flags rather than hardcoded: a run with
+    --spectral carries six extra planes, and a loader that assumes four
+    fails at load_state_dict with a shape mismatch -- loudly, but only
+    after the run is finished.
+    """
+    from fastwindterrain import training as T
+
+    n = len(T.INPUT_CHANNELS)
+    if ck.get("args", {}).get("spectral"):
+        n += len(T.SPECTRAL_CHANNELS)
+    return n
+
+
 def load_run(run_dir, device):
     """Rebuild the model from a checkpoint, with the run's own settings."""
     import torch
@@ -49,7 +65,7 @@ def load_run(run_dir, device):
     kw = ({"width": a["width"]} if ck["arch"] == "unet"
           else {"width": a["width"], "modes": a["modes"],
                 "blocks": a["blocks"]})
-    model = M.build(ck["arch"], 4, 27, **kw)
+    model = M.build(ck["arch"], input_channels(ck), 27, **kw)
     model.load_state_dict(ck["state"])
     return model.to(device).eval(), ck
 
@@ -100,7 +116,8 @@ def main(argv=None):
             continue
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
-                            window_m=corpus.WINDOW_M, scales=scales)
+                            window_m=corpus.WINDOW_M, scales=scales,
+                            spectral=bool(ck["args"].get("spectral")))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]

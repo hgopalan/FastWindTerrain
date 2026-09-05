@@ -508,13 +508,15 @@ def test_the_committed_manifest_is_free_of_leakage():
 def test_every_window_belongs_to_its_site_fold():
     """Every SPLIT window's fold comes from its site's cluster assignment.
 
-    Demo windows are excluded on purpose: they are not in the split, take
-    no share of the fractions, and their sites are deliberately absent from
-    fold_of -- that absence is what stops them being trained on.
+    Demo and measurement windows are excluded on purpose: they are not in
+    the split, take no share of the fractions, and their sites are
+    deliberately absent from fold_of -- that absence is what stops them
+    being trained on.
     """
     manifest = corpus.load_manifest()
+    outside = (corpus.DEMO_FOLD, corpus.MEASUREMENT_FOLD)
     for w in manifest["windows"]:
-        if w["fold"] == corpus.DEMO_FOLD:
+        if w["fold"] in outside:
             assert w["site"] not in manifest["fold_of"], w["id"]
             continue
         assert w["fold"] == manifest["fold_of"][w["site"]], w["id"]
@@ -596,10 +598,12 @@ def test_the_manifest_is_the_one_build_corpus_would_write_today():
         radius_km=committed["cluster_radius_km"])
     assert rebuilt["folds"] == committed["folds"]
     assert rebuilt["sites"] == committed["sites"]
-    # Only the split windows: --demo appends its own afterwards, and
-    # rebuilding the split does not and should not reproduce them.
+    # Only the split windows: --demo and --measurement append their own
+    # afterwards, and rebuilding the split does not and should not
+    # reproduce them.
     committed_split = [w["id"] for w in committed["windows"]
-                       if w["fold"] != corpus.DEMO_FOLD]
+                       if w["fold"] not in (corpus.DEMO_FOLD,
+                                            corpus.MEASUREMENT_FOLD)]
     assert [w["id"] for w in rebuilt["windows"]] == committed_split
 
 
@@ -904,3 +908,73 @@ def test_demo_windows_carry_the_demo_fold_and_nothing_else_does():
     # and no demo site appears in the split
     for s in sites:
         assert s not in manifest["fold_of"]
+
+
+# ---------------------------------------------------------------------------
+# Measurement sites: real terrain where the wind has actually been measured.
+# A different question from the demonstration sites, and a different bar.
+# ---------------------------------------------------------------------------
+
+def test_measurement_sites_take_no_share_of_the_split():
+    assert corpus.MEASUREMENT_FOLD not in corpus.FOLDS
+    assert corpus.MEASUREMENT_FOLD != corpus.DEMO_FOLD
+    assert corpus.MEASUREMENT_FOLD not in corpus.DEFAULT_FRACTIONS
+
+
+def test_a_measurement_site_is_not_also_a_demo_site():
+    """They answer different questions and clear different bars. A site in
+    both lists would inherit whichever guard ran last."""
+    assert not (set(corpus.MEASUREMENT_SITES) & set(corpus.DEMO_SITES))
+
+
+@needs_manifest
+def test_a_measurement_site_must_be_far_from_TRAINING():
+    """The bar that actually matters for one: the model must not have seen
+    the ground. Distance from the TEST fold is deliberately not required --
+    the reference there is a met tower, not the corpus -- which is exactly
+    why this is a separate guard from assert_demo_is_unseen.
+    """
+    got = corpus.assert_measurement_is_untrained()
+    assert got, "there should be at least one measurement site"
+    for slug, by_fold in got:
+        km, _ = by_fold["train"]
+        assert km >= corpus.CLUSTER_RADIUS_KM, f"{slug} is {km:.1f} km"
+
+
+@needs_manifest
+def test_the_measurement_guard_reports_every_fold_not_only_training():
+    """nrel_flatirons sits 11 km from marshall_fire, which is in the test
+    fold. That is allowed and it is also the single thing a reader of this
+    result must not miss, so the guard has to surface it rather than
+    quietly pass."""
+    by_fold = dict(corpus.assert_measurement_is_untrained())["nrel_flatirons"]
+    assert set(by_fold) >= set(corpus.FOLDS)
+    assert by_fold["test"][0] < corpus.CLUSTER_RADIUS_KM, (
+        "if this ever stops being true the caveat can be dropped")
+
+
+@needs_manifest
+def test_a_measurement_site_would_be_refused_if_it_sat_on_training_ground():
+    """The guard has to be able to fail, or it is decoration."""
+    man = corpus.load_manifest()
+    ref = casegen.read_reference()
+    train = next(s for s, f in man["fold_of"].items() if f == "train")
+    saved = dict(corpus.MEASUREMENT_SITES)
+    try:
+        corpus.MEASUREMENT_SITES["fake_site"] = {
+            "name": "fake", "state": "?", "year": 0,
+            "lat": ref[train]["lat"], "lon": ref[train]["lon"]}
+        with pytest.raises(ValueError, match="TRAINING terrain"):
+            corpus.assert_measurement_is_untrained(manifest=man)
+    finally:
+        corpus.MEASUREMENT_SITES.clear()
+        corpus.MEASUREMENT_SITES.update(saved)
+
+
+@needs_manifest
+def test_the_gorge_demo_site_clears_the_strict_bar():
+    """columbia_gorge is a demo site rather than a measurement site because
+    it clears the 50 km radius against EVERY fold, unlike nrel_flatirons.
+    If that ever stops being true it must be relabelled."""
+    worst = {slug: km for km, slug, _, _ in corpus.assert_demo_is_unseen()}
+    assert worst["columbia_gorge"] >= corpus.CLUSTER_RADIUS_KM
