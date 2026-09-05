@@ -175,6 +175,13 @@ def main(argv=None):
                         "is the variable: at fixed epochs a smaller set "
                         "gets fewer updates, and the comparison then "
                         "measures training amount as much as data amount.")
+    p.add_argument("--spectral", action="store_true",
+                   help="six global spectral descriptors as extra input "
+                        "planes. Motivated by measurement: Chetco Bar's "
+                        "gentle cells are 3.7x worse than Flatirons' at "
+                        "identical LOCAL slope, so the region's ruggedness "
+                        "matters and a bounded receptive field cannot see "
+                        "it. All six are D4-invariant.")
     p.add_argument("--augment-d4", action="store_true",
                    help="the eight symmetries of the square, exact and "
                         "verified against the solver at 1e-13. Training "
@@ -218,9 +225,11 @@ def main(argv=None):
     scales = T.channel_rms(train_raw, u_ref)
     ds_tr = T.LevelDataset(train_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
-                           augment_d4=args.augment_d4)
+                           augment_d4=args.augment_d4,
+                           spectral=args.spectral)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
-                           derive_reverses=True, scales=scales)
+                           derive_reverses=True, scales=scales,
+                           spectral=args.spectral)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")

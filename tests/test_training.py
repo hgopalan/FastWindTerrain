@@ -311,3 +311,94 @@ def test_the_augmented_index_labels_which_symmetry_it_used():
     assert "d4" not in aug.info(0), "the identity block is not relabelled"
     assert aug.info(n)["d4"] == "rot90"
     assert aug.info(4 * n)["d4"] == "rot0_mirror"
+
+
+# ---------------------------------------------------------------------------
+# Global spectral descriptors. Six numbers a convolutional receptive field
+# cannot reach, motivated by a measurement: Chetco Bar's gentle cells are
+# 3.7x worse than Flatirons' gentle cells at identical LOCAL slope.
+# ---------------------------------------------------------------------------
+
+def _ridged(n=64, wavelength=8, amp=100.0, seed=0):
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:n, 0:n]
+    return (500.0 + amp * np.sin(2 * np.pi * x / wavelength)
+            + 5.0 * rng.standard_normal((n, n)))
+
+
+def test_the_descriptors_are_invariant_under_every_symmetry():
+    """The design constraint that keeps them compatible with augmentation.
+    The anisotropy uses the eigenvalue RATIO of the spectral second-moment
+    tensor and never its orientation, precisely so that rotating a window
+    cannot change it."""
+    h = _ridged()
+    d0 = T.spectral_descriptors(h, 50.0, 50.0)
+    for ang, mir in T.D4_OPS[1:]:
+        d = T.spectral_descriptors(T.transform_field(h, ang, mir),
+                                   50.0, 50.0)
+        # Round-off only: rot180 is a double flip and is exact, while the
+        # transposing operations reorder the FFT's summation.
+        assert np.abs(d - d0).max() < 1e-4, (ang, mir)
+
+
+def test_the_descriptors_separate_terrain_the_local_channels_cannot():
+    """Two fields with the SAME slope statistics and different structure.
+    If the descriptors cannot tell them apart they are not carrying the
+    global information they exist for."""
+    fine = _ridged(wavelength=4, amp=50.0)
+    coarse = _ridged(wavelength=32, amp=50.0 * 8)   # same peak slope
+    a = T.spectral_descriptors(fine, 50.0, 50.0)
+    b = T.spectral_descriptors(coarse, 50.0, 50.0)
+    i_long = T.SPECTRAL_CHANNELS.index("spec_long")
+    i_short = T.SPECTRAL_CHANNELS.index("spec_short")
+    assert b[i_long] > a[i_long], "the coarse field must be longer-scaled"
+    assert a[i_short] > b[i_short]
+
+
+def test_anisotropy_is_larger_for_a_ridged_field_than_an_isotropic_one():
+    rng = np.random.default_rng(3)
+    i_a = T.SPECTRAL_CHANNELS.index("spec_aniso")
+    ridged = T.spectral_descriptors(_ridged(), 50.0, 50.0)[i_a]
+    noise = T.spectral_descriptors(
+        500.0 + 30.0 * rng.standard_normal((64, 64)), 50.0, 50.0)[i_a]
+    assert ridged > noise
+
+
+def test_the_descriptors_ignore_a_planar_trend():
+    """Terrain is detrended before the transform. Without it the FFT of a
+    tilted, non-periodic tile is dominated by the edge discontinuity and
+    the descriptors would describe the window rather than the ground."""
+    h = _ridged()
+    y, x = np.mgrid[0:h.shape[0], 0:h.shape[1]]
+    tilted = h + 2.0 * x + 1.5 * y
+    assert np.allclose(T.spectral_descriptors(h, 50.0, 50.0),
+                       T.spectral_descriptors(tilted, 50.0, 50.0),
+                       atol=1e-4)
+
+
+def test_the_spectral_channels_are_constant_planes_appended_in_order():
+    a = _arrays(n=32)
+    a["terrain"] = _ridged(n=32).astype("float32")
+    x = T.make_input(a, 45.0, 50.0, 50.0, spectral=True)
+    assert x.shape[0] == len(T.INPUT_CHANNELS) + len(T.SPECTRAL_CHANNELS)
+    d = T.spectral_descriptors(a["terrain"], 50.0, 50.0)
+    for j, v in enumerate(d):
+        plane = x[len(T.INPUT_CHANNELS) + j]
+        assert np.allclose(plane, v), T.SPECTRAL_CHANNELS[j]
+        assert plane.min() == plane.max(), "must be constant"
+
+
+def test_the_spectral_channels_survive_augmentation_untouched():
+    """They are D4-invariant, so the transform must pass them through
+    rather than rotating them -- rotating a constant plane is harmless but
+    rotating the WRONG channel would not be."""
+    solved = _samples(n=32)
+    for info, a in solved:
+        a["terrain"] = _ridged(n=32).astype("float32")
+    ds = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                        augment_d4=True, spectral=True)
+    n = len(solved)
+    base = ds[0][0][len(T.INPUT_CHANNELS):]
+    for op in range(1, 8):
+        got = ds[op * n][0][len(T.INPUT_CHANNELS):]
+        assert np.allclose(got, base, atol=1e-4), op

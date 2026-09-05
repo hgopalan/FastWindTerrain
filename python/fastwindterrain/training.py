@@ -62,6 +62,8 @@ __all__ = [
     "terrain_channels",
     "make_input",
     "make_target",
+    "SPECTRAL_CHANNELS",
+    "spectral_descriptors",
     "channel_rms",
     "D4_OPS",
     "transform_field",
@@ -156,11 +158,118 @@ def terrain_channels(terrain, dx, dy, scale=TERRAIN_SCALE_M):
             slope.astype(np.float32))
 
 
-def make_input(arrays, direction_deg, dx, dy, scale=TERRAIN_SCALE_M):
-    """``(4, ny, nx)`` float32, channels in :data:`INPUT_CHANNELS` order."""
+#: Global spectral descriptors, in order. Six numbers summarising the
+#: whole window's terrain, broadcast as constant planes.
+#:
+#: WHY THESE EXIST. Measured on the unseen sites: Chetco Bar's GENTLE
+#: cells carry 0.750 m/s against 0.205 at Flatirons, at identical local
+#: slope -- 3.7 times worse on ground that is locally the same. So the
+#: error depends on the region's overall ruggedness and not only on the
+#: cell's own slope, which is what continuity being a global constraint
+#: implies: a flat patch surrounded by ridges sees flow already deflected
+#: by its neighbours. A convolutional network with a bounded receptive
+#: field cannot cheaply compute that for itself.
+#:
+#: WHY NOT THE SPECTRUM ITSELF. Feeding FFT(terrain) as channels adds no
+#: information -- the transform is invertible -- and it destroys spatial
+#: correspondence, so a convolution would mix neighbouring FREQUENCIES,
+#: which are not related the way neighbouring pixels are. The FNO already
+#: works in that basis and lost to a U-Net by 22 % at 23 times the
+#: compute. These are summaries, not a representation change.
+#:
+#: EVERY ONE IS INVARIANT UNDER D4. The anisotropy uses the eigenvalue
+#: RATIO of the spectral second-moment tensor, never its orientation, so
+#: rotating or reflecting a window leaves all six unchanged and the
+#: augmentation is undisturbed. That is a design constraint, not a
+#: coincidence.
+SPECTRAL_CHANNELS = ("spec_slope", "spec_long", "spec_mid", "spec_short",
+                     "spec_aniso", "spec_rms")
+
+#: Wavelength band edges in metres for the power fractions: long is
+#: everything above 1 km, short everything below 300 m. Chosen against the
+#: slope-error study, which found the tail tracking features of a few
+#: hundred metres.
+SPECTRAL_BANDS_M = (1000.0, 300.0)
+
+
+def spectral_descriptors(terrain, dx, dy, scale=TERRAIN_SCALE_M):
+    """Six global numbers describing a window's terrain spectrum.
+
+    The field is detrended (mean and plane) and Hann-windowed first.
+    Without that, the FFT of a non-periodic tile is dominated by the
+    discontinuity at its edges and the descriptors describe the window
+    rather than the ground. A separable Hann window on a square domain is
+    itself D4-invariant, so this does not disturb the augmentation.
+    """
+    h = np.asarray(terrain, dtype=np.float64)
+    ny, nx = h.shape
+
+    # Detrend: remove the mean and the best-fit plane. The plane rotates
+    # with the terrain, so the detrended field transforms correctly.
+    yy, xx = np.mgrid[0:ny, 0:nx].astype(np.float64)
+    A = np.stack([np.ones(h.size), xx.ravel(), yy.ravel()], axis=1)
+    coef, *_ = np.linalg.lstsq(A, h.ravel(), rcond=None)
+    d = h - (A @ coef).reshape(h.shape)
+    rms = float(d.std())
+
+    w = np.hanning(ny)[:, None] * np.hanning(nx)[None, :]
+    P = np.abs(np.fft.fft2(d * w)) ** 2
+    ky = np.fft.fftfreq(ny, d=dy)[:, None]
+    kx = np.fft.fftfreq(nx, d=dx)[None, :]
+    k = np.sqrt(kx ** 2 + ky ** 2)
+
+    live = k > 0
+    tot = float(P[live].sum()) or 1.0
+
+    # Power fractions by wavelength. Zero-frequency is excluded, so these
+    # describe the shape of the variance rather than its size -- the size
+    # is spec_rms.
+    lam = np.divide(1.0, k, out=np.full_like(k, np.inf), where=k > 0)
+    lo, hi = SPECTRAL_BANDS_M
+    f_long = float(P[live & (lam >= lo)].sum()) / tot
+    f_mid = float(P[live & (lam < lo) & (lam >= hi)].sum()) / tot
+    f_short = float(P[live & (lam < hi)].sum()) / tot
+
+    # Spectral slope: log P against log k, radially. Terrain is roughly
+    # self-affine, so beta sits near 2-4; centred and halved to land at
+    # order one.
+    kk, pp = k[live].ravel(), P[live].ravel()
+    m = pp > 0
+    beta = -float(np.polyfit(np.log(kk[m]), np.log(pp[m]), 1)[0])
+    beta = (beta - 3.0) / 2.0
+
+    # Anisotropy: eigenvalue ratio of the power-weighted second-moment
+    # tensor in (kx, ky). Orientation is deliberately discarded.
+    KX = np.broadcast_to(kx, k.shape)[live]
+    KY = np.broadcast_to(ky, k.shape)[live]
+    wgt = P[live] / tot
+    Mxx = float((wgt * KX * KX).sum())
+    Myy = float((wgt * KY * KY).sum())
+    Mxy = float((wgt * KX * KY).sum())
+    tr, det = Mxx + Myy, Mxx * Myy - Mxy * Mxy
+    disc = max(tr * tr / 4.0 - det, 0.0) ** 0.5
+    l1, l2 = tr / 2.0 + disc, max(tr / 2.0 - disc, 1e-30)
+    aniso = float(np.log(l1 / l2))
+
+    return np.array([beta, f_long, f_mid, f_short, aniso,
+                     rms / float(scale)], dtype=np.float32)
+
+
+def make_input(arrays, direction_deg, dx, dy, scale=TERRAIN_SCALE_M,
+               spectral=False):
+    """``(4, ny, nx)`` float32, channels in :data:`INPUT_CHANNELS` order.
+
+    With ``spectral``, six more constant planes from
+    :func:`spectral_descriptors` are appended -- global context a
+    convolutional receptive field cannot reach.
+    """
     ter, slope = terrain_channels(arrays["terrain"], dx, dy, scale)
     sx, cy = direction_channels(direction_deg, ter.shape)
-    return np.stack([ter, slope, sx, cy])
+    chans = [ter, slope, sx, cy]
+    if spectral:
+        d = spectral_descriptors(arrays["terrain"], dx, dy, scale)
+        chans += [np.full(ter.shape, v, dtype=np.float32) for v in d]
+    return np.stack(chans)
 
 
 def make_target(arrays, u_ref):
@@ -226,7 +335,8 @@ class LevelDataset:
 
     def __init__(self, samples, u_ref=10.0, window_m=5000.0,
                  scale=TERRAIN_SCALE_M, derive_reverses=False,
-                 as_tensor=True, scales=None, augment_d4=False):
+                 as_tensor=True, scales=None, augment_d4=False,
+                 spectral=False):
         self.u_ref = float(u_ref)
         self.scales = (None if scales is None
                        else np.asarray(scales, dtype=np.float32))
@@ -238,6 +348,7 @@ class LevelDataset:
         # transform is a couple of array views and a 2x2 rotation of the
         # horizontal components, cheaper than holding eight copies.
         self.augment_d4 = bool(augment_d4)
+        self.spectral = bool(spectral)
         ops = D4_OPS if self.augment_d4 else ((0, False),)
 
         items = list(samples)
@@ -299,7 +410,8 @@ class LevelDataset:
 
         nx = arrays["terrain"].shape[-1]
         dx = dy = self.window_m / nx
-        x = make_input(arrays, direction, dx, dy, self.scale)
+        x = make_input(arrays, direction, dx, dy, self.scale,
+                       spectral=self.spectral)
         # Only the velocity is negated. The terrain and slope channels are
         # geometry and are IDENTICAL between a solve and its reverse; the
         # direction channels flip because make_input was handed the
@@ -318,7 +430,10 @@ class LevelDataset:
             ter = transform_field(x[0], ang, mir)
             slope = transform_field(x[1], ang, mir)
             dx_, dy_ = transform_vector(x[2], x[3], ang, mir)
-            x = np.stack([ter, slope, dx_, dy_]).astype(np.float32)
+            # The spectral planes are constant AND D4-invariant by
+            # construction, so they pass through untouched.
+            x = np.stack([ter, slope, dx_, dy_,
+                          *x[4:]]).astype(np.float32)
 
             n = y.shape[0] // 3
             uy_, vy_ = transform_vector(y[:n], y[n:2 * n], ang, mir)
