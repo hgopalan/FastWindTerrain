@@ -235,10 +235,11 @@ def main(argv=None):
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")
 
     x0, y0 = ds_tr[0]
-    model = M.build(args.arch, x0.shape[0], y0.shape[0],
-                    **({"width": args.width} if args.arch == "unet" else
-                       {"width": args.width, "modes": args.modes,
-                        "blocks": args.blocks})).to(device)
+    # Only the spectral architectures take modes and blocks; unet and
+    # gcnn are configured by width alone.
+    kw = ({"width": args.width, "modes": args.modes, "blocks": args.blocks}
+          if args.arch in ("fno", "ufno") else {"width": args.width})
+    model = M.build(args.arch, x0.shape[0], y0.shape[0], **kw).to(device)
     print(f"{args.arch} on {device}: "
           f"{M.count_parameters(model):,} parameters\n")
 

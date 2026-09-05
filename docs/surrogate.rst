@@ -1374,3 +1374,53 @@ training.
 It also bounds the linear-spectral-baseline idea usefully: a transfer
 function would reproduce most of the field above 300 m for nothing, and
 almost none of what matters below it.
+
+Exact equivariance, for free
+----------------------------
+
+The learning curve left a loose end: D4 augmentation still bought 7 % at
+the plateau, so the model never fully learns the symmetry from data even
+with the whole corpus. ``models.d4_average`` closes that by construction
+rather than by teaching.
+
+Frame averaging. For a finite group, running the model on all eight
+symmetries of the input, mapping each output back and averaging makes ANY
+network exactly equivariant:
+
+    f(x) = (1/N) sum over the eight g of  g^-1 . model(g . x)
+
+Measured on an untrained U-Net: equivariance error 6e-08 wrapped against
+0.704 bare, on a field of order one. Twelve million times better, and no
+weight was touched.
+
+It costs eight forward passes and needs no retraining, which is the point
+-- it sizes the prize before anyone builds a group-equivariant
+architecture to get the same thing at 1x cost. On the unseen sites, end
+to end in m/s:
+
+==================  ============  =========  =============  =========
+model               trained w/D4      plain    D4-averaged       gain
+==================  ============  =========  =============  =========
+lc_f10                        no     0.5498         0.4569    -16.9 %
+lc_f10augmentd4              yes     0.4690         0.4215    -10.1 %
+unet_conv                     no     0.4931         0.4204    -14.7 %
+==================  ============  =========  =============  =========
+
+**A model trained WITH augmentation still gains 10 %**, which settles what
+the learning curve only hinted at: augmentation teaches the symmetry
+approximately and never completely. The 7 % residual there and the 10 %
+here are the same gap seen from two directions.
+
+0.4215 is the best unseen-terrain result in this work, and it came from a
+model that was already trained.
+
+CHANNEL SEMANTICS ARE NOT OPTIONAL. Under a rotation the terrain and
+slope planes merely move; the direction planes rotate as a vector, and so
+does (u, v) at each output level, while w is a scalar. Treating a vector
+as a scalar gives a field that looks right and points the wrong way, which
+no loss curve would reveal -- so the wrapper is told which channels are
+which rather than guessing.
+
+The obvious next step is a group-equivariant convolution: the same
+guarantee with tied weights instead of averaged outputs, at one forward
+pass and roughly eight times fewer effective parameters. Untested.
