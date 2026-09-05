@@ -1387,7 +1387,7 @@ Frame averaging. For a finite group, running the model on all eight
 symmetries of the input, mapping each output back and averaging makes ANY
 network exactly equivariant:
 
-    f(x) = (1/|G|) sum_g  g^-1 . model(g . x)
+    f(x) = (1/N) sum over the eight g of  g^-1 . model(g . x)
 
 Measured on an untrained U-Net: equivariance error 6e-08 wrapped against
 0.704 bare, on a field of order one. Twelve million times better, and no
@@ -1399,7 +1399,7 @@ architecture to get the same thing at 1x cost. On the unseen sites, end
 to end in m/s:
 
 ==================  ============  =========  =============  =========
-model               trained w/ D4      plain    D4-averaged       gain
+model               trained w/D4      plain    D4-averaged       gain
 ==================  ============  =========  =============  =========
 lc_f10                        no     0.5498         0.4569    -16.9 %
 lc_f10augmentd4              yes     0.4690         0.4215    -10.1 %
