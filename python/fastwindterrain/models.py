@@ -27,7 +27,7 @@ the effect can be measured, not because it is a reasonable default.
 import math
 
 __all__ = ["ARCHITECTURES", "build", "count_parameters",
-           "clip_grad_norm"]
+           "clip_grad_norm", "d4_average"]
 
 #: Name to builder. Extend here; nothing else needs to know.
 ARCHITECTURES = ("fno", "ufno", "unet")
@@ -277,3 +277,88 @@ def build(name, in_channels, out_channels, **kw):
         # correction is applied once the representation is formed.
         kw.setdefault("unet_blocks", 2)
     return SpectralNet(in_channels, out_channels, **kw)
+
+
+def d4_average(model, n_levels=9, n_scalar_in=2):
+    """Wrap a model so it is EXACTLY equivariant under the square's group.
+
+    Frame averaging: run the model on all eight symmetries of the input,
+    map each output back, and average. For a finite group this makes any
+    network exactly equivariant with no architectural change --
+
+        f(x) = (1/|G|) sum_g  g^-1 . model(g . x)
+
+    -- and, unlike augmentation, the guarantee holds for weights that were
+    never trained for it. That is the point: the learning curve showed D4
+    augmentation still buying 7 % at the plateau, so the model never fully
+    learns the symmetry from data even with the whole corpus. This closes
+    that gap by construction.
+
+    It costs eight forward passes. The cheaper form is a group-equivariant
+    convolution, which ties the weights instead of averaging the outputs;
+    this exists first because it can be measured on an ALREADY TRAINED
+    model, which sizes the prize before anyone pays for the architecture.
+
+    CHANNEL SEMANTICS ARE NOT OPTIONAL. Under a rotation the terrain and
+    slope planes merely move, the direction planes rotate as a vector, and
+    the same split applies to the output: (u, v) per level is a vector, w
+    is a scalar. Treating a vector as a scalar produces a field that looks
+    right and points the wrong way, which no loss curve would reveal.
+    ``n_scalar_in`` is how many leading input channels are scalars (two:
+    terrain and slope); the next two are the direction vector, and
+    anything after them is scalar again (the spectral descriptors).
+    """
+    import torch
+    import torch.nn as nn
+
+    from .training import D4_OPS
+
+    def _spatial(t, ang, mir):
+        if mir:
+            t = torch.flip(t, dims=(-1,))
+        for _ in range(int(round(ang)) % 360 // 90):
+            t = torch.transpose(torch.flip(t, dims=(-2,)), -2, -1)
+        return t
+
+    def _vector(a, b, ang, mir):
+        aa, bb = _spatial(a, ang, mir), _spatial(b, ang, mir)
+        if mir:
+            aa = -aa
+        th = torch.tensor(ang * torch.pi / 180.0, dtype=a.dtype,
+                          device=a.device)
+        c, s = torch.cos(th), torch.sin(th)
+        return aa * c - bb * s, aa * s + bb * c
+
+    class _D4Average(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x):
+            ns, out = n_scalar_in, None
+            for ang, mir in D4_OPS:
+                parts = [_spatial(x[:, :ns], ang, mir)]
+                ux, uy = _vector(x[:, ns:ns + 1], x[:, ns + 1:ns + 2],
+                                 ang, mir)
+                parts += [ux, uy]
+                if x.shape[1] > ns + 2:
+                    parts.append(_spatial(x[:, ns + 2:], ang, mir))
+                y = self.inner(torch.cat(parts, dim=1))
+
+                # Map the output BACK. The forward transform is mirror
+                # then rotate, so its inverse is rotate by -ang then
+                # mirror -- getting the order wrong is silent.
+                n = n_levels
+                u, v = y[:, :n], y[:, n:2 * n]
+                w = y[:, 2 * n:]
+                u, v = _vector(u, v, -ang, False)
+                w = _spatial(w, -ang, False)
+                if mir:
+                    u, v = _spatial(u, 0, True), _spatial(v, 0, True)
+                    u = -u
+                    w = _spatial(w, 0, True)
+                z = torch.cat([u, v, w], dim=1)
+                out = z if out is None else out + z
+            return out / float(len(D4_OPS))
+
+    return _D4Average(model)

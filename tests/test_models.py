@@ -10,6 +10,7 @@ registry refuses a name it does not know instead of silently building
 something else.
 """
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -142,3 +143,50 @@ def test_width_and_modes_pass_through():
     small = M.count_parameters(M.build("fno", IN, OUT, width=8, modes=4))
     big = M.count_parameters(M.build("fno", IN, OUT, width=32, modes=16))
     assert big > 10 * small
+
+
+def test_frame_averaging_is_exactly_equivariant():
+    """The point of it. An untrained model is wildly non-equivariant --
+    0.7 on a field of order 1 -- and wrapping it makes the error float32
+    round-off, without touching a single weight. That is what augmentation
+    cannot promise: the learning curve showed D4 augmentation still buying
+    7 % at the plateau, so the symmetry is never fully learned from data.
+    """
+    from fastwindterrain import training as T
+
+    def apply_in(x, ang, mir):
+        a = torch.from_numpy(np.ascontiguousarray(
+            T.transform_field(x[:, :2].numpy(), ang, mir)))
+        u, v = T.transform_vector(x[:, 2:3].numpy(), x[:, 3:4].numpy(),
+                                  ang, mir)
+        return torch.cat([a, torch.from_numpy(np.ascontiguousarray(u)),
+                          torch.from_numpy(np.ascontiguousarray(v))],
+                         dim=1).float()
+
+    def apply_out(y, ang, mir):
+        u, v = T.transform_vector(y[:, :9].numpy(), y[:, 9:18].numpy(),
+                                  ang, mir)
+        w = T.transform_field(y[:, 18:].numpy(), ang, mir)
+        return torch.from_numpy(np.ascontiguousarray(
+            np.concatenate([u, v, w], axis=1))).float()
+
+    torch.manual_seed(0)
+    base = M.build("unet", 4, 27, width=8)
+    wrapped = M.d4_average(base, n_levels=9, n_scalar_in=2)
+    x = torch.randn(2, 4, 32, 32)
+    with torch.no_grad():
+        y0, worst, raw = wrapped(x), 0.0, 0.0
+        for ang, mir in T.D4_OPS:
+            worst = max(worst, float(
+                (wrapped(apply_in(x, ang, mir))
+                 - apply_out(y0, ang, mir)).abs().max()))
+        for ang, mir in T.D4_OPS[1:]:
+            raw = max(raw, float((base(apply_in(x, ang, mir))
+                                  - apply_out(base(x), ang, mir)).abs().max()))
+    assert worst < 1e-5, f"wrapped model is not equivariant: {worst:.2e}"
+    assert raw > 1e-2, "the bare model should be far from equivariant"
+
+
+def test_frame_averaging_preserves_the_output_shape():
+    wrapped = M.d4_average(M.build("unet", IN, OUT, width=8), n_levels=9)
+    assert wrapped(torch.randn(2, IN, 100, 100)).shape == (2, OUT, 100, 100)
