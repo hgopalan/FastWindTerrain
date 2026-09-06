@@ -1424,3 +1424,76 @@ which rather than guessing.
 The obvious next step is a group-equivariant convolution: the same
 guarantee with tied weights instead of averaged outputs, at one forward
 pass and roughly eight times fewer effective parameters. Untested.
+
+A prediction that failed
+========================
+
+The coherence study measured terrain explaining about a quarter of the
+near-surface wind variance and about 85 % of it aloft, and from that I
+drew a mechanism: an FNO's spectral layer is diagonal in wavenumber, so a
+basis that is GLOBAL in space is matched to the easy part of the column
+and mismatched to the 5-160 m band where the deliverable lives.
+
+That mechanism made a specific, falsifiable prediction. A wavelet
+neural operator uses a basis localised in space AND scale, so if the
+diagnosis were right, WNO's advantage over FNO should appear **below
+160 m** and largely vanish aloft.
+
+It was recorded before the runs and it is wrong. Per level on the 180
+unseen windows, vector RMSE in m/s:
+
+=========  =========  =========  =========  =========  ==============
+height         U-FNO        WNO      U-Net      G-CNN    WNO vs U-FNO
+=========  =========  =========  =========  =========  ==============
+5 m           1.3362     1.2247     1.0378     0.9934          -8.3 %
+10 m          1.3711     1.2160     0.9705     0.9270         -11.3 %
+20 m          1.3463     1.1212     0.8155     0.7408         -16.7 %
+40 m          1.2747     0.9409     0.5803     0.4961         -26.2 %
+80 m          1.2929     0.8698     0.4316     0.3129         -32.7 %
+160 m         1.3212     0.8559     0.4139     0.2732         -35.2 %
+355 m         1.2895     0.8356     0.4113     0.2551         -35.2 %
+787 m         1.0957     0.7619     0.4049     0.2350         -30.5 %
+1744 m        1.0689     0.8573     0.5202     0.3021         -19.8 %
+column        1.2704     0.9789     0.6652     0.5798         -22.9 %
+=========  =========  =========  =========  =========  ==============
+
+**WNO's gain over U-FNO is smallest at the surface and largest aloft** --
+8 % at 5 m against 35 % at 160 m. The prediction was not merely
+unsupported; the effect runs the other way.
+
+What survives and what does not
+-------------------------------
+
+The coherence measurement stands. It is a property of the operator,
+measured with a control that reproduces a known analytic result -- w
+coherent with terrain at 0.61-0.89 near the surface with an admittance
+slope of +0.94 against the kinematic +1.
+
+The INFERENCE drawn from it does not. "Spectral models fail near the
+surface because their basis is global" predicted an outcome that did not
+occur, and no amount of restating the coherence numbers repairs that.
+
+A better reading, and one the same data supports
+------------------------------------------------
+
+The problem is not global-versus-local basis. It is that a fixed linear
+transform followed by pointwise multiplication -- Fourier or wavelet --
+is the wrong operator class for this map, and the choice of transform is
+second order.
+
+* a localised basis genuinely helps: WNO beats U-FNO by 23 % overall;
+* it does not close the gap: WNO still loses to a plain U-Net by 47 %
+  and to the group-equivariant CNN by 69 %;
+* both spectral variants are nearly FLAT with height, 1.07-1.37 for
+  U-FNO and 0.76-1.22 for WNO, while both convolutional models improve
+  three- to fourfold from the surface upward.
+
+That last row is the strongest form of it. The spectral models are not
+losing only where the coherence is low -- they fail to exploit the part
+of the column where the operator is nearly linear and diagonal, which is
+the regime their inductive bias is supposed to suit.
+
+This is recorded rather than quietly dropped because the prediction was
+specific and registered in advance, and a negative result on one's own
+mechanism is worth more than an unfalsifiable story that happens to sit
+beside the right answer.
