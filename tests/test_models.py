@@ -261,15 +261,82 @@ def test_the_gcnn_shares_weights_across_the_group():
     """The parameter saving is the reason to prefer this over frame
     averaging. A D4 group convolution of a given width holds eight times
     fewer parameters than the plain convolution it replaces."""
-    from fastwindterrain.models import _modules
-    _, _, _ = _modules()
     g = M.build("gcnn", IN, OUT, width=32)
     u = M.build("unet", IN, OUT, width=32)
-    # Same width, but the gcnn carries 8 feature maps per channel, so it
-    # is larger overall -- the fair statement is per feature map.
+    # A D4 group convolution holds a weight of (cout, cin, 8, k, k) where
+    # the plain one would hold (8*cout, 8*cin, k, k) for the same number
+    # of feature maps -- eight times fewer. At the same WIDTH the gcnn is
+    # still larger overall, because it carries eight maps per channel, so
+    # the honest comparison is per feature map and that is what this
+    # checks.
     assert M.count_parameters(g) < 8 * M.count_parameters(u)
 
 
 def test_the_gcnn_handles_the_corpus_grid():
     m = M.build("gcnn", IN, OUT, width=8)
     assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+
+
+# ---------------------------------------------------------------------------
+# The wavelet neural operator. The architecture the coherence measurement
+# points at: terrain and wind are coherent at 0.85 aloft and 0.25 near the
+# surface, so a basis global in space is matched to the easy part of the
+# column and mismatched to the part the deliverable lives in.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("wave", ["haar", "db2"])
+def test_the_wavelet_transform_reconstructs_perfectly(wave):
+    """The self-test a library dependency would not have given us. The
+    DWT is implemented as a strided convolution with the filter bank, and
+    if it is not invertible then nothing built on it means anything.
+
+    It also caught a real off-by-one: conv_transpose returns H + n - 2
+    samples, not H + n - 1, so the overlap folded back is n - 2 and ZERO
+    for Haar. Getting that wrong corrupts only the first row and column,
+    which is invisible in an image and fatal here.
+    """
+    blk = M.build("wno", IN, OUT, width=8, blocks=1, levels=1,
+                  wave=wave).blocks[0]
+    x = torch.randn(2, 5, 32, 32)
+    coeffs = blk.dwt(x)
+    assert float((blk.idwt(coeffs) - x).abs().max()) < 1e-5
+
+
+@pytest.mark.parametrize("wave", ["haar", "db2"])
+def test_the_wavelet_transform_is_orthogonal(wave):
+    """Energy in equals energy in the coefficients. A filter bank that
+    reconstructs but does not preserve energy is not orthogonal, and the
+    synthesis-is-the-transpose shortcut would then be wrong."""
+    blk = M.build("wno", IN, OUT, width=8, blocks=1, levels=1,
+                  wave=wave).blocks[0]
+    x = torch.randn(2, 5, 32, 32)
+    e_in = float((x ** 2).sum())
+    e_c = float((blk.dwt(x) ** 2).sum())
+    assert abs(e_c - e_in) / e_in < 1e-4
+
+
+def test_the_wno_handles_the_corpus_grid():
+    """100 is not divisible by 8, so three levels need padding. A model
+    that silently returned 96 x 96 would misalign every field against its
+    terrain."""
+    m = M.build("wno", IN, OUT, width=8, levels=3)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+
+
+def test_the_wno_transfers_across_resolutions():
+    """The coarse weight is sized for the corpus grid and resampled when
+    the input differs -- the same freedom an FNO gets from fixing a mode
+    count rather than a grid."""
+    m = M.build("wno", IN, OUT, width=8)
+    for n in (64, 100, 128):
+        assert m(torch.randn(1, IN, n, n)).shape == (1, OUT, n, n)
+
+
+def test_the_wno_puts_its_capacity_in_the_coarse_band():
+    """The design choice worth pinning: the coarsest band gets a weight
+    per coefficient (the FNO low-mode analogue) while the detail bands
+    share one matrix per scale, which is what keeps the operator local."""
+    blk = M.build("wno", IN, OUT, width=16).blocks[0]
+    assert blk.coarse.dim() == 4, "coarse band is per-coefficient"
+    assert all(d.dim() == 3 for d in blk.detail), "details are shared"
+    assert blk.coarse.numel() > sum(d.numel() for d in blk.detail)

@@ -30,7 +30,7 @@ __all__ = ["ARCHITECTURES", "build", "count_parameters",
            "clip_grad_norm", "d4_average"]
 
 #: Name to builder. Extend here; nothing else needs to know.
-ARCHITECTURES = ("fno", "ufno", "unet", "gcnn")
+ARCHITECTURES = ("fno", "ufno", "unet", "gcnn", "wno")
 
 
 def _torch():
@@ -395,6 +395,177 @@ def _modules():
                 h = F.gelu(self.up[i](_gcat(skips[i], h)))
             return self._project(h)
 
+    #: Orthogonal analysis low-pass filters. Haar is two taps and exact;
+    #: db2 is four and smoother. The high-pass is the quadrature mirror,
+    #: and synthesis is the time reverse -- so one array defines the whole
+    #: bank and there is no second place to get it wrong.
+    WAVELETS = {
+        "haar": (0.7071067811865476, 0.7071067811865476),
+        "db2": (0.48296291314469025, 0.836516303737469,
+                0.22414386804185735, -0.12940952255092145),
+    }
+
+    def _qmf(lo):
+        """High-pass from low-pass: g[n] = (-1)^n h[N-1-n]."""
+        n = len(lo)
+        return [((-1) ** i) * lo[n - 1 - i] for i in range(n)]
+
+    class DWT2d(nn.Module):
+        """One level of a separable 2D discrete wavelet transform.
+
+        Implemented as a strided convolution with the filter bank rather
+        than pulled from a library: a DWT is exactly that, PyWavelets is
+        not differentiable in torch, and perfect reconstruction is a
+        strong self-test that a dependency would not have given us.
+
+        Periodic padding, because the transform must be invertible and
+        because the same wrap-around objection that applies to the FNO
+        does NOT apply here -- the wavelet is compact, so a mode only sees
+        the edge when it is AT the edge.
+        """
+
+        def __init__(self, wave="db2"):
+            super().__init__()
+            lo = list(WAVELETS[wave])
+            hi = _qmf(lo)
+            self.n = len(lo)
+            f = torch.tensor([lo, hi], dtype=torch.float32)
+            # Four separable 2D filters: LL, LH, HL, HH.
+            bank = torch.stack([torch.outer(f[a], f[b])
+                                for a in (0, 1) for b in (0, 1)])
+            self.register_buffer("bank", bank[:, None], persistent=False)
+
+        def forward(self, x):
+            b, c, h, w = x.shape
+            p = self.n - 1
+            xp = F.pad(x.reshape(b * c, 1, h, w), (0, p, 0, p),
+                       mode="circular")
+            y = F.conv2d(xp, self.bank, stride=2)
+            return y.reshape(b, c, 4, h // 2, w // 2)
+
+    class IDWT2d(nn.Module):
+        """The inverse. Orthogonal, so synthesis is the transpose."""
+
+        def __init__(self, wave="db2"):
+            super().__init__()
+            lo = list(WAVELETS[wave])
+            hi = _qmf(lo)
+            self.n = len(lo)
+            f = torch.tensor([lo, hi], dtype=torch.float32)
+            bank = torch.stack([torch.outer(f[a], f[b])
+                                for a in (0, 1) for b in (0, 1)])
+            self.register_buffer("bank", bank[:, None], persistent=False)
+
+        def forward(self, y):
+            b, c, s, hc, wc = y.shape
+            H, W = 2 * hc, 2 * wc
+            z = F.conv_transpose2d(y.reshape(b * c, s, hc, wc), self.bank,
+                                   stride=2)[:, 0]
+            # conv_transpose returns H + n - 2 samples, not H + n - 1:
+            # the overlap to fold back is n - 2, which is ZERO for Haar.
+            # Getting this off by one silently corrupts the first row and
+            # column, which is invisible in an image and fatal in an
+            # invertibility test.
+            q = self.n - 2
+            if q > 0:
+                z = z.clone()
+                z[:, :q, :] = z[:, :q, :] + z[:, H:H + q, :]
+                z[:, :, :q] = z[:, :, :q] + z[:, :, W:W + q]
+            return z[:, :H, :W].reshape(b, c, H, W)
+
+    class WaveletBlock(nn.Module):
+        """A learned operator in the wavelet basis.
+
+        The FNO analogue, with one deliberate difference. An FNO keeps the
+        lowest Fourier modes and learns a full channel matrix for each --
+        a GLOBAL basis, which the coherence study found to be a poor match
+        below 160 m where the deliverable is. Wavelets are localised in
+        space AND scale, so the same construction keeps locality:
+
+          * the coarsest approximation band is small, so it gets a full
+            per-coefficient channel matrix -- the direct counterpart of
+            FNO's low-mode weights;
+          * the detail bands get a channel matrix SHARED across positions,
+            one per scale, which is what keeps the operator local rather
+            than letting it memorise where each feature sat.
+        """
+
+        def __init__(self, ch, levels=3, wave="db2", coarse_hw=13):
+            super().__init__()
+            self.levels = levels
+            self.dwt = DWT2d(wave)
+            self.idwt = IDWT2d(wave)
+            # Per-scale, per-subband channel mixing for the details:
+            # SHARED across positions, which is what keeps the operator
+            # local rather than letting it memorise where a feature sat.
+            self.detail = nn.ParameterList([
+                nn.Parameter(torch.randn(3, ch, ch) / math.sqrt(ch))
+                for _ in range(levels)])
+            # The coarsest band is small, so it gets a full weight per
+            # coefficient -- the direct counterpart of an FNO's low-mode
+            # weights, and where most of the capacity lives. Sized for the
+            # corpus grid and resampled if the input resolution differs,
+            # the same way an FNO fixes its mode count.
+            self.coarse_hw = int(coarse_hw)
+            self.coarse = nn.Parameter(
+                torch.randn(ch, ch, coarse_hw, coarse_hw) / math.sqrt(ch))
+            self.pointwise = nn.Conv2d(ch, ch, 1)
+
+        def forward(self, x):
+            # Pad so every level halves exactly.
+            m = 2 ** self.levels
+            h, w = x.shape[-2:]
+            ph, pw = (-h) % m, (-w) % m
+            z = F.pad(x, (0, pw, 0, ph), mode="circular") if (ph or pw) else x
+
+            details = []
+            for _ in range(self.levels):
+                y = self.dwt(z)
+                z, d = y[:, :, 0], y[:, :, 1:]
+                details.append(d)
+            wgt = self.coarse
+            if wgt.shape[-2:] != z.shape[-2:]:
+                wgt = F.interpolate(wgt, size=z.shape[-2:],
+                                    mode="bilinear", align_corners=False)
+            z = torch.einsum("bchw,cdhw->bdhw", z, wgt)
+            for lev in range(self.levels - 1, -1, -1):
+                d = torch.einsum("bcshw,scd->bdshw", details[lev],
+                                 self.detail[lev])
+                z = self.idwt(torch.cat([z[:, :, None], d], dim=2))
+            z = z[..., :h, :w]
+            return z + self.pointwise(x)
+
+    class WNO(nn.Module):
+        """Wavelet neural operator: the FNO with a localised basis.
+
+        The architecture the coherence measurement points at. Terrain and
+        wind are coherent at 0.85 aloft and 0.25 near the surface, so a
+        basis that is global in space -- which is what makes an FNO
+        diagonal in wavenumber -- is well matched to the easy part of the
+        column and badly matched to the part the deliverable lives in.
+        Wavelets are localised in space and scale at once.
+        """
+
+        def __init__(self, in_ch, out_ch, width=32, blocks=4, levels=3,
+                     wave="db2", norm=True, groups=8):
+            super().__init__()
+            self.lift = nn.Conv2d(in_ch, width, 1)
+            self.blocks = nn.ModuleList(
+                [WaveletBlock(width, levels, wave) for _ in range(blocks)])
+            self.norms = nn.ModuleList([
+                (nn.GroupNorm(min(groups, width), width) if norm
+                 else nn.Identity()) for _ in range(blocks)])
+            self.project = nn.Sequential(
+                nn.Conv2d(width, 2 * width, 1), nn.GELU(),
+                nn.Conv2d(2 * width, out_ch, 1))
+
+        def forward(self, x):
+            x = self.lift(x)
+            for i, (b, n) in enumerate(zip(self.blocks, self.norms)):
+                y = n(b(x))
+                x = F.gelu(y) if i < len(self.blocks) - 1 else y
+            return self.project(x)
+
     class UNet(nn.Module):
         """The baseline: no spectral path anywhere.
 
@@ -438,7 +609,7 @@ def _modules():
                 x = self.up[i](torch.cat([skips[i], x], dim=1))
             return self.out(x)
 
-    return SpectralNet, UNet, GCNN
+    return SpectralNet, UNet, GCNN, WNO
 
 
 def build(name, in_channels, out_channels, **kw):
@@ -451,11 +622,13 @@ def build(name, in_channels, out_channels, **kw):
     if name not in ARCHITECTURES:
         raise ValueError(f"unknown architecture {name!r}; "
                          f"expected one of {ARCHITECTURES}")
-    SpectralNet, UNet, GCNN = _modules()
+    SpectralNet, UNet, GCNN, WNO = _modules()
     if name == "unet":
         return UNet(in_channels, out_channels, **kw)
     if name == "gcnn":
         return GCNN(in_channels, out_channels, **kw)
+    if name == "wno":
+        return WNO(in_channels, out_channels, **kw)
     if name == "fno":
         kw.setdefault("unet_blocks", 0)
     else:                                   # ufno
