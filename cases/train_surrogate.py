@@ -180,6 +180,13 @@ def main(argv=None):
                         "(dcnn only). Direction otherwise enters as two "
                         "constant planes at the input and has to survive "
                         "the whole network to be used at the end.")
+    p.add_argument("--no-slope", action="store_true",
+                   help="drop the slope input channel. It was supplied in "
+                        "all 31 runs so far because the correlation study "
+                        "found slope predicting the error -- but a 3x3 "
+                        "convolution can take a finite difference of the "
+                        "terrain in one layer, so whether it ADDS anything "
+                        "was never tested.")
     p.add_argument("--spectral", action="store_true",
                    help="six global spectral descriptors as extra input "
                         "planes. Motivated by measurement: Chetco Bar's "
@@ -231,10 +238,12 @@ def main(argv=None):
     ds_tr = T.LevelDataset(train_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
                            augment_d4=args.augment_d4,
-                           spectral=args.spectral)
+                           spectral=args.spectral,
+                           slope=not args.no_slope)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
-                           spectral=args.spectral)
+                           spectral=args.spectral,
+                           slope=not args.no_slope)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")

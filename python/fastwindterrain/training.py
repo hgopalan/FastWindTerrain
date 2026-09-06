@@ -256,16 +256,20 @@ def spectral_descriptors(terrain, dx, dy, scale=TERRAIN_SCALE_M):
 
 
 def make_input(arrays, direction_deg, dx, dy, scale=TERRAIN_SCALE_M,
-               spectral=False):
+               spectral=False, slope=True):
     """``(4, ny, nx)`` float32, channels in :data:`INPUT_CHANNELS` order.
 
     With ``spectral``, six more constant planes from
     :func:`spectral_descriptors` are appended -- global context a
     convolutional receptive field cannot reach.
     """
-    ter, slope = terrain_channels(arrays["terrain"], dx, dy, scale)
+    ter, slp = terrain_channels(arrays["terrain"], dx, dy, scale)
     sx, cy = direction_channels(direction_deg, ter.shape)
-    chans = [ter, slope, sx, cy]
+    # WITHOUT the slope channel the terrain field is still there, and a
+    # 3x3 convolution can take a finite difference in one layer -- so
+    # whether supplying it explicitly helps is a question, not an
+    # assumption. It was assumed for thirty-one runs before anyone asked.
+    chans = [ter, slp, sx, cy] if slope else [ter, sx, cy]
     if spectral:
         d = spectral_descriptors(arrays["terrain"], dx, dy, scale)
         chans += [np.full(ter.shape, v, dtype=np.float32) for v in d]
@@ -336,7 +340,7 @@ class LevelDataset:
     def __init__(self, samples, u_ref=10.0, window_m=5000.0,
                  scale=TERRAIN_SCALE_M, derive_reverses=False,
                  as_tensor=True, scales=None, augment_d4=False,
-                 spectral=False):
+                 spectral=False, slope=True):
         self.u_ref = float(u_ref)
         self.scales = (None if scales is None
                        else np.asarray(scales, dtype=np.float32))
@@ -349,6 +353,7 @@ class LevelDataset:
         # horizontal components, cheaper than holding eight copies.
         self.augment_d4 = bool(augment_d4)
         self.spectral = bool(spectral)
+        self.slope = bool(slope)
         ops = D4_OPS if self.augment_d4 else ((0, False),)
 
         items = list(samples)
@@ -411,7 +416,7 @@ class LevelDataset:
         nx = arrays["terrain"].shape[-1]
         dx = dy = self.window_m / nx
         x = make_input(arrays, direction, dx, dy, self.scale,
-                       spectral=self.spectral)
+                       spectral=self.spectral, slope=self.slope)
         # Only the velocity is negated. The terrain and slope channels are
         # geometry and are IDENTICAL between a solve and its reverse; the
         # direction channels flip because make_input was handed the
@@ -427,13 +432,15 @@ class LevelDataset:
             # channels ARE the flow vector, so they rotate as one -- which
             # is why the wind direction never has to be recomputed here,
             # and one convention cannot disagree with another.
-            ter = transform_field(x[0], ang, mir)
-            slope = transform_field(x[1], ang, mir)
-            dx_, dy_ = transform_vector(x[2], x[3], ang, mir)
+            ns = 2 if self.slope else 1
+            head = transform_field(x[:ns], ang, mir)
+            dx_, dy_ = transform_vector(x[ns], x[ns + 1], ang, mir)
             # The spectral planes are constant AND D4-invariant by
             # construction, so they pass through untouched.
-            x = np.stack([ter, slope, dx_, dy_,
-                          *x[4:]]).astype(np.float32)
+            x = np.concatenate([np.asarray(head),
+                                np.asarray(dx_)[None],
+                                np.asarray(dy_)[None],
+                                np.asarray(x[ns + 2:])]).astype(np.float32)
 
             n = y.shape[0] // 3
             uy_, vy_ = transform_vector(y[:n], y[n:2 * n], ang, mir)

@@ -112,7 +112,8 @@ def main(argv=None):
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
                             window_m=corpus.WINDOW_M, scales=scales,
-                            spectral=bool(ck["args"].get("spectral")))
+                            spectral=bool(ck["args"].get("spectral")),
+                                slope=not bool(ck["args"].get("no_slope")))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]
