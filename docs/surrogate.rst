@@ -1497,3 +1497,81 @@ This is recorded rather than quietly dropped because the prediction was
 specific and registered in advance, and a negative result on one's own
 mechanism is worth more than an unfalsifiable story that happens to sit
 beside the right answer.
+
+Would a level below 5 m help? Not for the reason expected
+=========================================================
+
+The near-surface band is the only one outside tolerance, and every
+architecture lands within 4.5 % of every other there, so it is not an
+architecture problem. ``--by-height`` had traced the FLOOR's near-surface
+error to extrapolation: below the lowest level the field is filled from a
+log law carrying 0.467 m/s against 0.112 for anything interpolated. The
+obvious fix is a level underneath, so the bottom cells are interpolated.
+
+That would cost a regenerated corpus, because levels are extracted at
+generation time. So the ceiling was measured first, from 3D fields
+already stored -- no solving, no training. If the floor does not improve,
+nothing built on the new level set can.
+
+``cases/low_level_study.py``, 60 test samples, m/s:
+
+============  ==============  ==============  ===============
+band (AGL)        9 (corpus)     10 (+2.5 m)    10 (+1 aloft)
+============  ==============  ==============  ===============
+0-10 m                0.3426          0.2989           0.3426
+10-50 m               0.1794          0.1794           0.1794
+50-160 m              0.1302          0.1302           0.1302
+160+ m                0.0938          0.0938           0.0579
+column                0.1479          0.1448           0.1266
+============  ==============  ==============  ===============
+
+**The 2.5 m level does what it was designed to do** -- 12.7 % off the
+0-10 m floor. **And the control kills it anyway.** Spending the same
+tenth level ALOFT improves the column floor by 14.4 %, seven times more,
+while doing nothing at the surface. Adding any tenth level adds capacity;
+a gain at 2.5 m only means something if the same level spent elsewhere
+does not buy more, and it does.
+
+The number that actually decides it
+-----------------------------------
+
+Neither of those. The floor is not what the models are up against:
+
+============  ============  ============  ==========
+band (AGL)           floor    best model       ratio
+============  ============  ============  ==========
+0-10 m              0.3426        0.9934        2.9x
+160+ m              0.0938        0.2350        2.5x
+============  ============  ============  ==========
+
+**Every model sits two and a half to three times above the reconstruction
+floor, at every height.** Lowering a ceiling from 0.34 to 0.30 buys
+nothing when the model is at 0.99. The level set is not the binding
+constraint anywhere -- the model is.
+
+A correction, and what it changes
+---------------------------------
+
+This experiment had been ranked above the architecture work, on the
+strength of the earlier finding that the near-surface FLOOR error is
+extrapolation rather than resolution. That finding stands. The inference
+drawn from it -- that the model's near-surface error was therefore about
+the level set -- does not. They are different quantities and were
+conflated.
+
+What it leaves is a sharper target. There is a factor of about three
+available at every height before level placement matters at all, and the
+error fields of architectures as different as a group-equivariant CNN and
+a plain U-Net are correlated at 0.82, so roughly seventy per cent of that
+error is shared. It will not come from another architecture either.
+
+That points at the inputs rather than the model or the level set: the
+network is given terrain, slope and direction, and if the residual is
+systematic across every architecture and well clear of the
+representational floor, the most likely explanation is that the input
+does not determine the answer. The slope ablation and the larger-context
+run test exactly that.
+
+Recorded because it cost nothing and killed a planned corpus
+regeneration -- which is the whole argument for measuring ceilings before
+paying for experiments.
