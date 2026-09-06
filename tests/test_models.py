@@ -340,3 +340,40 @@ def test_the_wno_puts_its_capacity_in_the_coarse_band():
     assert blk.coarse.dim() == 4, "coarse band is per-coefficient"
     assert all(d.dim() == 3 for d in blk.detail), "details are shared"
     assert blk.coarse.numel() > sum(d.numel() for d in blk.detail)
+
+
+def test_the_dilated_cnn_keeps_full_resolution_and_sees_far():
+    """Two measurements pull opposite ways: the error is near the surface
+    and set by LOCAL slope, so downsampling discards what matters; but
+    Chetco Bar's gentle cells are 3.7x worse than Flatirons' at identical
+    local slope, so the surroundings matter too. Dilation buys the
+    receptive field without losing the resolution."""
+    m = M.build("dcnn", IN, OUT, width=8)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+    dil = [b[0].dilation[0] for b in m.blocks]
+    assert max(dil) >= 8, f"receptive field too small: {dil}"
+    # No stride and no pooling anywhere: full resolution throughout.
+    assert all(b[0].stride == (1, 1) for b in m.blocks)
+
+
+def test_film_changes_the_output_with_direction():
+    """The point of conditioning: two different wind directions must give
+    different fields even when everything else is identical. A FiLM that
+    ignores its input would train quietly and mean nothing."""
+    torch.manual_seed(0)
+    m = M.build("dcnn", IN, OUT, width=8, film=True).eval()
+    x = torch.randn(1, IN, 32, 32)
+    a = x.clone(); a[:, 2], a[:, 3] = 1.0, 0.0
+    b = x.clone(); b[:, 2], b[:, 3] = 0.0, 1.0
+    with torch.no_grad():
+        assert float((m(a) - m(b)).abs().max()) > 1e-3
+
+
+def test_film_is_not_offered_on_the_equivariant_model():
+    """A FiLM MLP maps a direction VECTOR to per-channel scalars and
+    nothing makes it commute with a rotation, so attaching it to the
+    G-CNN would silently break the exact equivariance that model exists
+    for. It is a dcnn option only."""
+    import inspect
+    m = M.build("gcnn", IN, OUT, width=8)
+    assert not any("film" in n for n, _ in m.named_modules())

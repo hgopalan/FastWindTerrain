@@ -30,7 +30,7 @@ __all__ = ["ARCHITECTURES", "build", "count_parameters",
            "clip_grad_norm", "d4_average"]
 
 #: Name to builder. Extend here; nothing else needs to know.
-ARCHITECTURES = ("fno", "ufno", "unet", "gcnn", "wno")
+ARCHITECTURES = ("fno", "ufno", "unet", "gcnn", "wno", "dcnn")
 
 
 def _torch():
@@ -566,6 +566,83 @@ def _modules():
                 x = F.gelu(y) if i < len(self.blocks) - 1 else y
             return self.project(x)
 
+    class FiLM(nn.Module):
+        """Per-layer scale and shift conditioned on the wind direction.
+
+        Direction currently enters as two constant planes at the input and
+        has to survive every layer to be used at the end. FiLM conditions
+        each block on it directly, which is the standard remedy and is
+        cheap: a small MLP from (ux, uy) to a gamma and beta per channel.
+
+        It is deliberately NOT applied to an equivariant backbone. The MLP
+        maps a vector to per-channel scalars, and nothing constrains it to
+        commute with a rotation, so bolting it onto the G-CNN would break
+        the exact equivariance that model exists for.
+        """
+
+        def __init__(self, ch, hidden=32):
+            super().__init__()
+            self.net = nn.Sequential(nn.Linear(2, hidden), nn.GELU(),
+                                     nn.Linear(hidden, 2 * ch))
+            self.ch = ch
+
+        def forward(self, x, d):
+            gb = self.net(d)                       # (B, 2C)
+            g, b = gb[:, :self.ch], gb[:, self.ch:]
+            return x * (1.0 + g[:, :, None, None]) + b[:, :, None, None]
+
+    class DilatedCNN(nn.Module):
+        """Residual blocks at increasing dilation, at full resolution.
+
+        Motivated by two measurements pulling in opposite directions. The
+        error lives near the surface and is set by LOCAL slope, so
+        downsampling throws away exactly the detail that matters. But
+        Chetco Bar's gentle cells are 3.7x worse than Flatirons' at
+        identical local slope, so the surrounding terrain matters too and
+        a 3x3 stack cannot see it.
+
+        Dilation buys receptive field without losing resolution: with
+        dilations 1, 2, 4, 8, 16 the field reaches about 2 km on a 50 m
+        grid -- the scale the coherence study found the response living at
+        -- while every layer still works on the full grid.
+
+        ``film`` conditions each block on the wind direction rather than
+        making it survive the whole network as two constant planes.
+        """
+
+        def __init__(self, in_ch, out_ch, width=64, dilations=(1, 2, 4, 8,
+                                                               16, 1),
+                     film=False, n_dir=2, groups=8):
+            super().__init__()
+            self.film_on = bool(film)
+            self.n_dir = n_dir
+            self.lift = nn.Conv2d(in_ch, width, 1)
+            self.blocks = nn.ModuleList()
+            self.norms = nn.ModuleList()
+            self.films = nn.ModuleList()
+            for d in dilations:
+                self.blocks.append(nn.Sequential(
+                    nn.Conv2d(width, width, 3, padding=d, dilation=d),
+                    nn.GELU(),
+                    nn.Conv2d(width, width, 3, padding=d, dilation=d)))
+                self.norms.append(nn.GroupNorm(min(groups, width), width))
+                self.films.append(FiLM(width) if film else nn.Identity())
+            self.project = nn.Sequential(
+                nn.Conv2d(width, 2 * width, 1), nn.GELU(),
+                nn.Conv2d(2 * width, out_ch, 1))
+
+        def forward(self, x):
+            # The direction planes are constant, so one value per sample
+            # is the whole of what FiLM needs.
+            d = x[:, 2:2 + self.n_dir].mean(dim=(-2, -1))
+            h = self.lift(x)
+            for blk, nrm, flm in zip(self.blocks, self.norms, self.films):
+                y = nrm(blk(h))
+                if self.film_on:
+                    y = flm(y, d)
+                h = h + F.gelu(y)          # residual, so depth is free
+            return self.project(h)
+
     class UNet(nn.Module):
         """The baseline: no spectral path anywhere.
 
@@ -609,7 +686,7 @@ def _modules():
                 x = self.up[i](torch.cat([skips[i], x], dim=1))
             return self.out(x)
 
-    return SpectralNet, UNet, GCNN, WNO
+    return SpectralNet, UNet, GCNN, WNO, DilatedCNN
 
 
 def build(name, in_channels, out_channels, **kw):
@@ -622,13 +699,15 @@ def build(name, in_channels, out_channels, **kw):
     if name not in ARCHITECTURES:
         raise ValueError(f"unknown architecture {name!r}; "
                          f"expected one of {ARCHITECTURES}")
-    SpectralNet, UNet, GCNN, WNO = _modules()
+    SpectralNet, UNet, GCNN, WNO, DilatedCNN = _modules()
     if name == "unet":
         return UNet(in_channels, out_channels, **kw)
     if name == "gcnn":
         return GCNN(in_channels, out_channels, **kw)
     if name == "wno":
         return WNO(in_channels, out_channels, **kw)
+    if name == "dcnn":
+        return DilatedCNN(in_channels, out_channels, **kw)
     if name == "fno":
         kw.setdefault("unet_blocks", 0)
     else:                                   # ufno

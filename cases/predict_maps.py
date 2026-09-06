@@ -65,6 +65,8 @@ def load_run(run_dir, device):
     kw = ({"width": a["width"], "modes": a["modes"],
            "blocks": a["blocks"]} if ck["arch"] in ("fno", "ufno")
           else {"width": a["width"]})
+    if ck["arch"] == "dcnn":
+        kw["film"] = bool(a.get("film"))
     model = M.build(ck["arch"], input_channels(ck), 27, **kw)
     model.load_state_dict(ck["state"])
     return model.to(device).eval(), ck

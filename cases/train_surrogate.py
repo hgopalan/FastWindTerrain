@@ -175,6 +175,11 @@ def main(argv=None):
                         "is the variable: at fixed epochs a smaller set "
                         "gets fewer updates, and the comparison then "
                         "measures training amount as much as data amount.")
+    p.add_argument("--film", action="store_true",
+                   help="condition every block on the wind direction "
+                        "(dcnn only). Direction otherwise enters as two "
+                        "constant planes at the input and has to survive "
+                        "the whole network to be used at the end.")
     p.add_argument("--spectral", action="store_true",
                    help="six global spectral descriptors as extra input "
                         "planes. Motivated by measurement: Chetco Bar's "
@@ -239,6 +244,8 @@ def main(argv=None):
     # gcnn are configured by width alone.
     kw = ({"width": args.width, "modes": args.modes, "blocks": args.blocks}
           if args.arch in ("fno", "ufno") else {"width": args.width})
+    if args.arch == "dcnn":
+        kw["film"] = args.film
     model = M.build(args.arch, x0.shape[0], y0.shape[0], **kw).to(device)
     print(f"{args.arch} on {device}: "
           f"{M.count_parameters(model):,} parameters\n")
