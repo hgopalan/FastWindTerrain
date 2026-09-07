@@ -10,6 +10,7 @@ registry refuses a name it does not know instead of silently building
 something else.
 """
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -142,3 +143,237 @@ def test_width_and_modes_pass_through():
     small = M.count_parameters(M.build("fno", IN, OUT, width=8, modes=4))
     big = M.count_parameters(M.build("fno", IN, OUT, width=32, modes=16))
     assert big > 10 * small
+
+
+def test_frame_averaging_is_exactly_equivariant():
+    """The point of it. An untrained model is wildly non-equivariant --
+    0.7 on a field of order 1 -- and wrapping it makes the error float32
+    round-off, without touching a single weight. That is what augmentation
+    cannot promise: the learning curve showed D4 augmentation still buying
+    7 % at the plateau, so the symmetry is never fully learned from data.
+    """
+    from fastwindterrain import training as T
+
+    def apply_in(x, ang, mir):
+        a = torch.from_numpy(np.ascontiguousarray(
+            T.transform_field(x[:, :2].numpy(), ang, mir)))
+        u, v = T.transform_vector(x[:, 2:3].numpy(), x[:, 3:4].numpy(),
+                                  ang, mir)
+        return torch.cat([a, torch.from_numpy(np.ascontiguousarray(u)),
+                          torch.from_numpy(np.ascontiguousarray(v))],
+                         dim=1).float()
+
+    def apply_out(y, ang, mir):
+        u, v = T.transform_vector(y[:, :9].numpy(), y[:, 9:18].numpy(),
+                                  ang, mir)
+        w = T.transform_field(y[:, 18:].numpy(), ang, mir)
+        return torch.from_numpy(np.ascontiguousarray(
+            np.concatenate([u, v, w], axis=1))).float()
+
+    torch.manual_seed(0)
+    base = M.build("unet", 4, 27, width=8)
+    wrapped = M.d4_average(base, n_levels=9, n_scalar_in=2)
+    x = torch.randn(2, 4, 32, 32)
+    with torch.no_grad():
+        y0, worst, raw = wrapped(x), 0.0, 0.0
+        for ang, mir in T.D4_OPS:
+            worst = max(worst, float(
+                (wrapped(apply_in(x, ang, mir))
+                 - apply_out(y0, ang, mir)).abs().max()))
+        for ang, mir in T.D4_OPS[1:]:
+            raw = max(raw, float((base(apply_in(x, ang, mir))
+                                  - apply_out(base(x), ang, mir)).abs().max()))
+    assert worst < 1e-5, f"wrapped model is not equivariant: {worst:.2e}"
+    assert raw > 1e-2, "the bare model should be far from equivariant"
+
+
+def test_frame_averaging_preserves_the_output_shape():
+    wrapped = M.d4_average(M.build("unet", IN, OUT, width=8), n_levels=9)
+    assert wrapped(torch.randn(2, IN, 100, 100)).shape == (2, OUT, 100, 100)
+
+
+# ---------------------------------------------------------------------------
+# The group-equivariant CNN. Equivariance is a property of the weights
+# here, not of an averaging wrapper -- so it has to be tested, and the
+# test found three separate bugs before it passed.
+# ---------------------------------------------------------------------------
+
+def _d4_in(x, ang, mir):
+    from fastwindterrain import training as T
+    s = torch.from_numpy(np.ascontiguousarray(
+        T.transform_field(x[:, :2].numpy(), ang, mir)))
+    u, v = T.transform_vector(x[:, 2:3].numpy(), x[:, 3:4].numpy(), ang, mir)
+    return torch.cat([s, torch.from_numpy(np.ascontiguousarray(u)),
+                      torch.from_numpy(np.ascontiguousarray(v))],
+                     dim=1).float()
+
+
+def _d4_out(y, ang, mir, n=9):
+    from fastwindterrain import training as T
+    u, v = T.transform_vector(y[:, :n].numpy(), y[:, n:2 * n].numpy(),
+                              ang, mir)
+    w = T.transform_field(y[:, 2 * n:].numpy(), ang, mir)
+    return torch.from_numpy(np.ascontiguousarray(
+        np.concatenate([u, v, w], axis=1))).float()
+
+
+def test_the_group_table_matches_the_array_transforms():
+    """Not self-consistency -- the composition rule is checked against the
+    transforms it is supposed to describe. A table wrong by a transpose
+    gives a network that is ALMOST equivariant, which is harder to notice
+    than one that obviously is not."""
+    from fastwindterrain import training as T
+
+    f = np.arange(36.0).reshape(6, 6)
+    act = lambda x, g: T.transform_field(x, 90 * g[0], bool(g[1]))
+    for g1 in M.D4_ELEMENTS:
+        for g2 in M.D4_ELEMENTS:
+            assert np.array_equal(act(act(f, g2), g1),
+                                  act(f, M.d4_compose(g1, g2))), (g1, g2)
+    assert all(M.d4_compose(g, M.d4_inverse(g)) == (0, 0)
+               for g in M.D4_ELEMENTS)
+    assert len({M.d4_compose(a, b)
+                for a in M.D4_ELEMENTS for b in M.D4_ELEMENTS}) == 8
+
+
+@pytest.mark.parametrize("size", [32, 100])
+def test_the_gcnn_is_equivariant_by_construction(size):
+    """No averaging wrapper: the weights themselves carry the symmetry.
+
+    Three bugs had to be fixed before this passed, and none was visible
+    except through this test -- a convention mismatch between the lifting
+    and the group convolution (0.48 relative), a weight layout that paired
+    (i, h) against (h, i) (0.16), and a skip connection whose plain
+    torch.cat destroyed the group blocking.
+    """
+    torch.manual_seed(0)
+    m = M.build("gcnn", IN, OUT, width=8).eval()
+    x = torch.randn(2, IN, size, size)
+    from fastwindterrain import training as T
+    with torch.no_grad():
+        y0 = m(x)
+        worst = max(float((m(_d4_in(x, a, mi)) - _d4_out(y0, a, mi))
+                          .abs().max()) for a, mi in T.D4_OPS)
+    assert worst / float(y0.abs().max()) < 1e-5, f"{worst:.2e}"
+
+
+def test_the_gcnn_shares_weights_across_the_group():
+    """The parameter saving is the reason to prefer this over frame
+    averaging. A D4 group convolution of a given width holds eight times
+    fewer parameters than the plain convolution it replaces."""
+    g = M.build("gcnn", IN, OUT, width=32)
+    u = M.build("unet", IN, OUT, width=32)
+    # A D4 group convolution holds a weight of (cout, cin, 8, k, k) where
+    # the plain one would hold (8*cout, 8*cin, k, k) for the same number
+    # of feature maps -- eight times fewer. At the same WIDTH the gcnn is
+    # still larger overall, because it carries eight maps per channel, so
+    # the honest comparison is per feature map and that is what this
+    # checks.
+    assert M.count_parameters(g) < 8 * M.count_parameters(u)
+
+
+def test_the_gcnn_handles_the_corpus_grid():
+    m = M.build("gcnn", IN, OUT, width=8)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+
+
+# ---------------------------------------------------------------------------
+# The wavelet neural operator. The architecture the coherence measurement
+# points at: terrain and wind are coherent at 0.85 aloft and 0.25 near the
+# surface, so a basis global in space is matched to the easy part of the
+# column and mismatched to the part the deliverable lives in.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("wave", ["haar", "db2"])
+def test_the_wavelet_transform_reconstructs_perfectly(wave):
+    """The self-test a library dependency would not have given us. The
+    DWT is implemented as a strided convolution with the filter bank, and
+    if it is not invertible then nothing built on it means anything.
+
+    It also caught a real off-by-one: conv_transpose returns H + n - 2
+    samples, not H + n - 1, so the overlap folded back is n - 2 and ZERO
+    for Haar. Getting that wrong corrupts only the first row and column,
+    which is invisible in an image and fatal here.
+    """
+    blk = M.build("wno", IN, OUT, width=8, blocks=1, levels=1,
+                  wave=wave).blocks[0]
+    x = torch.randn(2, 5, 32, 32)
+    coeffs = blk.dwt(x)
+    assert float((blk.idwt(coeffs) - x).abs().max()) < 1e-5
+
+
+@pytest.mark.parametrize("wave", ["haar", "db2"])
+def test_the_wavelet_transform_is_orthogonal(wave):
+    """Energy in equals energy in the coefficients. A filter bank that
+    reconstructs but does not preserve energy is not orthogonal, and the
+    synthesis-is-the-transpose shortcut would then be wrong."""
+    blk = M.build("wno", IN, OUT, width=8, blocks=1, levels=1,
+                  wave=wave).blocks[0]
+    x = torch.randn(2, 5, 32, 32)
+    e_in = float((x ** 2).sum())
+    e_c = float((blk.dwt(x) ** 2).sum())
+    assert abs(e_c - e_in) / e_in < 1e-4
+
+
+def test_the_wno_handles_the_corpus_grid():
+    """100 is not divisible by 8, so three levels need padding. A model
+    that silently returned 96 x 96 would misalign every field against its
+    terrain."""
+    m = M.build("wno", IN, OUT, width=8, levels=3)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+
+
+def test_the_wno_transfers_across_resolutions():
+    """The coarse weight is sized for the corpus grid and resampled when
+    the input differs -- the same freedom an FNO gets from fixing a mode
+    count rather than a grid."""
+    m = M.build("wno", IN, OUT, width=8)
+    for n in (64, 100, 128):
+        assert m(torch.randn(1, IN, n, n)).shape == (1, OUT, n, n)
+
+
+def test_the_wno_puts_its_capacity_in_the_coarse_band():
+    """The design choice worth pinning: the coarsest band gets a weight
+    per coefficient (the FNO low-mode analogue) while the detail bands
+    share one matrix per scale, which is what keeps the operator local."""
+    blk = M.build("wno", IN, OUT, width=16).blocks[0]
+    assert blk.coarse.dim() == 4, "coarse band is per-coefficient"
+    assert all(d.dim() == 3 for d in blk.detail), "details are shared"
+    assert blk.coarse.numel() > sum(d.numel() for d in blk.detail)
+
+
+def test_the_dilated_cnn_keeps_full_resolution_and_sees_far():
+    """Two measurements pull opposite ways: the error is near the surface
+    and set by LOCAL slope, so downsampling discards what matters; but
+    Chetco Bar's gentle cells are 3.7x worse than Flatirons' at identical
+    local slope, so the surroundings matter too. Dilation buys the
+    receptive field without losing the resolution."""
+    m = M.build("dcnn", IN, OUT, width=8)
+    assert m(torch.randn(1, IN, 100, 100)).shape == (1, OUT, 100, 100)
+    dil = [b[0].dilation[0] for b in m.blocks]
+    assert max(dil) >= 8, f"receptive field too small: {dil}"
+    # No stride and no pooling anywhere: full resolution throughout.
+    assert all(b[0].stride == (1, 1) for b in m.blocks)
+
+
+def test_film_changes_the_output_with_direction():
+    """The point of conditioning: two different wind directions must give
+    different fields even when everything else is identical. A FiLM that
+    ignores its input would train quietly and mean nothing."""
+    torch.manual_seed(0)
+    m = M.build("dcnn", IN, OUT, width=8, film=True).eval()
+    x = torch.randn(1, IN, 32, 32)
+    a = x.clone(); a[:, 2], a[:, 3] = 1.0, 0.0
+    b = x.clone(); b[:, 2], b[:, 3] = 0.0, 1.0
+    with torch.no_grad():
+        assert float((m(a) - m(b)).abs().max()) > 1e-3
+
+
+def test_film_is_not_offered_on_the_equivariant_model():
+    """A FiLM MLP maps a direction VECTOR to per-channel scalars and
+    nothing makes it commute with a rotation, so attaching it to the
+    G-CNN would silently break the exact equivariance that model exists
+    for. It is a dcnn option only."""
+    import inspect
+    m = M.build("gcnn", IN, OUT, width=8)
+    assert not any("film" in n for n, _ in m.named_modules())

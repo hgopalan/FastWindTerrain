@@ -69,6 +69,12 @@ def main(argv=None):
     p.add_argument("--fold", default="test")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--csv", default=None, metavar="PATH")
+    p.add_argument("--d4-average", action="store_true",
+                   help="wrap the model in exact D4 frame averaging: run "
+                        "all eight symmetries and average. Costs eight "
+                        "forward passes and needs no retraining, so it "
+                        "sizes the prize before anyone builds a "
+                        "group-equivariant architecture to get it cheaply.")
     p.add_argument("--by-site", action="store_true",
                    help="group by site rather than by relief. Relief bins "
                        "are the right axis across a fold; when the point is "
@@ -78,6 +84,9 @@ def main(argv=None):
     device = torch.device("mps" if torch.backends.mps.is_available()
                           else "cpu")
     model, ck = load_run(args.run, device)
+    if args.d4_average:
+        from fastwindterrain import models as M
+        model = M.d4_average(model, n_levels=9, n_scalar_in=2).eval()
     scales = np.asarray(ck["scales"])
     u_ref = float(ck.get("u_ref", corpus.REFERENCE_SPEED_MS))
 
@@ -103,7 +112,8 @@ def main(argv=None):
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
                             window_m=corpus.WINDOW_M, scales=scales,
-                            spectral=bool(ck["args"].get("spectral")))
+                            spectral=bool(ck["args"].get("spectral")),
+                                slope=not bool(ck["args"].get("no_slope")))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]

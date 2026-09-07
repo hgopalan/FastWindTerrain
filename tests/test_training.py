@@ -402,3 +402,28 @@ def test_the_spectral_channels_survive_augmentation_untouched():
     for op in range(1, 8):
         got = ds[op * n][0][len(T.INPUT_CHANNELS):]
         assert np.allclose(got, base, atol=1e-4), op
+
+
+def test_the_slope_channel_can_be_dropped_without_breaking_anything():
+    """Slope went into all 31 runs because the correlation study found it
+    predicting the error -- which justifies SUPPLYING it, not the claim
+    that the network needs it. A 3x3 convolution can take a finite
+    difference of the terrain in one layer, so the channel may be doing
+    nothing, and that is an ablation rather than an assumption.
+
+    What must not change when it is dropped: the exact negation, and the
+    terrain not flipping under augmentation.
+    """
+    solved = _samples()
+    for slope in (True, False):
+        ds = T.LevelDataset(solved, derive_reverses=True, as_tensor=False,
+                            augment_d4=True, slope=slope)
+        x, _ = ds[0]
+        assert x.shape[0] == (4 if slope else 3)
+        half = len(ds) // 2
+        x0, y0 = ds[0]
+        x1, y1 = ds[half]
+        assert np.allclose(y1, -y0, atol=0), slope
+        assert np.array_equal(x1[0], x0[0]), slope
+        # The direction pair is still the last two channels either way.
+        assert np.allclose(x1[-2:], -x0[-2:], atol=1e-6), slope

@@ -49,6 +49,8 @@ def input_channels(ck):
     from fastwindterrain import training as T
 
     n = len(T.INPUT_CHANNELS)
+    if ck.get("args", {}).get("no_slope"):
+        n -= 1
     if ck.get("args", {}).get("spectral"):
         n += len(T.SPECTRAL_CHANNELS)
     return n
@@ -62,9 +64,11 @@ def load_run(run_dir, device):
     ck = torch.load(os.path.join(run_dir, "best.pt"), map_location="cpu",
                     weights_only=False)
     a = ck["args"]
-    kw = ({"width": a["width"]} if ck["arch"] == "unet"
-          else {"width": a["width"], "modes": a["modes"],
-                "blocks": a["blocks"]})
+    kw = ({"width": a["width"], "modes": a["modes"],
+           "blocks": a["blocks"]} if ck["arch"] in ("fno", "ufno")
+          else {"width": a["width"]})
+    if ck["arch"] == "dcnn":
+        kw["film"] = bool(a.get("film"))
     model = M.build(ck["arch"], input_channels(ck), 27, **kw)
     model.load_state_dict(ck["state"])
     return model.to(device).eval(), ck
@@ -117,7 +121,8 @@ def main(argv=None):
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
                             window_m=corpus.WINDOW_M, scales=scales,
-                            spectral=bool(ck["args"].get("spectral")))
+                            spectral=bool(ck["args"].get("spectral")),
+                            slope=not bool(ck["args"].get("no_slope")))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]

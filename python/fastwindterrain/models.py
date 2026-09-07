@@ -27,10 +27,10 @@ the effect can be measured, not because it is a reasonable default.
 import math
 
 __all__ = ["ARCHITECTURES", "build", "count_parameters",
-           "clip_grad_norm"]
+           "clip_grad_norm", "d4_average"]
 
 #: Name to builder. Extend here; nothing else needs to know.
-ARCHITECTURES = ("fno", "ufno", "unet")
+ARCHITECTURES = ("fno", "ufno", "unet", "gcnn", "wno", "dcnn")
 
 
 def _torch():
@@ -210,6 +210,439 @@ def _modules():
             x = self.project(x)
             return x[..., p:x.shape[-2] - p, p:x.shape[-1] - p] if p else x
 
+    def _rot90(t, r):
+        """Rotate the LAST TWO axes of a tensor counter-clockwise."""
+        for _ in range(int(r) % 4):
+            t = torch.transpose(torch.flip(t, dims=(-2,)), -2, -1)
+        return t
+
+    def _act_g(t, g):
+        """Apply a D4 element to the spatial axes: mirror in x, then rotate.
+
+        The same convention as training.transform_field and as the
+        rotation test that verified the solver at 1e-13. There is exactly
+        one convention in this project and this is it.
+        """
+        r, m = g
+        if m:
+            t = torch.flip(t, dims=(-1,))
+        return _rot90(t, r)
+
+    def _act_vec(u, v, g):
+        """The same element on a pair of horizontal components."""
+        r, m = g
+        uu, vv = _act_g(u, g), _act_g(v, g)
+        if m:
+            uu = -uu
+        th = torch.tensor(r * math.pi / 2.0, dtype=u.dtype, device=u.device)
+        c, s = torch.cos(th), torch.sin(th)
+        return uu * c - vv * s, uu * s + vv * c
+
+    class GConvD4(nn.Module):
+        """Group convolution over D4, features laid out as (B, C*8, H, W).
+
+        The group axis is folded into channels so pooling, interpolation
+        and normalisation work unchanged. One weight of shape
+        (Cout, Cin, 8, k, k) is expanded at every forward pass into the
+        (Cout*8, Cin*8, k, k) bank an ordinary conv2d wants:
+
+            expanded[g][o, (h, i)] = W[o, i, g^-1 h]
+
+        NO SPATIAL TRANSFORM OF THE WEIGHTS, because of the convention the
+        lifting layer sets. Lifting by ``conv(g^-1 . x)`` makes a feature
+        transform under an input symmetry by PURE PERMUTATION of the group
+        axis -- block g becomes block g0^-1 g, with no spatial movement,
+        since each block already lives in its own rotated frame. Mixing
+        that convention with the textbook one (which does move the
+        filters) is what a first attempt did, and it gave 0.48 relative
+        equivariance error instead of round-off.
+
+        That is where the saving is -- the
+        parameters are shared across the eight group elements rather than
+        learned eight times, so a G-CNN of a given width has EIGHT TIMES
+        FEWER parameters than a plain CNN of the same width, at comparable
+        compute.
+
+        This is strictly more expressive than frame-averaging the output:
+        the group axis is carried THROUGH the network, so intermediate
+        features are equivariant and layers can mix group elements.
+        """
+
+        def __init__(self, cin, cout, k=3, stride=1):
+            super().__init__()
+            self.cin, self.cout, self.k, self.stride = cin, cout, k, stride
+            self.weight = nn.Parameter(
+                torch.randn(cout, cin, 8, k, k)
+                * (1.0 / math.sqrt(cin * 8 * k * k)))
+            self.bias = nn.Parameter(torch.zeros(cout))
+            # g^-1 h for every (g, h), precomputed: the group table must
+            # not be rebuilt per step, and an index that is wrong by a
+            # transpose gives a network that is ALMOST equivariant.
+            idx = [[D4_ELEMENTS.index(d4_compose(d4_inverse(g), h))
+                    for h in D4_ELEMENTS] for g in D4_ELEMENTS]
+            self.register_buffer("gidx", torch.tensor(idx), persistent=False)
+
+        def forward(self, x):
+            blocks = []
+            for gi, g in enumerate(D4_ELEMENTS):
+                # (cout, cin, 8, k, k) reordered on the group axis, then
+                # the kernel itself moved by g.
+                # (cout, cin, 8, k, k) -> (cout, 8, cin, k, k) BEFORE the
+                # reshape. The feature tensor is laid out group-major
+                # (block g is channels g*C .. g*C+C), so the weight has to
+                # be too. Reshaping without this permute pairs weight
+                # (i, h) against input (h, i) and gives a network that is
+                # 0.16 relative off equivariance -- close enough to look
+                # like a subtle group-theory error and not be one.
+                w = self.weight[:, :, self.gidx[gi]]
+                w = w.permute(0, 2, 1, 3, 4).reshape(
+                    self.cout, 8 * self.cin, self.k, self.k)
+                blocks.append(w)
+            W = torch.cat(blocks, dim=0)
+            b = self.bias.repeat_interleave(1).repeat(8)
+            return F.conv2d(x, W, b, stride=self.stride,
+                            padding=self.k // 2)
+
+    def _gcat(a, b):
+        """Concatenate two group-major tensors BLOCK BY BLOCK.
+
+        Both are laid out (B, C*8, H, W) with block g occupying channels
+        g*C .. g*C+C. A plain torch.cat appends all of one then all of the
+        other, which produces [a_g0..a_g7, b_g0..b_g7] and destroys the
+        blocking -- the next group convolution then reads channel h of
+        block g from the wrong tensor. It is invisible except as an
+        equivariance error, which is exactly how it was found.
+        """
+        ca, cb = a.shape[1] // 8, b.shape[1] // 8
+        return torch.cat(
+            [torch.cat([a[:, g * ca:(g + 1) * ca],
+                        b[:, g * cb:(g + 1) * cb]], dim=1)
+             for g in range(8)], dim=1)
+
+    class GCNN(nn.Module):
+        """A U-Net whose convolutions are group convolutions over D4.
+
+        Equivariance is a property of the weights rather than something
+        taught by augmentation or bolted on at inference. The lifting and
+        projection layers are where the channel semantics live: terrain
+        and slope move, the direction planes rotate as a vector, and on
+        the way out (u, v) per level rotates while w does not.
+        """
+
+        def __init__(self, in_ch, out_ch, width=12, depth=4, n_levels=9,
+                     n_scalar_in=2):
+            super().__init__()
+            self.n_levels, self.ns = n_levels, n_scalar_in
+            self.in_ch = in_ch
+            chs = [width * 2 ** min(i, 2) for i in range(depth)]
+            self.lift = nn.Conv2d(in_ch, chs[0], 3, padding=1)
+            self.down = nn.ModuleList()
+            prev = chs[0]
+            for c in chs:
+                self.down.append(nn.ModuleList(
+                    [GConvD4(prev, c), GConvD4(c, c)]))
+                prev = c
+            self.mid = GConvD4(prev, prev)
+            self.up = nn.ModuleList([
+                GConvD4(chs[i] + (chs[i + 1] if i + 1 < depth else prev),
+                        chs[i]) for i in range(depth)])
+            # Acts on ONE group block, shared across all eight.
+            self.out = nn.Conv2d(chs[0], out_ch, 1)
+
+        def _lift(self, x):
+            """(B, Cin, H, W) -> (B, C*8, H, W), one block per element.
+
+            Built by transforming the INPUT eight ways and sharing one
+            ordinary convolution, which is the same operator as
+            transforming the filter and avoids having to encode the
+            vector semantics inside a weight expansion.
+            """
+            ns, out = self.ns, []
+            for g in D4_ELEMENTS:
+                gi = d4_inverse(g)
+                parts = [_act_g(x[:, :ns], gi)]
+                u, v = _act_vec(x[:, ns:ns + 1], x[:, ns + 1:ns + 2], gi)
+                parts += [u, v]
+                if x.shape[1] > ns + 2:
+                    parts.append(_act_g(x[:, ns + 2:], gi))
+                out.append(self.lift(torch.cat(parts, dim=1)))
+            return torch.cat(out, dim=1)
+
+        def _project(self, feat):
+            """(B, C*8, H, W) -> (B, out, H, W), undoing each element."""
+            n, c = self.n_levels, feat.shape[1] // 8
+            acc = None
+            for gi, g in enumerate(D4_ELEMENTS):
+                y = self.out(feat[:, gi * c:(gi + 1) * c])
+                u, v = _act_vec(y[:, :n], y[:, n:2 * n], g)
+                w = _act_g(y[:, 2 * n:], g)
+                z = torch.cat([u, v, w], dim=1)
+                acc = z if acc is None else acc + z
+            return acc / 8.0
+
+        def forward(self, x):
+            h = self._lift(x)
+            skips, sizes = [], []
+            for a, b in self.down:
+                h = F.gelu(b(F.gelu(a(h))))
+                skips.append(h)
+                sizes.append(h.shape[-2:])
+                h = F.avg_pool2d(h, 2, ceil_mode=True)
+            h = F.gelu(self.mid(h))
+            for i in range(len(self.up) - 1, -1, -1):
+                h = F.interpolate(h, size=sizes[i], mode="bilinear",
+                                  align_corners=False)
+                h = F.gelu(self.up[i](_gcat(skips[i], h)))
+            return self._project(h)
+
+    #: Orthogonal analysis low-pass filters. Haar is two taps and exact;
+    #: db2 is four and smoother. The high-pass is the quadrature mirror,
+    #: and synthesis is the time reverse -- so one array defines the whole
+    #: bank and there is no second place to get it wrong.
+    WAVELETS = {
+        "haar": (0.7071067811865476, 0.7071067811865476),
+        "db2": (0.48296291314469025, 0.836516303737469,
+                0.22414386804185735, -0.12940952255092145),
+    }
+
+    def _qmf(lo):
+        """High-pass from low-pass: g[n] = (-1)^n h[N-1-n]."""
+        n = len(lo)
+        return [((-1) ** i) * lo[n - 1 - i] for i in range(n)]
+
+    class DWT2d(nn.Module):
+        """One level of a separable 2D discrete wavelet transform.
+
+        Implemented as a strided convolution with the filter bank rather
+        than pulled from a library: a DWT is exactly that, PyWavelets is
+        not differentiable in torch, and perfect reconstruction is a
+        strong self-test that a dependency would not have given us.
+
+        Periodic padding, because the transform must be invertible and
+        because the same wrap-around objection that applies to the FNO
+        does NOT apply here -- the wavelet is compact, so a mode only sees
+        the edge when it is AT the edge.
+        """
+
+        def __init__(self, wave="db2"):
+            super().__init__()
+            lo = list(WAVELETS[wave])
+            hi = _qmf(lo)
+            self.n = len(lo)
+            f = torch.tensor([lo, hi], dtype=torch.float32)
+            # Four separable 2D filters: LL, LH, HL, HH.
+            bank = torch.stack([torch.outer(f[a], f[b])
+                                for a in (0, 1) for b in (0, 1)])
+            self.register_buffer("bank", bank[:, None], persistent=False)
+
+        def forward(self, x):
+            b, c, h, w = x.shape
+            p = self.n - 1
+            xp = F.pad(x.reshape(b * c, 1, h, w), (0, p, 0, p),
+                       mode="circular")
+            y = F.conv2d(xp, self.bank, stride=2)
+            return y.reshape(b, c, 4, h // 2, w // 2)
+
+    class IDWT2d(nn.Module):
+        """The inverse. Orthogonal, so synthesis is the transpose."""
+
+        def __init__(self, wave="db2"):
+            super().__init__()
+            lo = list(WAVELETS[wave])
+            hi = _qmf(lo)
+            self.n = len(lo)
+            f = torch.tensor([lo, hi], dtype=torch.float32)
+            bank = torch.stack([torch.outer(f[a], f[b])
+                                for a in (0, 1) for b in (0, 1)])
+            self.register_buffer("bank", bank[:, None], persistent=False)
+
+        def forward(self, y):
+            b, c, s, hc, wc = y.shape
+            H, W = 2 * hc, 2 * wc
+            z = F.conv_transpose2d(y.reshape(b * c, s, hc, wc), self.bank,
+                                   stride=2)[:, 0]
+            # conv_transpose returns H + n - 2 samples, not H + n - 1:
+            # the overlap to fold back is n - 2, which is ZERO for Haar.
+            # Getting this off by one silently corrupts the first row and
+            # column, which is invisible in an image and fatal in an
+            # invertibility test.
+            q = self.n - 2
+            if q > 0:
+                z = z.clone()
+                z[:, :q, :] = z[:, :q, :] + z[:, H:H + q, :]
+                z[:, :, :q] = z[:, :, :q] + z[:, :, W:W + q]
+            return z[:, :H, :W].reshape(b, c, H, W)
+
+    class WaveletBlock(nn.Module):
+        """A learned operator in the wavelet basis.
+
+        The FNO analogue, with one deliberate difference. An FNO keeps the
+        lowest Fourier modes and learns a full channel matrix for each --
+        a GLOBAL basis, which the coherence study found to be a poor match
+        below 160 m where the deliverable is. Wavelets are localised in
+        space AND scale, so the same construction keeps locality:
+
+          * the coarsest approximation band is small, so it gets a full
+            per-coefficient channel matrix -- the direct counterpart of
+            FNO's low-mode weights;
+          * the detail bands get a channel matrix SHARED across positions,
+            one per scale, which is what keeps the operator local rather
+            than letting it memorise where each feature sat.
+        """
+
+        def __init__(self, ch, levels=3, wave="db2", coarse_hw=13):
+            super().__init__()
+            self.levels = levels
+            self.dwt = DWT2d(wave)
+            self.idwt = IDWT2d(wave)
+            # Per-scale, per-subband channel mixing for the details:
+            # SHARED across positions, which is what keeps the operator
+            # local rather than letting it memorise where a feature sat.
+            self.detail = nn.ParameterList([
+                nn.Parameter(torch.randn(3, ch, ch) / math.sqrt(ch))
+                for _ in range(levels)])
+            # The coarsest band is small, so it gets a full weight per
+            # coefficient -- the direct counterpart of an FNO's low-mode
+            # weights, and where most of the capacity lives. Sized for the
+            # corpus grid and resampled if the input resolution differs,
+            # the same way an FNO fixes its mode count.
+            self.coarse_hw = int(coarse_hw)
+            self.coarse = nn.Parameter(
+                torch.randn(ch, ch, coarse_hw, coarse_hw) / math.sqrt(ch))
+            self.pointwise = nn.Conv2d(ch, ch, 1)
+
+        def forward(self, x):
+            # Pad so every level halves exactly.
+            m = 2 ** self.levels
+            h, w = x.shape[-2:]
+            ph, pw = (-h) % m, (-w) % m
+            z = F.pad(x, (0, pw, 0, ph), mode="circular") if (ph or pw) else x
+
+            details = []
+            for _ in range(self.levels):
+                y = self.dwt(z)
+                z, d = y[:, :, 0], y[:, :, 1:]
+                details.append(d)
+            wgt = self.coarse
+            if wgt.shape[-2:] != z.shape[-2:]:
+                wgt = F.interpolate(wgt, size=z.shape[-2:],
+                                    mode="bilinear", align_corners=False)
+            z = torch.einsum("bchw,cdhw->bdhw", z, wgt)
+            for lev in range(self.levels - 1, -1, -1):
+                d = torch.einsum("bcshw,scd->bdshw", details[lev],
+                                 self.detail[lev])
+                z = self.idwt(torch.cat([z[:, :, None], d], dim=2))
+            z = z[..., :h, :w]
+            return z + self.pointwise(x)
+
+    class WNO(nn.Module):
+        """Wavelet neural operator: the FNO with a localised basis.
+
+        The architecture the coherence measurement points at. Terrain and
+        wind are coherent at 0.85 aloft and 0.25 near the surface, so a
+        basis that is global in space -- which is what makes an FNO
+        diagonal in wavenumber -- is well matched to the easy part of the
+        column and badly matched to the part the deliverable lives in.
+        Wavelets are localised in space and scale at once.
+        """
+
+        def __init__(self, in_ch, out_ch, width=32, blocks=4, levels=3,
+                     wave="db2", norm=True, groups=8):
+            super().__init__()
+            self.lift = nn.Conv2d(in_ch, width, 1)
+            self.blocks = nn.ModuleList(
+                [WaveletBlock(width, levels, wave) for _ in range(blocks)])
+            self.norms = nn.ModuleList([
+                (nn.GroupNorm(min(groups, width), width) if norm
+                 else nn.Identity()) for _ in range(blocks)])
+            self.project = nn.Sequential(
+                nn.Conv2d(width, 2 * width, 1), nn.GELU(),
+                nn.Conv2d(2 * width, out_ch, 1))
+
+        def forward(self, x):
+            x = self.lift(x)
+            for i, (b, n) in enumerate(zip(self.blocks, self.norms)):
+                y = n(b(x))
+                x = F.gelu(y) if i < len(self.blocks) - 1 else y
+            return self.project(x)
+
+    class FiLM(nn.Module):
+        """Per-layer scale and shift conditioned on the wind direction.
+
+        Direction currently enters as two constant planes at the input and
+        has to survive every layer to be used at the end. FiLM conditions
+        each block on it directly, which is the standard remedy and is
+        cheap: a small MLP from (ux, uy) to a gamma and beta per channel.
+
+        It is deliberately NOT applied to an equivariant backbone. The MLP
+        maps a vector to per-channel scalars, and nothing constrains it to
+        commute with a rotation, so bolting it onto the G-CNN would break
+        the exact equivariance that model exists for.
+        """
+
+        def __init__(self, ch, hidden=32):
+            super().__init__()
+            self.net = nn.Sequential(nn.Linear(2, hidden), nn.GELU(),
+                                     nn.Linear(hidden, 2 * ch))
+            self.ch = ch
+
+        def forward(self, x, d):
+            gb = self.net(d)                       # (B, 2C)
+            g, b = gb[:, :self.ch], gb[:, self.ch:]
+            return x * (1.0 + g[:, :, None, None]) + b[:, :, None, None]
+
+    class DilatedCNN(nn.Module):
+        """Residual blocks at increasing dilation, at full resolution.
+
+        Motivated by two measurements pulling in opposite directions. The
+        error lives near the surface and is set by LOCAL slope, so
+        downsampling throws away exactly the detail that matters. But
+        Chetco Bar's gentle cells are 3.7x worse than Flatirons' at
+        identical local slope, so the surrounding terrain matters too and
+        a 3x3 stack cannot see it.
+
+        Dilation buys receptive field without losing resolution: with
+        dilations 1, 2, 4, 8, 16 the field reaches about 2 km on a 50 m
+        grid -- the scale the coherence study found the response living at
+        -- while every layer still works on the full grid.
+
+        ``film`` conditions each block on the wind direction rather than
+        making it survive the whole network as two constant planes.
+        """
+
+        def __init__(self, in_ch, out_ch, width=64, dilations=(1, 2, 4, 8,
+                                                               16, 1),
+                     film=False, n_dir=2, groups=8):
+            super().__init__()
+            self.film_on = bool(film)
+            self.n_dir = n_dir
+            self.lift = nn.Conv2d(in_ch, width, 1)
+            self.blocks = nn.ModuleList()
+            self.norms = nn.ModuleList()
+            self.films = nn.ModuleList()
+            for d in dilations:
+                self.blocks.append(nn.Sequential(
+                    nn.Conv2d(width, width, 3, padding=d, dilation=d),
+                    nn.GELU(),
+                    nn.Conv2d(width, width, 3, padding=d, dilation=d)))
+                self.norms.append(nn.GroupNorm(min(groups, width), width))
+                self.films.append(FiLM(width) if film else nn.Identity())
+            self.project = nn.Sequential(
+                nn.Conv2d(width, 2 * width, 1), nn.GELU(),
+                nn.Conv2d(2 * width, out_ch, 1))
+
+        def forward(self, x):
+            # The direction planes are constant, so one value per sample
+            # is the whole of what FiLM needs.
+            d = x[:, 2:2 + self.n_dir].mean(dim=(-2, -1))
+            h = self.lift(x)
+            for blk, nrm, flm in zip(self.blocks, self.norms, self.films):
+                y = nrm(blk(h))
+                if self.film_on:
+                    y = flm(y, d)
+                h = h + F.gelu(y)          # residual, so depth is free
+            return self.project(h)
+
     class UNet(nn.Module):
         """The baseline: no spectral path anywhere.
 
@@ -253,7 +686,7 @@ def _modules():
                 x = self.up[i](torch.cat([skips[i], x], dim=1))
             return self.out(x)
 
-    return SpectralNet, UNet
+    return SpectralNet, UNet, GCNN, WNO, DilatedCNN
 
 
 def build(name, in_channels, out_channels, **kw):
@@ -266,9 +699,15 @@ def build(name, in_channels, out_channels, **kw):
     if name not in ARCHITECTURES:
         raise ValueError(f"unknown architecture {name!r}; "
                          f"expected one of {ARCHITECTURES}")
-    SpectralNet, UNet = _modules()
+    SpectralNet, UNet, GCNN, WNO, DilatedCNN = _modules()
     if name == "unet":
         return UNet(in_channels, out_channels, **kw)
+    if name == "gcnn":
+        return GCNN(in_channels, out_channels, **kw)
+    if name == "wno":
+        return WNO(in_channels, out_channels, **kw)
+    if name == "dcnn":
+        return DilatedCNN(in_channels, out_channels, **kw)
     if name == "fno":
         kw.setdefault("unet_blocks", 0)
     else:                                   # ufno
@@ -277,3 +716,115 @@ def build(name, in_channels, out_channels, **kw):
         # correction is applied once the representation is formed.
         kw.setdefault("unet_blocks", 2)
     return SpectralNet(in_channels, out_channels, **kw)
+
+
+def d4_average(model, n_levels=9, n_scalar_in=2):
+    """Wrap a model so it is EXACTLY equivariant under the square's group.
+
+    Frame averaging: run the model on all eight symmetries of the input,
+    map each output back, and average. For a finite group this makes any
+    network exactly equivariant with no architectural change --
+
+        f(x) = (1/|G|) sum_g  g^-1 . model(g . x)
+
+    -- and, unlike augmentation, the guarantee holds for weights that were
+    never trained for it. That is the point: the learning curve showed D4
+    augmentation still buying 7 % at the plateau, so the model never fully
+    learns the symmetry from data even with the whole corpus. This closes
+    that gap by construction.
+
+    It costs eight forward passes. The cheaper form is a group-equivariant
+    convolution, which ties the weights instead of averaging the outputs;
+    this exists first because it can be measured on an ALREADY TRAINED
+    model, which sizes the prize before anyone pays for the architecture.
+
+    CHANNEL SEMANTICS ARE NOT OPTIONAL. Under a rotation the terrain and
+    slope planes merely move, the direction planes rotate as a vector, and
+    the same split applies to the output: (u, v) per level is a vector, w
+    is a scalar. Treating a vector as a scalar produces a field that looks
+    right and points the wrong way, which no loss curve would reveal.
+    ``n_scalar_in`` is how many leading input channels are scalars (two:
+    terrain and slope); the next two are the direction vector, and
+    anything after them is scalar again (the spectral descriptors).
+    """
+    import torch
+    import torch.nn as nn
+
+    from .training import D4_OPS
+
+    def _spatial(t, ang, mir):
+        if mir:
+            t = torch.flip(t, dims=(-1,))
+        for _ in range(int(round(ang)) % 360 // 90):
+            t = torch.transpose(torch.flip(t, dims=(-2,)), -2, -1)
+        return t
+
+    def _vector(a, b, ang, mir):
+        aa, bb = _spatial(a, ang, mir), _spatial(b, ang, mir)
+        if mir:
+            aa = -aa
+        th = torch.tensor(ang * torch.pi / 180.0, dtype=a.dtype,
+                          device=a.device)
+        c, s = torch.cos(th), torch.sin(th)
+        return aa * c - bb * s, aa * s + bb * c
+
+    class _D4Average(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x):
+            ns, out = n_scalar_in, None
+            for ang, mir in D4_OPS:
+                parts = [_spatial(x[:, :ns], ang, mir)]
+                ux, uy = _vector(x[:, ns:ns + 1], x[:, ns + 1:ns + 2],
+                                 ang, mir)
+                parts += [ux, uy]
+                if x.shape[1] > ns + 2:
+                    parts.append(_spatial(x[:, ns + 2:], ang, mir))
+                y = self.inner(torch.cat(parts, dim=1))
+
+                # Map the output BACK. The forward transform is mirror
+                # then rotate, so its inverse is rotate by -ang then
+                # mirror -- getting the order wrong is silent.
+                n = n_levels
+                u, v = y[:, :n], y[:, n:2 * n]
+                w = y[:, 2 * n:]
+                u, v = _vector(u, v, -ang, False)
+                w = _spatial(w, -ang, False)
+                if mir:
+                    u, v = _spatial(u, 0, True), _spatial(v, 0, True)
+                    u = -u
+                    w = _spatial(w, 0, True)
+                z = torch.cat([u, v, w], dim=1)
+                out = z if out is None else out + z
+            return out / float(len(D4_OPS))
+
+    return _D4Average(model)
+
+
+#: The D4 group as ``(rotation index 0-3, mirror 0/1)``, in the same order
+#: as :data:`fastwindterrain.training.D4_OPS`. An element means "mirror in
+#: x if m, then rotate by 90r degrees counter-clockwise", which is the
+#: convention the whole project uses and the one verified against the
+#: solver at 1e-13.
+D4_ELEMENTS = ((0, 0), (1, 0), (2, 0), (3, 0),
+               (0, 1), (1, 1), (2, 1), (3, 1))
+
+
+def d4_compose(g1, g2):
+    """``g1 . g2``: apply g2 first, then g1.
+
+    With g = R^r M^m and the relation ``M R = R^-1 M``, the product is
+    ``R^(r1 + r2 (-1)^m1) M^(m1 + m2)``. Derived once here because a
+    group table that is wrong by a transpose gives a network that is
+    almost equivariant, which is worse than one that is obviously not.
+    """
+    r1, m1 = g1
+    r2, m2 = g2
+    return ((r1 + (r2 if m1 == 0 else -r2)) % 4, (m1 + m2) % 2)
+
+
+def d4_inverse(g):
+    r, m = g
+    return ((-r) % 4 if m == 0 else r, m)

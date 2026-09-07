@@ -175,6 +175,18 @@ def main(argv=None):
                         "is the variable: at fixed epochs a smaller set "
                         "gets fewer updates, and the comparison then "
                         "measures training amount as much as data amount.")
+    p.add_argument("--film", action="store_true",
+                   help="condition every block on the wind direction "
+                        "(dcnn only). Direction otherwise enters as two "
+                        "constant planes at the input and has to survive "
+                        "the whole network to be used at the end.")
+    p.add_argument("--no-slope", action="store_true",
+                   help="drop the slope input channel. It was supplied in "
+                        "all 31 runs so far because the correlation study "
+                        "found slope predicting the error -- but a 3x3 "
+                        "convolution can take a finite difference of the "
+                        "terrain in one layer, so whether it ADDS anything "
+                        "was never tested.")
     p.add_argument("--spectral", action="store_true",
                    help="six global spectral descriptors as extra input "
                         "planes. Motivated by measurement: Chetco Bar's "
@@ -186,6 +198,22 @@ def main(argv=None):
                    help="the eight symmetries of the square, exact and "
                         "verified against the solver at 1e-13. Training "
                         "only; validation is never augmented.")
+    p.add_argument("--surface-weight", type=float, default=None,
+                   metavar="W",
+                   help="weight the lowest --surface-levels levels by W in "
+                        "the loss. An SVD of the error over the level axis "
+                        "puts 72 %% of its variance in one vertical mode "
+                        "confined to 5-20 m, while 80 m and above already "
+                        "sit inside the 0.25 m/s tolerance -- so an equal "
+                        "weighting spends most of the capacity where there "
+                        "is nothing left to win. Weights are renormalised "
+                        "to mean 1 so the loss scale, and with it the "
+                        "effective learning rate, does not move.")
+    p.add_argument("--surface-levels", type=int, default=3, metavar="N",
+                   help="how many of the lowest levels --surface-weight "
+                        "applies to. The default 3 is 5, 10 and 20 m, "
+                        "which is the measured extent of the error mode "
+                        "and also the surface layer for a neutral PBL.")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=None, metavar="DIR",
@@ -226,19 +254,24 @@ def main(argv=None):
     ds_tr = T.LevelDataset(train_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
                            augment_d4=args.augment_d4,
-                           spectral=args.spectral)
+                           spectral=args.spectral,
+                           slope=not args.no_slope)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
-                           spectral=args.spectral)
+                           spectral=args.spectral,
+                           slope=not args.no_slope)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")
 
     x0, y0 = ds_tr[0]
-    model = M.build(args.arch, x0.shape[0], y0.shape[0],
-                    **({"width": args.width} if args.arch == "unet" else
-                       {"width": args.width, "modes": args.modes,
-                        "blocks": args.blocks})).to(device)
+    # Only the spectral architectures take modes and blocks; unet and
+    # gcnn are configured by width alone.
+    kw = ({"width": args.width, "modes": args.modes, "blocks": args.blocks}
+          if args.arch in ("fno", "ufno") else {"width": args.width})
+    if args.arch == "dcnn":
+        kw["film"] = args.film
+    model = M.build(args.arch, x0.shape[0], y0.shape[0], **kw).to(device)
     print(f"{args.arch} on {device}: "
           f"{M.count_parameters(model):,} parameters\n")
 
@@ -259,6 +292,22 @@ def main(argv=None):
         print(f"--steps {args.steps}: {per_epoch} steps/epoch -> "
               f"{args.epochs} epochs")
 
+    # Per-level loss weights, laid out to match the output channel order:
+    # to_ms reshapes to (3, nlev, ny, nx), so channel c*nlev + k is
+    # component c at level k.
+    lw = None
+    if args.surface_weight is not None:
+        nlev = y0.shape[0] // 3
+        wv = np.ones(nlev)
+        wv[:min(args.surface_levels, nlev)] = args.surface_weight
+        wv /= wv.mean()
+        lw = torch.tensor(
+            np.repeat(wv[None, :], 3, axis=0).reshape(-1, 1, 1),
+            dtype=torch.float32, device=device)
+        print(f"--surface-weight {args.surface_weight}: lowest "
+              f"{args.surface_levels} of {nlev} levels, weights "
+              f"{np.round(wv, 3).tolist()}\n")
+
     opt = torch.optim.AdamW(groups, lr=args.lr,
                             weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
@@ -270,7 +319,10 @@ def main(argv=None):
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             opt.zero_grad()
-            loss = torch.nn.functional.mse_loss(model(x), y)
+            if lw is None:
+                loss = torch.nn.functional.mse_loss(model(x), y)
+            else:
+                loss = (lw * (model(x) - y) ** 2).mean()
             loss.backward()
             if args.clip:
                 # Not torch's: it cannot take a norm of the complex
