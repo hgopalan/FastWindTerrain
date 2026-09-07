@@ -1789,6 +1789,118 @@ result and be worth chasing. The risk to watch is the aloft levels,
 which sit at 0.32 and 0.26 m/s in vector terms against a 0.25 tolerance
 and have no headroom to give.
 
+The outcome: 0.9 %, and it costs the rest of the column
+--------------------------------------------------------
+
+W = 4 landed at 0.9 % at 5 m, inside the predicted bound and far inside
+the 15 % that would have overturned the cross-architecture result. Per
+level on the unseen sites, vector RMSE in m/s:
+
+=========  ==========  ==========  ==========
+z AGL        dcnn w96      W = 4       W = 8
+=========  ==========  ==========  ==========
+5.0            0.9501     -0.9 %      -1.3 %
+10.0           0.8933     -1.1 %      -1.5 %
+20.0           0.7146     -1.5 %      -2.0 %
+40.0           0.4860     +1.3 %      +2.5 %
+80.0           0.3155     +5.5 %      +9.4 %
+160.0          0.2646    +10.0 %     +16.9 %
+593.9          0.2276    +24.7 %     +39.8 %
+1144.2         0.2713    +26.3 %     +47.8 %
+=========  ==========  ==========  ==========
+
+**Surface band 5-40 m: -0.9 % at W = 4 and -1.1 % at W = 8. Aloft:
++15.7 % and +27.4 %.** Doubling the weight bought four tenths of a
+percentage point at the surface and cost nearly twelve aloft, so the
+surface gain is saturating near one or two per cent while the damage is
+not. Five levels are over tolerance at W = 8 against three at W = 1.
+The trade is a curve, not a point, and extrapolating it says that no
+weight recovers the surface layer.
+
+The friction velocity: a correlation worth nothing
+---------------------------------------------------
+
+If the surface layer is information-limited, the next question is which
+information. The manifest records the solver's own per-case diagnostics,
+none of which the network receives, so the hypothesis costs nothing to
+test. Correlated against the SIGNED surface error over 180 unseen cases,
+one of them stands out:
+
+================  ===========  ========
+diagnostic        r magnitude  r signed
+================  ===========  ========
+solid fraction         +0.894    +0.245
+O'Brien residual       +0.862    -0.289
+div L2                 +0.845    -0.065
+flux imbalance         +0.568    -0.024
+max u*                 -0.266    -0.682
+================  ===========  ========
+
+**The maximum friction velocity predicts the SIGN at -0.68**, where
+slope, relief, elevation, curvature, the along-wind gradient and the
+log-law residual had all returned essentially zero. It survives a
+within-site control -- four of the five sites give -0.54 to -0.73, and
+pooling after removing each site's own mean leaves -0.50 -- so it is not
+an artefact of one hard site having both a high u* and a large error.
+u* is exactly the quantity the wall function uses to set the first fluid
+cell, and it is an output of the solve rather than a function of the
+terrain the network is given.
+
+**Supplying it as an input channel changed nothing**: 0.6655 against
+0.6626, marginally worse. The reason is arithmetic and should have been
+checked first:
+
+=================================  ==========
+surface 5-20 m speed error            m/s
+=================================  ==========
+total rms                              0.7588
+case-mean bias rms                     0.0870
+=================================  ==========
+
+The per-case mean is **1.3 % of the squared error**. Removing it
+perfectly would cut the root-mean-square by 0.7 %. A constant input
+plane can only shift a whole field, and u* correlates with a per-case
+MEAN, so the most it could ever have bought was under one per cent --
+whatever the correlation.
+
+RECORDED AS A METHOD FAILURE AS MUCH AS A RESULT. The ceiling was
+computable in two minutes from fields already on disk, exactly as in the
+level-below-5 m study, and it was not computed because the correlation
+looked convincing. A correlation identifies a relationship; it says
+nothing about the share of the error that relationship governs. The same
+argument kills the deployable version before it is run: the frontal and
+plan area indices are also domain scalars and inherit the same 0.7 %
+ceiling, however good a drag proxy they are. That run was queued,
+started, and cancelled on this reasoning rather than on its result.
+
+What survives is the diagnosis, not the remedy. The surface error is
+dominated by spatial structure within each case, not by a per-case
+offset, so any correction must vary in space. A local drag or
+frontal-area map computed in a moving window would qualify; a single
+number per case cannot. Two further levels are
+pushed over the 0.25 m/s tolerance, five in place of three. Quadrupling
+the weight on the lowest three levels bought one per cent there and
+damaged everything else, which is not what capacity starvation looks
+like: had the network been spending its capacity aloft, redirecting four
+times the weight would have moved the surface substantially.
+
+WHAT THIS CLOSES. Two independent lines of evidence now say the same
+thing. The error is the same field across architectures 4.5x apart in
+capacity, at r = 0.945; and reweighting the loss toward it changes it by
+one per cent. **The surface layer is information-limited, not
+capacity-limited** -- terrain, slope and direction do not determine the
+near-surface field, which is consistent with the sign of the error mode
+being unpredictable from every terrain feature tested, the direction-aware
+one included.
+
+That is a more useful conclusion than a gain would have been. It converts
+"the near surface is hard" into "the near surface is not the model's
+fault", which is what makes a CFD delta the right next step rather than
+another architecture. The prediction and its outcome are recorded
+together because the prediction was specific, registered in advance, and
+correct -- which is the only circumstance in which a null result carries
+weight.
+
 The error has one vertical shape, and it is the surface layer
 =============================================================
 

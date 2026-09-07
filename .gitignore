@@ -41,3 +41,8 @@ docs/_build/
 # a couple of gigabytes; the manifest and the code that makes it are what
 # is worth committing.
 data/
+
+# Journal paper draft. LaTeX sources, figures and build products live here
+# and are not committed -- the manuscript is written elsewhere and the
+# numbers in it come from docs/surrogate.rst, which is.
+docs/journalpaper/
