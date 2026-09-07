@@ -198,6 +198,22 @@ def main(argv=None):
                    help="the eight symmetries of the square, exact and "
                         "verified against the solver at 1e-13. Training "
                         "only; validation is never augmented.")
+    p.add_argument("--surface-weight", type=float, default=None,
+                   metavar="W",
+                   help="weight the lowest --surface-levels levels by W in "
+                        "the loss. An SVD of the error over the level axis "
+                        "puts 72 %% of its variance in one vertical mode "
+                        "confined to 5-20 m, while 80 m and above already "
+                        "sit inside the 0.25 m/s tolerance -- so an equal "
+                        "weighting spends most of the capacity where there "
+                        "is nothing left to win. Weights are renormalised "
+                        "to mean 1 so the loss scale, and with it the "
+                        "effective learning rate, does not move.")
+    p.add_argument("--surface-levels", type=int, default=3, metavar="N",
+                   help="how many of the lowest levels --surface-weight "
+                        "applies to. The default 3 is 5, 10 and 20 m, "
+                        "which is the measured extent of the error mode "
+                        "and also the surface layer for a neutral PBL.")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=None, metavar="DIR",
@@ -276,6 +292,22 @@ def main(argv=None):
         print(f"--steps {args.steps}: {per_epoch} steps/epoch -> "
               f"{args.epochs} epochs")
 
+    # Per-level loss weights, laid out to match the output channel order:
+    # to_ms reshapes to (3, nlev, ny, nx), so channel c*nlev + k is
+    # component c at level k.
+    lw = None
+    if args.surface_weight is not None:
+        nlev = y0.shape[0] // 3
+        wv = np.ones(nlev)
+        wv[:min(args.surface_levels, nlev)] = args.surface_weight
+        wv /= wv.mean()
+        lw = torch.tensor(
+            np.repeat(wv[None, :], 3, axis=0).reshape(-1, 1, 1),
+            dtype=torch.float32, device=device)
+        print(f"--surface-weight {args.surface_weight}: lowest "
+              f"{args.surface_levels} of {nlev} levels, weights "
+              f"{np.round(wv, 3).tolist()}\n")
+
     opt = torch.optim.AdamW(groups, lr=args.lr,
                             weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
@@ -287,7 +319,10 @@ def main(argv=None):
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             opt.zero_grad()
-            loss = torch.nn.functional.mse_loss(model(x), y)
+            if lw is None:
+                loss = torch.nn.functional.mse_loss(model(x), y)
+            else:
+                loss = (lw * (model(x) - y) ** 2).mean()
             loss.backward()
             if args.clip:
                 # Not torch's: it cannot take a norm of the complex

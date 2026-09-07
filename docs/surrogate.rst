@@ -1200,6 +1200,95 @@ That prediction was registered before the model existed, which is what
 makes it worth something. A gap would have been evidence of memorisation;
 its absence is evidence against.
 
+Rescored on the best model, and on matched support
+--------------------------------------------------
+
+The numbers above are the 60-epoch U-Net of phase 22b. The best model is
+now ``dcnn w96 +FiLM`` at 0.6572 at the levels, 15 % better, so the whole
+chain was rescored. Four unseen sites, 144 samples, plus the measurement
+site separately:
+
+================  =======  ========  ===========  ========
+site                floor    levels   end to end      skill
+================  =======  ========  ===========  ========
+cameron_peak       0.168     0.658        0.362
+chetco_bar         0.238     0.779        0.495
+columbia_gorge     0.131     0.461        0.280
+perdigao           0.120     0.430        0.250
+ALL UNSEEN                                0.347     +0.801
+nrel_flatirons     0.064     0.295        0.137     +0.767
+TEST FOLD                                 0.313     +0.761
++ D4 averaging                            0.317     +0.818
+================  =======  ========  ===========  ========
+
+Test fold 0.732 -> 0.313 and unseen 1.054 -> 0.347 against phase 22b.
+Every unseen site except Chetco Bar is now at or inside the 0.25 m/s
+tolerance in the full 3D field, and frame averaging buys a further 9 %
+at inference for no training.
+
+**But the amplification metric above mixes spatial supports, and the
+claim built on it was too strong.** ``levels`` is scored AT the nine
+levels, which sit where the error is largest; ``floor`` and ``end to
+end`` are scored over the whole fluid volume, most of which lies above
+160 m where the model is accurate. Part of the sub-1.0 ratio is
+therefore structural. On this model the mixed-support figure is 0.569,
+which would read as a 43 % reduction.
+
+``scratchpad/bandamp.py`` rescores band by band, between consecutive
+levels, so every quantity describes the same cells. ``L_b`` is the rms
+model error at the two levels bracketing the band. The null matters:
+linear interpolation between endpoints whose errors have correlation
+``rho`` gives ``var = sigma^2 (2/3 + rho/3)`` averaged across the band,
+so ``amp = sqrt(2/3 + rho/3)`` on arithmetic alone -- 0.82 for
+independent endpoints, 1.00 for perfectly correlated ones. That
+predicted value is the column ``pred``:
+
+===========  ==========  =======  =======  =======  ======  ======  ======
+band (AGL)        cells    floor      L_b      e2e     amp    pred     rho
+===========  ==========  =======  =======  =======  ======  ======  ======
+0-5 m           784,676   0.5471   0.9479   0.8743   0.799      --      --
+5-10 m          781,848   0.1855   0.9192   0.8186   0.873   0.977   0.862
+10-20 m       1,525,152   0.2657   0.8040   0.6821   0.806   0.954   0.733
+20-40 m       2,710,348   0.3066   0.6034   0.5431   0.802   0.878   0.315
+40-80 m       4,849,776   0.2250   0.4017   0.3506   0.762   0.843   0.132
+80-160 m      7,851,316   0.1057   0.2846   0.2474   0.815   0.917   0.524
+160-308 m    12,439,744   0.0556   0.2459   0.2277   0.903   0.921   0.545
+308-594 m    16,946,152   0.0716   0.2270   0.2262   0.950   0.966   0.799
+594-1144 m   17,448,692   0.1391   0.2416   0.2453   0.880   0.931   0.599
+===========  ==========  =======  =======  =======  ======  ======  ======
+
+**On matched support amplification is 0.76-0.95, not 0.569.** The
+mixed-support metric was inflating the effect roughly twofold, and "a
+43 % reduction" does not survive. What does survive is better founded:
+**measured amplification is below the arithmetic null in all eight bands
+that have one**, by 0.02 to 0.10. Interpolation between correlated
+endpoints would already reduce the error; stitching consistently beats
+what that alone predicts.
+
+So the contribution-2 sentence is that composition is favourable at
+every height -- amplification 0.76-0.95 against a null of 0.84-0.98 --
+rather than that stitching cuts the error by two fifths. Support-
+consistent, and it survives a reader who knows what linear interpolation
+does to variance.
+
+Two things the band view exposes that the aggregate hid.
+
+**The 0-5 m band has a floor of 0.5471**, three times any other band,
+because it is EXTRAPOLATED below the lowest level rather than
+interpolated. That is the near-surface extrapolation result reappearing
+in the stitching metric, and it is the one place where a level below 5 m
+still has a live argument -- narrower than the case rejected earlier,
+since it concerns the floor in one band rather than the model's error
+overall.
+
+**Endpoint error correlation collapses with height** -- 0.862 at 5-10 m,
+0.315 at 20-40 m, 0.132 at 40-80 m -- then rises again aloft. Where the
+bracketing errors are correlated, interpolation cannot average them away
+and the null sits near 1.0; where they are independent it can. That is
+why the mid-column bands show the largest gains, and it is the same
+correlation structure that made the log-law residual useless as an error
+indicator.
+
 A fix that failed: replicate padding
 ------------------------------------
 
@@ -1575,3 +1664,572 @@ run test exactly that.
 Recorded because it cost nothing and killed a planned corpus
 regeneration -- which is the whole argument for measuring ceilings before
 paying for experiments.
+
+The architecture table, and what a single seed can carry
+========================================================
+
+Every architecture at 30 000 gradient steps on the full corpus, so the
+rows compare. Validation is vector RMSE at the levels, in m/s:
+
+===================  =========  =======  =======
+model                   params  val m/s  s/epoch
+===================  =========  =======  =======
+fno (60 ep)          2,235,003   2.0093       --
+ufno (400 ep)        2,235,003   1.3551       --
+wno w48                     --   1.1543       --
+wno w64              2,945,627   1.0804       --
+unet w32             4,898,171   0.8211       --
+unet w32 + D4 aug    4,898,171   0.7616       --
+gcnn w12             1,649,751   0.7148       --
+gcnn w20             4,581,247   0.6791      118
+gcnn w26             7,741,501   0.6755      187
+dcnn w96 --no-slope  1,021,947   0.6691       36
+dcnn w96             1,021,947   0.6626       36
+dcnn w96 + FiLM      1,060,539   0.6572       41
+===================  =========  =======  =======
+
+**The dilated CNN leads at a fifth of the group-equivariant model's
+parameters and a fifth of its epoch time.** No symmetry machinery, no
+group convolutions: full resolution and a 6.5 km receptive field. That is
+an awkward result for a paper whose strongest single measurement is the
+solver's exact D4 equivariance, and it is the right one. Built-in
+equivariance produced the best UNDERSTANDING -- an exactly verified
+symmetry group, and the demonstration that augmentation never fully
+teaches it -- while a simpler model that preserves resolution and sees
+far is the practical recommendation.
+
+**The G-CNN saturates rather than stops.** 4.58M to 7.74M parameters buys
+0.5 %, against the 5.0 % that 1.65M to 4.58M bought.
+
+**FiLM is worth 0.8 %**, and the slope channel 1.0 %. The latter is the
+more interesting number: slope was supplied in all 31 runs because the
+correlation study found it predicting the error, but a 3x3 convolution
+takes a finite difference of the terrain in its first layer, so the
+network was already computing it. Cheap enough to keep; not load-bearing.
+
+Per level and per site, at 80 m -- hub height, and a level the model
+predicts directly, so no reconstruction is involved:
+
+===============  =======  ======  ======  =========  ========
+model            cameron  chetco   gorge  flatirons  perdigao
+===============  =======  ======  ======  =========  ========
+fno               2.2849  3.0100  1.6735     0.7157    1.7321
+ufno              1.5865  1.8925  1.1064     0.4634    0.9055
+wno w64           0.9982  1.3036  0.7328     0.3177    0.6702
+unet w32          0.5848  0.7288  0.4294     0.1622    0.3363
+unet w32 + D4     0.4533  0.5994  0.3516     0.1411    0.2928
+gcnn w20          0.3564  0.4909  0.2600     0.0847    0.2165
+dcnn w96          0.3764  0.4827  0.2557     0.0908    0.2225
+dcnn w96 + FiLM   0.3682  0.4773  0.2524     0.0884    0.2125
+===============  =======  ======  ======  =========  ========
+
+Site ordering is identical for every model including the ones five times
+worse overall, so it is the terrain's difficulty showing through and not
+an architecture effect.
+
+Every number here is ONE SEED
+------------------------------
+
+The top four models span 2.8 % and FiLM is 0.8 %. Neither gap is
+defensible at n = 1, and this is the cheapest remaining threat to any
+claim in this document.
+
+A free check first, since the checkpoints already exist. If A genuinely
+beats B it should win most of the 45 independent cells of five unseen
+sites by nine levels, not merely the aggregate, which one site could
+carry:
+
+======================================  ==========  =============
+pair                                     cells won        verdict
+======================================  ==========  =============
+dcnn w96 vs gcnn w20                        35/45     consistent
+dcnn w96 + FiLM vs dcnn w96                 42/45     consistent
+dcnn w96 vs dcnn w96 --no-slope             43/45     consistent
+gcnn w26 vs gcnn w20                        38/45     consistent
+======================================  ==========  =============
+
+FiLM winning 42 of 45 is stronger evidence than its 0.8 % aggregate
+suggests, and gcnn w26 winning 38 of 45 says the G-CNN is saturating
+rather than finished.
+
+**WHAT THIS TEST CANNOT DO, and it is the thing that matters.** The 45
+cells are not independent -- levels within a site correlate at up to
+0.897 -- so the effective sample is nearer 15 than 45. Worse, a lucky
+initialisation produces a model that is better EVERYWHERE, winning most
+cells while saying nothing about reproducibility. The sign test
+establishes that a ranking is consistent across terrain and height. That
+is a different and weaker claim than being outside seed noise.
+
+The seed work queued is deliberately not three seeds of everything.
+Two extra seeds of ``dcnn w96`` give one sigma at the top of the table,
+which applied to every row says which gaps are real -- assuming sigma is
+comparable across models trained identically, which is stated rather
+than assumed silently. And two extra seeds each at ``frac 0.5`` and
+``frac 1.0`` with augmentation defend the plateau directly, because that
+claim rests on 0.7568 against 0.7616, a gap of 0.6 %, and it is the
+spine of the paper. U-Net at 30 000 steps is about 35 minutes, so the
+claim that matters most is also the cheapest to protect.
+
+A prediction, registered before the runs
+-----------------------------------------
+
+``--surface-weight`` tests whether the surface layer is capacity-starved
+rather than information-starved. **The expectation is a small gain at
+best, under 5 % at 5 m for W = 4**, for three reasons: the dilated CNN
+and the group-equivariant CNN make the same surface error at r = 0.945
+despite a 4.5x difference in capacity; ``channel_rms`` already
+normalises every channel to unit rms, so an equal-weighted loss is
+already balanced and this is deliberate over-weighting rather than a
+correction; and a reweighting redistributes effort without adding
+information, while nothing computable from the terrain predicts the
+error mode's sign.
+
+More than about 15 % at 5 m would contradict the cross-architecture
+result and be worth chasing. The risk to watch is the aloft levels,
+which sit at 0.32 and 0.26 m/s in vector terms against a 0.25 tolerance
+and have no headroom to give.
+
+The error has one vertical shape, and it is the surface layer
+=============================================================
+
+The solver distrusts its own first fluid cell: ``Source/Surface.H``
+rebuilds its speed from the friction velocity of the SECOND cell, on the
+grounds that the first is the one being corrected and below it the next
+known value is the roughness length, not a cell. The obvious question is
+whether the surrogate should do the same to its lowest level.
+
+Composing the wall function's two equations cancels u* and leaves a fixed
+ratio between two heights, ``c = ln((5+z0)/z0) / ln((10+z0)/z0)``, which
+is 0.8519 at z0 = 0.1 m. So "set 5 m from the friction velocity implied
+by 10 m" is the claim that two output channels are proportional with a
+known constant, and it can be tested without training anything.
+
+Two forms of it were tried, and both failed.
+
+**As an overwrite** -- replace the predicted 5 m speed by ``c`` times the
+predicted 10 m speed, direction untouched, exactly as the solver does --
+it costs 2.7 %, on all four architectures tried. But with the TRUE 10 m
+as the anchor it is 26 % better than the network's own 5 m prediction, so
+the log law is a better model of that level than anything the network
+learned. What is missing is the solver's trust hierarchy: its second cell
+really is more reliable than its first, whereas the surrogate's 10 m
+prediction is about as wrong as its 5 m one.
+
+**As a residual** -- ``R = | |U(5)| - c |U(10)| |``, which needs no
+ground truth and is therefore available on unseen terrain at inference --
+it carries no information about the error at all:
+
+==================  =============  =============
+correlation with        residual          slope
+==================  =============  =============
+error, pointwise           +0.032         +0.344
+rmse, per window           -0.603         +0.911
+==================  =============  =============
+
+Terrain slope, already free at inference, beats it on both. The residual
+is not merely weak but U-shaped in the error, and negatively correlated
+per window, because it tracks a real property of the flow -- distance
+from log-law equilibrium, which the solver's own fields show is largest
+in GENTLE terrain -- and that is anti-correlated with model difficulty.
+Mean residual is 0.18 m/s against a mean error of 0.79: **the surrogate
+is four times more self-consistent than it is accurate.** It satisfies
+the log law between two levels that are wrong together.
+
+Why they failed, and what the failure exposes
+---------------------------------------------
+
+An SVD of the speed error over the level axis, 104 040 columns of unseen
+terrain, ``scratchpad/vertmode.py``:
+
+=========  =========  =========  ==================
+   z AGL       bias        rms     corr w/ 5 m err
+=========  =========  =========  ==================
+      5.0    -0.0780     0.8315              +1.000
+     10.0    -0.0494     0.7926              +0.897
+     20.0    -0.0330     0.6144              +0.582
+     40.0    -0.0209     0.3878              +0.122
+     80.0    +0.0099     0.2261              +0.031
+    160.0    +0.0144     0.1784              +0.036
+    326.1    +0.0076     0.1680              +0.014
+    664.7    -0.0022     0.1757              +0.012
+   1354.9    +0.0170     0.2196              +0.005
+=========  =========  =========  ==================
+
+**Seventy-two per cent of the error variance is one vertical mode**, 83 %
+in two, with profile +0.65, +0.64, +0.40, +0.07 and zero above -- and no
+sign change, so it is an amplitude error rather than a displacement.
+``gcnn w20`` reproduces this at 71.2 % with the same profile, so it is a
+property of the problem and not of one model.
+
+Three things follow.
+
+The mode is **confined to 5-20 m and decoupled above 40 m**. A correction
+estimated at the surface can legitimately be carried to 10 and 20 m,
+where the error correlations are 0.90 and 0.58, and says nothing about
+80 m, where it is 0.03.
+
+**Its vertical extent is the surface layer.** The log law is accurate
+over roughly the lowest 10-20 % of the boundary layer; for a neutral PBL
+of about 500 m that is 50-100 m, and the mode has decayed to nothing
+between 40 and 80 m. The agreement is why this reads as a surface-layer
+modelling error rather than as an artefact of the level spacing.
+
+And it explains the residual's failure directly: R is a difference
+between two levels whose errors correlate at 0.897, so the differencing
+cancels most of the signal. The indicator was blind by construction.
+
+Where the remaining error actually is
+-------------------------------------
+
+**Which metric, and it matters here.** The mode analysis above is on
+horizontal SPEED error, the quantity a magnitude correction can act on.
+Everything else in this document reports VECTOR RMSE over three
+components, which is larger because it also carries w and direction.
+The two must not be mixed, and the tolerance applies to the vector one:
+
+============  ==========  ==========
+z AGL              speed      vector
+============  ==========  ==========
+5.0               0.8315      0.9501
+10.0              0.7926      0.8933
+20.0              0.6144      0.7146
+40.0              0.3878      0.4860
+80.0              0.2261      0.3155
+160.0             0.1784      0.2646
+============  ==========  ==========
+
+So the aloft levels are NOT finished: 80 m is 0.316 and 160 m 0.265
+against a 0.25 m/s tolerance, 6-26 % over, even though their speed error
+is comfortably inside it. Most of the remaining budget is in the bottom
+40 m, and that is the only part with a known one-mode structure, but the
+column above is not solved.
+
+The same distinction bounds the prize. Removing mode 1 exactly takes
+SPEED error at 5 m from 0.832 to 0.280. A magnitude correction leaves w
+and direction untouched, so in vector terms 5 m would go from 0.950 to
+about 0.538 -- **43 %, not the 66 % the speed numbers alone suggest.**
+Still the largest single gain available anywhere in this study, and
+larger than the whole architecture sweep, but the honest figure is 43 %.
+
+It also makes the task smaller than "predict the wind better": the shape
+is known, so what is wanted is a single scalar amplitude per column.
+Slope predicts its MAGNITUDE -- 2.4x across slope quintiles -- but
+nothing tested predicts its SIGN, including the direction-aware
+along-wind gradient, whose own effect on the true field is symmetric
+because a mass-consistent solver has no separation physics to break
+lee from windward. So an uncertainty map is buildable today and a
+correction is not, in this solver.
+
+The cheapest test of whether the surface layer is capacity-starved rather
+than information-starved is ``--surface-weight``, which weights the
+lowest three levels in the loss. An equal weighting spends most of the
+network on six levels with nothing left to win. If concentrating it moves
+the surface layer, that is capacity; if it does not, the inputs do not
+determine the surface field, which is where the slope ablation and the
+larger-context run were already pointing.
+
+Where this sits: two papers with larger datasets
+================================================
+
+Two recent papers cover unseen complex terrain with neural operators, and
+a reader will hold both up against this work. Their numbers are recorded
+here so the comparison is made deliberately rather than reconstructed at
+submission time.
+
+Zhang et al., *Transformer-based Neural Operators for 3D Wind Field
+Prediction over Complex Mountainous Terrain* (arXiv 2605.25679,
+Communications Physics). Ground truth is OpenFOAM RANS on SRTM terrain at
+30 m, with a reference velocity of 10 m/s at 10 m -- the same convention
+used here. They report MSE, relative L2 and MAE for speed magnitude; the
+RMSE column below is the square root of their MSE, not a number they
+print. Test set:
+
+============  ======  ======  ========  ======
+model            MSE    RMSE    L2 (%)     MAE
+============  ======  ======  ========  ======
+Patch-solver   1.032   1.016     8.290   0.635
+AeroGTO        1.191   1.091     8.912   0.676
+Transolver     1.264   1.124     9.257   0.692
+Geo-FNO        3.798   1.949    16.252   1.267
+============  ======  ======  ========  ======
+
+Zero-shot on four held-out mountain sites, their best model:
+
+===========  ======  ======  ========
+site            MSE    RMSE    L2 (%)
+===========  ======  ======  ========
+Chatou-1      0.828   0.910     7.408
+Chatou-2      0.662   0.814     6.444
+Daguping      1.515   1.231    11.391
+Hengdong      0.238   0.488     3.776
+===========  ======  ======  ========
+
+Lian et al., *Reconstructing fine-scale 3D wind fields with
+terrain-informed machine learning* (Nature Communications 2026).
+12 000-plus RANS simulations over 300 000 CPU-hours, 12 x 12 km domains
+at 30 m with a 9 x 9 km output region, 27 levels to 214 m, trained in
+southeastern China and validated against three European tall towers
+(OPE, Torfhaus, Ispra) at roughly 10, 50 and 120 m. **They report MAE
+and relative L2 graphically -- parity plots and bar charts -- and no
+numeric error value appears in the accessible main text.** Nothing is
+quoted from them here for that reason.
+
+The dataset sizes, corrected
+----------------------------
+
+Zhang's corpus is smaller than its framing suggests, and the correction
+matters because the obvious argument is built on it. Their introduction
+says "500 complex terrain regions"; the methods say **45 distinct terrain
+geometries** at up to 16 inflow angles, giving 467 terrain-angle
+combinations at about one core-hour each.
+
+=================  ===========  ============  ==============
+source                terrains       samples     core-hours
+=================  ===========  ============  ==============
+this corpus                252          1008           46.0
+Zhang et al.                45           467            ~467
+Lian et al.                  -        12 000        300 000
+=================  ===========  ============  ==============
+
+So the cost ratio is about **6 500x against Lian and only 11x against
+Zhang**, and Zhang trains on *fewer* distinct terrains than the 162
+windows in this training fold -- they buy coverage with 16 directions
+where this corpus buys it with four plus an exact symmetry. Any claim of
+"orders of magnitude less data" applies to Lian and would be wrong about
+Zhang. Their per-sample cost is roughly 20x higher because RANS with
+momentum is a harder solve than a mass-consistent projection, which is a
+difference in physics, not in discipline.
+
+Error against height, and the one place these agree
+---------------------------------------------------
+
+Zhang resolve error against altitude for two representative cases, and
+find the same vertical structure reported above: error falls
+monotonically with height, and the near-surface dominates.
+
+===========================  ==============
+quantity, complex case          relative L2
+===========================  ==============
+near-surface, all models          0.22-0.30
+by 200 m, all models              0.03-0.06
+altitude-integrated, best             0.078
+altitude-integrated, simple           0.044
+===========================  ==============
+
+Their headline 8.29 % is therefore a volume average over a near-surface
+layer running three to four times worse. Pixel-wise error at the 10 m
+plane runs below 5.6 m/s in the simple case and below 8.00 m/s in the
+complex one, against a field spanning 0 to 23 m/s; by 300 m all models
+agree within 1 m/s.
+
+**This is the useful part of the comparison.** A different group, a
+different solver with momentum and separation, a different architecture
+and a different continent recover the vertical structure measured in
+``--by-height`` here. The near-surface band being the hard one is a
+property of the problem rather than an artefact of a mass-consistent
+reference, and the decomposition by height is on firmer ground for it.
+
+Both papers decompose by height. Neither decomposes by terrain property
+-- slope, curvature, relief, lee versus windward. Zhang's near-surface
+figures come from two hand-picked cases labelled simple and complex, not
+from binning a test set. That gap is what ``cases/slope_error.py``
+fills.
+
+Why the accuracy numbers must not be tabulated together
+--------------------------------------------------------
+
+Putting their RMSE beside this work's would be wrong three times over:
+
+* **Different ground truth.** They emulate RANS; this emulates a
+  mass-consistent solver with no momentum equation, which is a
+  materially easier operator to learn. A lower error here is not
+  evidence of a better method.
+* **Different quantity.** Theirs is speed magnitude; the metric used
+  throughout this document is vector RMSE over three components, which
+  is stricter.
+* **Different support.** Their 1.016 averages the full 3D volume
+  including the near-surface layer; the 80 m figures here are one level.
+
+The defensible sentence is that Zhang report 0.49-1.23 m/s speed RMSE
+zero-shot on unseen RANS terrain while this work reports 0.31 m/s vector
+RMSE at 80 m against a mass-consistent reference, that the targets
+differ, and that the comparison being made is one of data cost and
+method rather than accuracy.
+
+What is left unclaimed
+----------------------
+
+Neither paper reports a learning curve. Neither states how much of its
+data was necessary, and the question of which part of 12 000 runs
+mattered is unanswered in this literature. That is the gap the
+measurement above fills, and it is the one place where being smaller is
+the contribution rather than the limitation.
+
+Bigger domains by overset tiling -- a plan, not a result
+========================================================
+
+**NOTHING IN THIS SECTION IS BUILT.** It is recorded because the design
+follows from measurements already made, and because the obstacle has a
+number attached rather than being a guess.
+
+Five kilometres is a demonstration. Fifty is what someone siting a wind
+farm or staging a fire response actually needs, and the model cannot be
+handed a bigger domain: it was trained on 5 km windows and its receptive
+field is sized to them. The way out is to run it on overlapping tiles
+and assemble the pieces.
+
+The obstacle, measured
+----------------------
+
+The model is worse at the edge of its window than in the middle.
+Trimming three border cells cuts RMSE by 4.6 %, so the contamination is
+about **150 m deep at 50 m resolution** -- shallow, which is the good
+news. Zero padding is the cause: a constant border tells the network
+where the edge is, and it uses it.
+
+**And the obvious fix failed.** Replicate padding cut the border penalty
+from 1.21x to 1.15x as intended and made the INTERIOR worse, netting
+0.795 against 0.782. That result is what forces the tiling design: the
+edge effect cannot be trained away cheaply, so it has to be handled at
+assembly instead.
+
+The assembly
+------------
+
+Four steps, in this order:
+
+1. **Blend at the LEVEL stage, not after stitching.** The model emits
+   nine 2D levels and the vertical reconstruction is deterministic, so
+   blend the 27 level fields and stitch once over the whole domain.
+   Blending stitched 3D fields would average each tile's vertical
+   reconstruction against its neighbour's for no benefit.
+
+2. **Partition of unity, normalised.** With ``d_i(x)`` the distance from
+   x to the edge of tile i,
+
+   ``w_i(x) = f(d_i(x)) / sum_j f(d_j(x))``
+
+   The normalisation makes the weights sum to exactly 1 at every point
+   for ANY tile layout and any shape of ``f``. Tapers that only
+   approximately sum to 1 leave faint grid artefacts that read as
+   physics, which is the failure to design out rather than debug later.
+
+3. **Inverse-variance weights**, ``f(d) = 1/sigma^2(d)``, with
+   ``sigma(d)`` the measured error against distance from the edge --
+   the measurement above rather than a guess. Since the penalty is
+   confined to about three cells, a raised-cosine ramp to full weight by
+   ten cells behaves almost identically. Blend the vector components
+   ``u, v, w`` linearly, never speed and direction separately.
+
+   TWO CAUTIONS. Inverse-variance weighting is optimal for INDEPENDENT
+   estimates; neighbouring tiles see overlapping terrain through one
+   model, and same-terrain error correlations elsewhere in this document
+   run to 0.945, so the variance reduction will be far smaller than
+   theory promises. And vector averaging SHRINKS magnitude where tiles
+   disagree on direction, which would appear as slow bands along seams.
+   That is the specific artefact to look for.
+
+4. **One mass-consistent projection over the assembled domain.** This is
+   what makes the result physical rather than merely smooth, and it is
+   the cheapest part of the solver.
+
+Why overset, and why the vocabulary matters
+-------------------------------------------
+
+The pieces map onto overset (Chimera) grids almost one to one: hole
+cutting is the terrain mask already in use; a grid's outer FRINGE, where
+it receives from a neighbour's interior DONOR cells, is exactly the
+"trust the middle, not the edge" rule the border measurement produced.
+Overset reached that principle for a different reason -- its outer
+boundary conditions are artificial -- and it means the vocabulary for
+this already exists.
+
+What overset buys beyond a regular blend is **non-matching tiles**: a
+fine tile over a complex ridge inside a coarse background, tiles rotated
+onto a valley axis, coverage following a valley network instead of a
+square. Partition-of-unity blending on a regular grid is the degenerate
+case of it.
+
+One caution of its own: classical overset interpolation is one-way and
+sharp -- continuous in value, not in derivative -- so the blended
+variant is the one to use.
+
+Conservation across tiles: two routes
+--------------------------------------
+
+Conventional overset interpolation is NON-CONSERVATIVE, which is the
+whole reason conservative overset schemes exist. There are two ways out
+here and they are not equivalent.
+
+**Repair it.** The projection in step 4 enforces mass consistency
+globally after assembly, so a conservative interpolation scheme is not
+strictly needed. Owning the solver that generated the training data is
+what makes that available -- a group without one would have to impose
+interface continuity in the loss, as cPINNs do. The cost is that the
+projection is then doing two jobs at once: repairing the ML tiles'
+disagreement AND repairing the interpolation.
+
+**Or avoid it.** Devlin, Chandar and Quinlan, *Computers and Fluids* 267
+(2023) 106072, give a conservative overset scheme -- DFVF-overset,
+Direct Flux via Virtual Faces -- that needs no interpolation at all.
+Fluxes pass between overlapping cells through virtual faces of
+rigorously defined area, derived by generalising the finite volume
+method to overlapping control volumes. No donors, no acceptors, no
+overset assembly, no external connectivity library, and conservation
+exact by construction rather than patched afterwards. Their multiphase
+cases make the difference concrete: conventional overset LOSES liquid
+mass across grid boundaries where DFVF conserves it strictly, and their
+pressure fields are smooth where interpolation shows a discontinuity as
+fluid crosses grids.
+
+**And they arrive at a partition of unity too, independently.** Cell
+volume is distributed by a top-hat weight function normalised to form a
+partition of unity over the domain, and the intercell areas emerge from
+that. The construction proposed above uses the same object to blend
+FIELD VALUES; theirs uses it to distribute CONTROL VOLUME. Same
+mathematics, different role, which means the two compose -- one weight
+function could serve both the blend and the discretisation.
+
+TWO REASONS NOT TO REACH FOR IT YET. DFVF is a solver discretisation,
+not a merging rule: it governs how the finite-volume operator is
+assembled across overlapping cells and says nothing about how to combine
+two disagreeing ML predictions, which remains the blend's job. And for
+same-resolution, axis-aligned tiles on a regular lattice, assembling
+into one contiguous grid is trivial and the projection is then an
+ordinary single-grid MLMG solve -- DFVF earns its keep only for
+NON-MATCHING grids.
+
+The stack matters as well. DFVF is implemented as a foam-extend
+preprocessor; this solver is AMReX with a nodal MLMG Poisson solve, and
+**AMReX's native answer to variable resolution is AMR with refluxing,
+already conservative and already in the library.** So the nearer path to
+multi-resolution tiling here is AMR, and DFVF is the right tool
+specifically for arbitrarily overlapping or rotated grids that nested
+refinement cannot express.
+
+Names, so this is legible to a reader from either field: partition of
+unity (Babuska and Melenk), overlapping domain decomposition of the
+Schwarz family, the overlap-tile strategy of the U-Net paper,
+sliding-window inference with Gaussian weighting, feathering and
+multi-band blending from image stitching, FBPINNs and POU-PINNs for the
+partition-of-unity-over-subdomains construction in a learned setting,
+inverse-variance weighting or BLUE for the weights, DFVF-overset for
+interpolation-free conservative overlapping, and
+Helmholtz-Hodge -- here the mass-consistent adjustment of Sherman
+(1978) -- for the projection. Every ingredient is standard; the assembly
+is the contribution, and the part that is unusual is repairing the seams
+with the same cheap solver that generated the training data.
+
+The validation, and it needs one solve per site
+------------------------------------------------
+
+The test geometry already exists. **Each demonstration site is a 3 x 3
+grid of 5 km windows -- 15 x 15 km.** So: solve one 15 x 15 km domain
+directly as the reference, predict the nine tiles, blend, stitch,
+project, and compare on two numbers -- error in the tile interiors,
+which should match the single-tile result, and error in a narrow band
+along the seams, which should not be visibly worse.
+
+That is one reference solve per site plus a blending routine, and it is
+the smallest honest test of whether 50 km is a wrapper or a research
+problem. Until it is run, nothing here should be quoted as a capability.
