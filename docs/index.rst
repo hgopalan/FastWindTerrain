@@ -26,6 +26,7 @@ on this layout.
    cases
    corpus
    surrogate
+   surrogate_negative
    output
    debugging
    parmparse_reference
