@@ -743,8 +743,8 @@ DEMO_FOLD = "demo"
 #   surrogate vs measurement   both errors compounded. A poor result here
 #                              says nothing about the surrogate on its own.
 MEASUREMENT_SITES = {
-    "nrel_flatirons": {
-        "name": "NREL Flatirons Campus", "state": "Colorado", "year": 0,
+    "nlr_flatirons": {
+        "name": "NLR Flatirons Campus", "state": "Colorado", "year": 0,
         "lat": 39.91394, "lon": -105.21350,
     },
 }
@@ -771,7 +771,7 @@ def assert_measurement_is_untrained(radius_km=None, manifest=None):
 
     Returns the nearest site in EVERY fold, not just training, so the
     caveat is visible in the output rather than buried here. For
-    nrel_flatirons that matters: marshall_fire is 11.3 km away and is in
+    nlr_flatirons that matters: marshall_fire is 11.3 km away and is in
     the test fold, so Flatirons must not be pooled with the demo sites or
     counted as an independent unseen sample alongside it.
     """
