@@ -111,6 +111,17 @@ def main(argv=None):
                    help="height AGL for the maps, metres")
     p.add_argument("--direction", type=float, default=45.0)
     p.add_argument("--out", default=os.path.join(ROOT, "data", "figures"))
+    # 130 dpi is enough to read on screen and is what the docs use. A
+    # journal wants the labels sharp at print size, so the figures are
+    # regenerated at a higher value for that purpose rather than being
+    # upscaled afterwards.
+    p.add_argument("--dpi", type=int, default=130)
+    # Threshold for the right panel. 0.5 m/s is twice the CFD tolerance
+    # and shows the tail on every level; 1.0 isolates the levels where
+    # the error is large enough to matter to a model downstream.
+    p.add_argument("--tail", type=float, default=0.5,
+                   metavar="MS", help="tail threshold for the right "
+                                      "panel, m/s")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -177,7 +188,7 @@ def main(argv=None):
         f"difference row is common across all of them", fontsize=12)
     m1 = os.path.join(args.out, f"unseen_maps_{arch}_"
                                 f"{args.level:.0f}m.png")
-    fig.savefig(m1, dpi=130)
+    fig.savefig(m1, dpi=args.dpi)
     plt.close(fig)
     print(m1)
 
@@ -208,12 +219,13 @@ def main(argv=None):
     xpos = np.arange(len(lv))
     for i, s in enumerate(order):
         e = np.stack([x for x in sites[s]["err"]])       # (win, nlev, y, x)
-        frac = [(e[:, k] > 0.5).mean() * 100.0 for k in range(e.shape[1])]
+        frac = [(e[:, k] > args.tail).mean() * 100.0
+                for k in range(e.shape[1])]
         axR.bar(xpos + i * width, frac, width, color=shades[i], label=s)
     axR.set_xticks(xpos + 0.4 - width / 2)
     axR.set_xticklabels([f"{h:.0f}" for h in lv], fontsize=8)
     axR.set_xlabel("level [m AGL]")
-    axR.set_ylabel("% of cells over 0.5 m/s")
+    axR.set_ylabel(f"% of cells over {args.tail:g} m/s")
     axR.set_title("where the tail lives, per level", fontsize=11)
     axR.legend(fontsize=8)
     axR.grid(axis="y", color="0.92", lw=0.6)
@@ -223,7 +235,7 @@ def main(argv=None):
                  f"{sum(len(sites[s]['err']) for s in order)} windows "
                  f"across {len(order)} sites", fontsize=12)
     m2 = os.path.join(args.out, f"unseen_hist_{arch}.png")
-    fig.savefig(m2, dpi=140)
+    fig.savefig(m2, dpi=args.dpi)
     plt.close(fig)
     print(m2)
 

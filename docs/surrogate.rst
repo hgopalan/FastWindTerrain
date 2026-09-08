@@ -1,15 +1,86 @@
 ==========================
-Surrogate groundwork
+Surrogate: what worked
 ==========================
 
-Phases 17-19 of the U-FNO programme: freeze the operator the training data
-will come from, build the two operators that turn a 3D field into a stack
-of 2D levels and back, and measure what that reconstruction costs.
+Phases 17-19 of the U-FNO programme and everything that followed: freeze
+the operator the training data comes from, build the two operators that
+turn a 3D field into a stack of 2D levels and back, measure what that
+reconstruction costs, and train a surrogate on it.
 
-**No machine learning appears anywhere here.** That is the point. The
-reconstruction error measured below is a ceiling: a surrogate predicting
-those levels cannot beat it, so it is worth knowing before any network is
-designed.
+This file holds the constructions that worked. The ones that did not are
+in :doc:`surrogate_negative`, which is the longer of the two and is kept
+separate because the negative results are the more useful half: each one
+names a correction that cannot work and says why.
+
+Summary
+=======
+
+What worked:
+
+=========================  =============================================
+idea                       what it bought
+=========================  =============================================
+Log-spaced levels          5 beat 12 uniform levels
+Reconstruction floor       0.164 m/s, a stopping criterion for free
+Exact symmetries           36 solves removed the speed axis, 16x reuse
+D4 augmentation            about 4x the data, at three matched pairs
+Frame averaging            exact equivariance, 10-17 %
+Learning curve             plateau at 162 solves, 40 terrain samples
+Dilated CNN + FiLM         best of the seven families tried
+Geographic splits          kept the held-out error honest
+Projection through solver  about 29 %, at a quarter of the solver's cost
+Vertical mode analysis     72 % of the residual in one shape
+Per-column measurement     -39.5 %, but needs a sensor in every cell
+=========================  =============================================
+
+What did not:
+
+===========================  ==========================================================
+idea                         outcome
+===========================  ==========================================================
+Warm starting the solver     asymptotes; a mass-consistent solve cannot be warm started
+Log-law blend near surface   worse than leaving it alone
+Replicate padding            border better, interior worse, net worse
+Global spectral descriptors  no gain on unseen sites
+Spectral-basis hypothesis    the mechanism was wrong; the data said otherwise
+A level below 5 m            helps, but not for the reason predicted
+Surface-layer loss weight    -0.9 % at 5 m, +15.7 % aloft
+Friction velocity channel    0.6655 against 0.6626; ceiling was 0.7 %
+Frontal and plan area        same 0.7 % ceiling; cancelled on the reasoning
+1D column model below 20 m   the reference is not logarithmic there
+Learning the profile factor  the network is already MSE-optimal at r = 0.56
+Local functional fit         nothing in sample; the MLP overfits
+Slab mass budget             prediction closes it better than the reference does
+One mast per case, additive  -0.3 %
+WAsP speed-up transfer       ceiling -0.1 %; the multiplier is 1.0003 +/- 0.0027
+1 to 100 masts, IDW          every count worse than no masts
+CALMET normalised kernel     up to +27 %; unnormalised is neutral
+Gaussian kernel, optimal     -0.35 % at 100 masts, = masts/columns x 40 %
+===========================  ==========================================================
+
+Reading the two together
+========================
+
+The failures are not independent. Every one of them applies a correction
+that is SMOOTH IN THE HORIZONTAL -- a scalar per case, a channel constant
+over the domain, a profile factor, a kernel-interpolated field -- and the
+residual they are aimed at is not. Its lagged correlation falls from
+1.000 to 0.03 in one grid cell while the wind field itself still holds
+0.45 at the same lag. The residual is coherent through the surface layer
+in the vertical and white at the grid scale in the horizontal.
+
+That single measurement, made late and cheaply, would have predicted
+almost every negative result above. The two constructions which did move
+the error -- a per-column measurement and the elliptic projection -- are
+the only two with a degree of freedom in every cell.
+
+The second thread is the ceiling discipline. Several of the failures cost
+a full training run and could have cost two minutes: the friction
+velocity correlated at -0.68 and was worth 0.7 %, because the quantity it
+predicted was a per-case mean carrying 1.3 % of the squared error. The
+habit that came out of it -- measure what a correction could achieve at
+best before implementing it -- is what killed the drag channels, the
+column model and the mast transfer for almost nothing.
 
 The frozen operator
 ===================
@@ -443,126 +514,6 @@ Each case costs one solve, and every reconstruction after that is numpy --
 which is why the placement and split sweeps are nearly free once the field
 exists.
 
-Warm starting: a negative result
-================================
-
-If the surrogate's output is an initial condition rather than an answer,
-the figure of merit is not RMSE but **iterations saved**. The projection
-is a stationary iteration, so that is directly measurable:
-``cases/warmstart_study.py`` seeds it from a reconstruction instead of
-from the solver's own initial field and counts passes to a fixed target.
-
-**It does not work well here, and the number is worth recording so that
-nobody re-derives the idea and re-runs the experiment.**
-
-.. list-table:: Passes to reach the divergence the cold start reaches at 12
-   :widths: 30 18 12 18 12
-   :header-rows: 1
-
-   * - start
-     - Creek
-     - saved
-     - Bootleg
-     - saved
-   * - cold (solver default)
-     - 12
-     - --
-     - 12
-     - --
-   * - warm, perfect levels
-     - 7
-     - 5
-     - 11
-     - 1
-   * - warm, 2 % level noise
-     - 8
-     - 4
-     - 11
-     - 1
-   * - warm, 5 % level noise
-     - 9
-     - 3
-     - 13
-     - **-1**
-   * - warm, 20 % level noise
-     - 16
-     - **-4**
-     - 18
-     - **-6**
-
-Even a *perfect* reconstruction saves 5 passes of 12 on Creek and 1 of 12
-on Bootleg. At a plausible 5 % surrogate error it saves 3 and nothing, and
-by 20 % it is worse than the initial condition the solver builds for
-itself.
-
-Why, and why it is not a bug
-----------------------------
-
-The mechanism checks out, which is how the number is known to be real. The
-perfect reconstruction sits 0.447 from the fixed point in max norm against
-the cold start's 0.915 -- exactly twice as close. At a convergence factor
-of 0.87 a two-fold reduction predicts ``ln 2 / ln(1/0.87)`` = 5 passes.
-Measured: 5.
-
-So the reconstruction is simply not much closer to the answer than the
-solver's own guess **in the norm the iteration converges in**. Its RMSE is
-excellent -- about 1.3 % on speed -- and its max-norm error is about 44 %,
-and the projection converges in a max norm.
-
-The obvious hope is that those worst cells sit near the terrain, where
-stitching is hardest and a better near-surface treatment would fix them.
-They do not:
-
-.. list-table:: Max-norm error by height above the surface, Creek
-   :widths: 30 20 20 30
-   :header-rows: 1
-
-   * - cells above the ground
-     - max
-     - rmse
-     - share of fluid cells
-   * - 1st fluid cell
-     - 0.441
-     - 0.041
-     - 6 %
-   * - 2-3
-     - 0.296
-     - 0.048
-     - 12 %
-   * - 4-10
-     - 0.335
-     - 0.045
-     - 40 %
-   * - 11+
-     - 0.331
-     - 0.028
-     - 42 %
-
-The error is spread through the column, so there is no localised fix to
-be had.
-
-What to conclude
-----------------
-
-Do not claim warm-start value on this evidence. The stitching recipe above
-stands on its own and is the stronger result.
-
-The idea is not dead for a fractional-step solver -- each step there costs
-far more, so a given fractional reduction in iterations is worth much more
-wall clock, and both the iteration and the norm it converges in are
-different. But that has to be measured on that solver rather than inferred
-from this one.
-
-**Caveat on the measurement.** One random seed per noise level, and the
-non-monotonicity -- 10 % noise saved more than 5 % on Creek -- shows it is
-noisy. Several seeds would tighten it. The gap between "5 passes saved
-from a perfect reconstruction" and "12 passes to beat" is wide enough that
-this is unlikely to change the conclusion.
-
-::
-
-    python3 cases/warmstart_study.py --case creek_fire --case bootleg_fire
-
 What transfers
 ==============
 
@@ -712,51 +663,6 @@ shallow hill -- linearised theory, and a column speed-up with no decay in
 height -- and the corpus reaches slopes near 2. They are kept because a
 baseline that fails loudly is more useful than one quietly omitted, but
 any comparison should use ``undisturbed``.
-
-Imposing the log law near the surface: a negative result
-=========================================================
-
-If the reconstruction is good aloft and poor near the ground, an obvious
-repair is to take a level it handles well, invert the log law there for a
-friction velocity, impose the resulting profile below, and taper the
-correction out with height. That is
-:func:`fastwindterrain.levels.log_blend_correction`, and it does not work.
-
-============================  ==============  ==============
-``carr_fire:12`` (311 m)      0-50 m           10-160 m
-============================  ==============  ==============
-no correction                  0.740 m/s        0.444 m/s
-anchor 160 m, 10 % noise       **0.676**        **0.361**
-============================  ==============  ==============
-
-On the gentlest window tested it repairs 10 % noise usefully. On
-``slinkard_fire:22`` and ``ditch_fire:20`` it is worse at every anchor and
-every taper, noisy or not. With *perfect* levels it is worse everywhere,
-which is expected -- ``stitch_levels`` reproduces the level values exactly
-at the levels, so there is nothing to repair and a correction can only
-move a right answer.
-
-**The mechanism is the same physics that makes the band hard.** Near the
-surface the flow follows the terrain rather than a universal profile, so
-imposing a log law there imposes the wrong shape exactly where it matters
-most. It works on gentle ground because gentle ground is where a profile
-is a good description.
-
-Two consequences:
-
-* **do not use it as a decoder** inside the surrogate, and in particular
-  do not drop the sub-40 m levels and derive them -- the log law cannot
-  supply what they carry on complex terrain;
-* the correction is kept, tested and documented so the result is
-  reproducible rather than folklore.
-
-Two implementation notes, if it is ever revisited. Anchor on a level the
-network predicts, not an arbitrary height: interpolating the anchor speed
-from cell centres 20 m apart on a logarithmic profile injects 0.003 m/s
-of bias that propagates down the column. And taper linearly in height --
-the log taper is elegant and far too aggressive, weighting 0.31 at 10 m
-and 0.10 at 40 m for an 80 m anchor, and it repaired only 12 % of a
-deliberate 50 % near-surface error.
 
 What a surrogate has to beat, over the corpus
 =============================================
@@ -1289,35 +1195,6 @@ why the mid-column bands show the largest gains, and it is the same
 correlation structure that made the log-law residual useless as an error
 indicator.
 
-A fix that failed: replicate padding
-------------------------------------
-
-The prediction maps show a bright frame around the domain edge, and
-trimming three border cells cuts the RMSE by 4.6 %, so the artefact is
-real. The obvious cause is zero padding: a zero border tells the network
-the terrain drops to the mean elevation just outside the window, which is
-an artificial cliff around every domain. Replicate padding should fix it.
-
-It does, and it loses anyway:
-
-============  =========  ==========  =========  ============
-padding             all    interior     border    border/int
-============  =========  ==========  =========  ============
-zeros            0.7817      0.7608     0.9232         1.21x
-replicate        0.7953      0.7803     0.8996         1.15x
-============  =========  ==========  =========  ============
-
-The border penalty falls from 1.21x to 1.15x -- the intended effect -- but
-the interior gets worse and the net is worse. The likely reason is that
-zero padding leaks absolute position into a convolutional network, which
-networks are known to exploit; replicate padding removes that cue along
-with the cliff.
-
-**Reverted.** Recorded because the reasoning was sound and the result was
-still negative, and because the principled fix is now obvious: supply
-coordinate channels explicitly, so position is available without the
-artificial border, and then replicate padding costs nothing. Untested.
-
 How much data does this actually need?
 ======================================
 
@@ -1359,35 +1236,6 @@ not.
 One seed per point. The plateau is far larger than the +/-0.005 wobble at
 the top of the curve, but each point wants three seeds before this is
 quoted.
-
-Global spectral descriptors: a negative result
-----------------------------------------------
-
-Chetco Bar's gentle cells carry 0.750 m/s against 0.205 at Flatirons at
-identical LOCAL slope, so the region's overall ruggedness clearly matters
-and a bounded receptive field cannot see it. Six D4-invariant scalars --
-spectral slope, power in three wavelength bands, spectral anisotropy,
-detrended RMS height -- were added as constant planes to supply it.
-Scored on the unseen sites, where the hypothesis lives:
-
-=========  =====  ==========  =========  =========  =========  =========  ========
-spectral      D4    perdigao      gorge    cameron     chetco        ALL     ratio
-=========  =====  ==========  =========  =========  =========  =========  ========
-no            no      0.3835     0.4397     0.5800     0.7959     0.5498      2.08
-yes           no      0.3897     0.4357     0.5318     0.7715     0.5321      1.98
-no           yes      0.3448     0.3859     0.4745     0.6709     0.4690      1.95
-yes          yes      0.3716     0.4109     0.5050     0.7062     0.4984      1.90
-=========  =====  ==========  =========  =========  =========  =========  ========
-
-The last column is Chetco over Perdigao, the hard-to-easy spread the
-descriptors were built to narrow. It does narrow, monotonically, 2.08 to
-1.98 and 1.95 to 1.90. But the mean improves 3 % without augmentation and
-gets 6 % WORSE with it, and augmented is the configuration that matters.
-
-**Verdict: no.** The reasoning was sound and the prediction was specific;
-the measurement declines it. Kept and documented, because the alternative
-is somebody having the same good idea again in a year. For scale, D4
-augmentation improves the same unseen mean by 14.7 %.
 
 What terrain explains, per scale and height
 ===========================================
@@ -1514,157 +1362,6 @@ The obvious next step is a group-equivariant convolution: the same
 guarantee with tied weights instead of averaged outputs, at one forward
 pass and roughly eight times fewer effective parameters. Untested.
 
-A prediction that failed
-========================
-
-The coherence study measured terrain explaining about a quarter of the
-near-surface wind variance and about 85 % of it aloft, and from that I
-drew a mechanism: an FNO's spectral layer is diagonal in wavenumber, so a
-basis that is GLOBAL in space is matched to the easy part of the column
-and mismatched to the 5-160 m band where the deliverable lives.
-
-That mechanism made a specific, falsifiable prediction. A wavelet
-neural operator uses a basis localised in space AND scale, so if the
-diagnosis were right, WNO's advantage over FNO should appear **below
-160 m** and largely vanish aloft.
-
-It was recorded before the runs and it is wrong. Per level on the 180
-unseen windows, vector RMSE in m/s:
-
-=========  =========  =========  =========  =========  ==============
-height         U-FNO        WNO      U-Net      G-CNN    WNO vs U-FNO
-=========  =========  =========  =========  =========  ==============
-5 m           1.3362     1.2247     1.0378     0.9934          -8.3 %
-10 m          1.3711     1.2160     0.9705     0.9270         -11.3 %
-20 m          1.3463     1.1212     0.8155     0.7408         -16.7 %
-40 m          1.2747     0.9409     0.5803     0.4961         -26.2 %
-80 m          1.2929     0.8698     0.4316     0.3129         -32.7 %
-160 m         1.3212     0.8559     0.4139     0.2732         -35.2 %
-355 m         1.2895     0.8356     0.4113     0.2551         -35.2 %
-787 m         1.0957     0.7619     0.4049     0.2350         -30.5 %
-1744 m        1.0689     0.8573     0.5202     0.3021         -19.8 %
-column        1.2704     0.9789     0.6652     0.5798         -22.9 %
-=========  =========  =========  =========  =========  ==============
-
-**WNO's gain over U-FNO is smallest at the surface and largest aloft** --
-8 % at 5 m against 35 % at 160 m. The prediction was not merely
-unsupported; the effect runs the other way.
-
-What survives and what does not
--------------------------------
-
-The coherence measurement stands. It is a property of the operator,
-measured with a control that reproduces a known analytic result -- w
-coherent with terrain at 0.61-0.89 near the surface with an admittance
-slope of +0.94 against the kinematic +1.
-
-The INFERENCE drawn from it does not. "Spectral models fail near the
-surface because their basis is global" predicted an outcome that did not
-occur, and no amount of restating the coherence numbers repairs that.
-
-A better reading, and one the same data supports
-------------------------------------------------
-
-The problem is not global-versus-local basis. It is that a fixed linear
-transform followed by pointwise multiplication -- Fourier or wavelet --
-is the wrong operator class for this map, and the choice of transform is
-second order.
-
-* a localised basis genuinely helps: WNO beats U-FNO by 23 % overall;
-* it does not close the gap: WNO still loses to a plain U-Net by 47 %
-  and to the group-equivariant CNN by 69 %;
-* both spectral variants are nearly FLAT with height, 1.07-1.37 for
-  U-FNO and 0.76-1.22 for WNO, while both convolutional models improve
-  three- to fourfold from the surface upward.
-
-That last row is the strongest form of it. The spectral models are not
-losing only where the coherence is low -- they fail to exploit the part
-of the column where the operator is nearly linear and diagonal, which is
-the regime their inductive bias is supposed to suit.
-
-This is recorded rather than quietly dropped because the prediction was
-specific and registered in advance, and a negative result on one's own
-mechanism is worth more than an unfalsifiable story that happens to sit
-beside the right answer.
-
-Would a level below 5 m help? Not for the reason expected
-=========================================================
-
-The near-surface band is the only one outside tolerance, and every
-architecture lands within 4.5 % of every other there, so it is not an
-architecture problem. ``--by-height`` had traced the FLOOR's near-surface
-error to extrapolation: below the lowest level the field is filled from a
-log law carrying 0.467 m/s against 0.112 for anything interpolated. The
-obvious fix is a level underneath, so the bottom cells are interpolated.
-
-That would cost a regenerated corpus, because levels are extracted at
-generation time. So the ceiling was measured first, from 3D fields
-already stored -- no solving, no training. If the floor does not improve,
-nothing built on the new level set can.
-
-``cases/low_level_study.py``, 60 test samples, m/s:
-
-============  ==============  ==============  ===============
-band (AGL)        9 (corpus)     10 (+2.5 m)    10 (+1 aloft)
-============  ==============  ==============  ===============
-0-10 m                0.3426          0.2989           0.3426
-10-50 m               0.1794          0.1794           0.1794
-50-160 m              0.1302          0.1302           0.1302
-160+ m                0.0938          0.0938           0.0579
-column                0.1479          0.1448           0.1266
-============  ==============  ==============  ===============
-
-**The 2.5 m level does what it was designed to do** -- 12.7 % off the
-0-10 m floor. **And the control kills it anyway.** Spending the same
-tenth level ALOFT improves the column floor by 14.4 %, seven times more,
-while doing nothing at the surface. Adding any tenth level adds capacity;
-a gain at 2.5 m only means something if the same level spent elsewhere
-does not buy more, and it does.
-
-The number that actually decides it
------------------------------------
-
-Neither of those. The floor is not what the models are up against:
-
-============  ============  ============  ==========
-band (AGL)           floor    best model       ratio
-============  ============  ============  ==========
-0-10 m              0.3426        0.9934        2.9x
-160+ m              0.0938        0.2350        2.5x
-============  ============  ============  ==========
-
-**Every model sits two and a half to three times above the reconstruction
-floor, at every height.** Lowering a ceiling from 0.34 to 0.30 buys
-nothing when the model is at 0.99. The level set is not the binding
-constraint anywhere -- the model is.
-
-A correction, and what it changes
----------------------------------
-
-This experiment had been ranked above the architecture work, on the
-strength of the earlier finding that the near-surface FLOOR error is
-extrapolation rather than resolution. That finding stands. The inference
-drawn from it -- that the model's near-surface error was therefore about
-the level set -- does not. They are different quantities and were
-conflated.
-
-What it leaves is a sharper target. There is a factor of about three
-available at every height before level placement matters at all, and the
-error fields of architectures as different as a group-equivariant CNN and
-a plain U-Net are correlated at 0.82, so roughly seventy per cent of that
-error is shared. It will not come from another architecture either.
-
-That points at the inputs rather than the model or the level set: the
-network is given terrain, slope and direction, and if the residual is
-systematic across every architecture and well clear of the
-representational floor, the most likely explanation is that the input
-does not determine the answer. The slope ablation and the larger-context
-run test exactly that.
-
-Recorded because it cost nothing and killed a planned corpus
-regeneration -- which is the whole argument for measuring ceilings before
-paying for experiments.
-
 The architecture table, and what a single seed can carry
 ========================================================
 
@@ -1769,25 +1466,6 @@ than assumed silently. And two extra seeds each at ``frac 0.5`` and
 claim rests on 0.7568 against 0.7616, a gap of 0.6 %, and it is the
 spine of the paper. U-Net at 30 000 steps is about 35 minutes, so the
 claim that matters most is also the cheapest to protect.
-
-A prediction, registered before the runs
------------------------------------------
-
-``--surface-weight`` tests whether the surface layer is capacity-starved
-rather than information-starved. **The expectation is a small gain at
-best, under 5 % at 5 m for W = 4**, for three reasons: the dilated CNN
-and the group-equivariant CNN make the same surface error at r = 0.945
-despite a 4.5x difference in capacity; ``channel_rms`` already
-normalises every channel to unit rms, so an equal-weighted loss is
-already balanced and this is deliberate over-weighting rather than a
-correction; and a reweighting redistributes effort without adding
-information, while nothing computable from the terrain predicts the
-error mode's sign.
-
-More than about 15 % at 5 m would contradict the cross-architecture
-result and be worth chasing. The risk to watch is the aloft levels,
-which sit at 0.32 and 0.26 m/s in vector terms against a 0.25 tolerance
-and have no headroom to give.
 
 The error has one vertical shape, and it is the surface layer
 =============================================================
@@ -2233,3 +1911,4 @@ along the seams, which should not be visibly worse.
 That is one reference solve per site plus a blending routine, and it is
 the smallest honest test of whether 50 km is a wrapper or a research
 problem. Until it is run, nothing here should be quoted as a capability.
+

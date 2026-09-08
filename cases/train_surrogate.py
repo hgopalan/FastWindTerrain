@@ -198,6 +198,20 @@ def main(argv=None):
                    help="the eight symmetries of the square, exact and "
                         "verified against the solver at 1e-13. Training "
                         "only; validation is never augmented.")
+    p.add_argument("--ustar", action="store_true",
+                   help="supply the case's maximum friction velocity as a "
+                        "constant input plane. DIAGNOSTIC ONLY: u* is an "
+                        "output of the solve and would have to be "
+                        "predicted at inference. It is tested because it "
+                        "correlates with the SIGN of the surface-layer "
+                        "error at -0.50 within site, where no terrain "
+                        "quantity correlates at all.")
+    p.add_argument("--drag", action="store_true",
+                   help="frontal and plan area index planes, the "
+                        "morphometric drag parameters. These are the "
+                        "DEPLOYABLE version of --ustar: computed from "
+                        "terrain and direction alone, so no solve is "
+                        "needed at inference.")
     p.add_argument("--surface-weight", type=float, default=None,
                    metavar="W",
                    help="weight the lowest --surface-levels levels by W in "
@@ -255,11 +269,13 @@ def main(argv=None):
                            derive_reverses=True, scales=scales,
                            augment_d4=args.augment_d4,
                            spectral=args.spectral,
-                           slope=not args.no_slope)
+                           slope=not args.no_slope, ustar=args.ustar,
+                           drag=args.drag)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
                            spectral=args.spectral,
-                           slope=not args.no_slope)
+                           slope=not args.no_slope, ustar=args.ustar,
+                           drag=args.drag)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")
