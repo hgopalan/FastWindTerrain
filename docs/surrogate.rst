@@ -2345,3 +2345,87 @@ along the seams, which should not be visibly worse.
 That is one reference solve per site plus a blending routine, and it is
 the smallest honest test of whether 50 km is a wrapper or a research
 problem. Until it is run, nothing here should be quoted as a capability.
+
+A column model below 20 m: the reference has no 1D physics to recover
+---------------------------------------------------------------------
+
+The residual error is one vertical shape confined to the lowest 20 m, so
+the obvious remedy is a vertical overset: predict above 20 m with the
+network, and obtain 5 and 10 m from a one-dimensional surface-layer
+model anchored on the 20 m value. A 1D solver for exactly this is
+available in ``hgopalan/onedterrainsolver``.
+
+It does not work here, and the reason belongs to the reference rather
+than to the column model.
+
+**The deciding test needs no network.** Take the reference field's own
+value at 20 m and obtain the reference at 5 and 10 m from it by the log
+law. Horizontal components, unseen terrain, m/s:
+
+=================================  ========  ========
+source of the 5 and 10 m values       5 m      10 m
+=================================  ========  ========
+log law from the exact 20 m          0.967     0.719
+the network                          0.934     0.874
+=================================  ========  ========
+
+At 10 m the log law wins. At 5 m it loses, despite having been handed
+the exact value above it. The reference is not logarithmic across this
+band.
+
+Why: the wall function acts on the first fluid cell alone, whose centre
+sits at 2 m with ``dz0 = 4 m`` and is therefore below the lowest
+reported level. Everything between 5 and 20 m is set by the projection,
+which enforces mass conservation over the whole domain. That band is the
+output of a global constraint, not of a local balance between the
+surface and the flow above it.
+
+**The result is not specific to the log law.** Every neutral column
+model supplies a factor multiplying the horizontal wind and they differ
+only in how it is obtained, so bound them by how much the factor is
+allowed to vary, fitting each against the truth. An oracle fit cannot be
+beaten by a closure that has to derive the factor:
+
+=========================  ========  ========
+factor fitted against the     5 m      10 m
+truth, m/s
+=========================  ========  ========
+network (no factor)          0.934     0.874
+one factor everywhere        0.925     0.702
+factor linear in slope       0.924     0.693
+factor per column            0.485     0.370
+field RMS                    5.601     6.678
+=========================  ========  ========
+
+The best single factor is 0.705 at 5 m against the log law's 0.741, so
+the log law is already close to the best uniform choice. The gap to the
+per-column oracle is large, but that quantity has a standard deviation
+of 0.119 and a correlation with terrain slope of **-0.011**. Same wall
+as the friction-velocity attempt and the surface-weighting attempt: the
+shape of the error is known and its amplitude is not.
+
+**And all of the above assumes a perfect anchor.** With the network's own
+20 m value, which is what the arrangement would actually have, the
+overset is 13.8 % worse than the baseline across 5-10 m and 8.7 % worse
+over all nine levels. The anchor's error is carried downwards and
+replaces predictions that were better.
+
+Where the idea is right
+-----------------------
+
+Against a RANS or LES reference the 5-20 m layer is a surface layer in
+the ordinary sense, its profile is set locally, and a column model is the
+correct instrument. What kills it here is the mass-consistent operator,
+not the concept. The first table above is the test that decides which
+case applies: it uses the reference alone, needs no trained model, and
+costs one solve. That makes it a cheap addition to the list of things
+worth measuring before committing to an expensive reference.
+
+Scripts: ``scratchpad/oneD_overset.py`` (the log-law variants and the
+deployable configuration) and ``scratchpad/oneD_ceiling.py`` (the
+closure-agnostic bound).
+
+One correction worth recording: the first run of ``oneD_overset.py``
+labelled a column "5-20 m" when the stored 20 m level is 20.000...04 and
+fell outside a ``<= 20.0`` cut. The band is 5-10 m, which is the right
+set anyway, since those are the levels a column model would supply.
