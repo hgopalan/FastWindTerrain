@@ -1457,7 +1457,8 @@ cells while saying nothing about reproducibility. The sign test
 establishes that a ranking is consistent across terrain and height. That
 is a different and weaker claim than being outside seed noise.
 
-The seed work queued is deliberately not three seeds of everything.
+The seed work was deliberately not three seeds of everything, and the
+outcome is in the next section.
 Two extra seeds of ``dcnn w96`` give one sigma at the top of the table,
 which applied to every row says which gaps are real -- assuming sigma is
 comparable across models trained identically, which is stated rather
@@ -1465,7 +1466,59 @@ than assumed silently. And two extra seeds each at ``frac 0.5`` and
 ``frac 1.0`` with augmentation defend the plateau directly, because that
 claim rests on 0.7568 against 0.7616, a gap of 0.6 %, and it is the
 spine of the paper. U-Net at 30 000 steps is about 35 minutes, so the
-claim that matters most is also the cheapest to protect.
+claim that matters most is also the cheapest to protect. All six runs
+completed on 2026-09-08; see below.
+
+The seeds landed, and one claim did not survive
+-----------------------------------------------
+
+Run on 2026-09-08. Three seeds of ``dcnn w96`` on the full dataset, and
+three each of the U-Net at the two sizes the plateau rests on:
+
+=====================  ======  ======  ======  ======  ======
+run                    seed 0  seed 1  seed 2  mean    sd
+=====================  ======  ======  ======  ======  ======
+dcnn w96, full data    0.6626  0.6635  0.6647  0.6636  0.0011
+U-Net +D4, 324 solves  0.7568  0.7721  0.7523  0.7604  0.0104
+U-Net +D4, 648 solves  0.7616  0.7671  0.7692  0.7660  0.0039
+=====================  ======  ======  ======  ======  ======
+
+**One sigma at the top of the table is 0.0011 m/s, or 0.16 % of the
+mean.** A DIFFERENCE between two single-seed runs therefore carries
+0.23 %, and that is the number every gap in the architecture table
+should be read against -- assuming sigma is comparable across models
+trained identically, which is stated here rather than assumed silently,
+since it was measured on one architecture only.
+
+=========================  =======  ========================  =======
+gap                        size     in sigma of a difference  verdict
+=========================  =======  ========================  =======
+dcnn w96 vs gcnn w20       2.4 %    10                        real
+FiLM vs plain dcnn         0.8 %    3.5                       real
+reuse at 648 solves, dcnn  0.86 %   3.8                       real
+plateau, 324 -> 648 U-Net  +0.73 %  0.5 of the U-Net sd       noise
+=========================  =======  ========================  =======
+
+**The plateau is confirmed, and now with an error bar.** Doubling the
+U-Net dataset from 324 to 648 solves moves the mean by +0.73 %, which is
+in the wrong direction and is half of the 1.36 % seed spread at 324. The
+claim rested on 0.7568 against 0.7616 at n = 1; it now rests on
+0.7604 +/- 0.0104 against 0.7660 +/- 0.0039, and the conclusion is the
+same.
+
+**The claim that did not survive.** The reuse gain still present at 648
+solves on the dilated network is 0.86 %, and it was recorded above as
+"of the order of the spread between seeds and cannot be separated from
+it here". At 0.23 % per difference that gain is 3.8 sigma. It is real,
+merely small. The reading changes from "indistinguishable from noise" to
+"a small but genuine residual gain", and the practical conclusion is
+unaffected: reuse is principally worth a factor of four in data and only
+secondarily worth accuracy.
+
+The sign test above wanted this number. FiLM winning 42 of 45 cells at a
+0.8 % aggregate is 3.5 sigma, so the two lines of evidence agree; the
+G-CNN width increase at 38 of 45 and a smaller aggregate is the weaker
+of the pair.
 
 The error has one vertical shape, and it is the surface layer
 =============================================================
