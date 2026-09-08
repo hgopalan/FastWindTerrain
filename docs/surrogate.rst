@@ -2558,3 +2558,69 @@ what a campaign would have to look like before assimilation is worth
 building.
 
 Script: ``scratchpad/track_surface.py``.
+
+A speed-up factor from a mast: the method is backwards for this error
+----------------------------------------------------------------------
+
+The mast test above applied an ADDITIVE correction and was worth -0.3 %
+per case. Turbine siting does not do that. It measures at a mast, forms
+a speed-up factor against a reference, and applies the ratio as a
+transfer function: the model supplies the SHAPE of the field and the
+mast fixes its MAGNITUDE. That is a different repair -- an offset
+removes a bias, a ratio removes a gain error -- and it was worth
+testing, especially since this solver is exactly linear in the inflow
+speed, so a gain error is a mode the operator genuinely has.
+
+The ceiling settles it in one line. Horizontal RMSE, unseen terrain:
+
+============================  =============  ============
+variant                        all levels     5 and 10 m
+============================  =============  ============
+as predicted                      0.5323        0.9038
+best real k (oracle)              0.5315        0.9033
+best complex k (oracle)           0.5311        0.9032
+mast at centre, 5 m               1.8389        1.3328
+mast at centre, 10 m              1.5059        1.1910
+mast at centre, 80 m              0.5819        0.9121
+mast at centre, per level         0.7229        1.2507
+============================  =============  ============
+
+**The best possible single multiplier per case is worth -0.1 %.** Over
+180 cases the oracle multiplier has mean 1.0003, sd 0.0027, range 0.990
+to 1.008. There is no gain error to remove: the surrogate's absolute
+magnitude is already right to about a quarter of a per cent per case.
+No mast, however sited or however accurate, can beat that ceiling.
+
+The mast rows are worse than doing nothing, and the reason is
+instructive. The speed ratio at a single column at 5 m has mean 1.012
+and **sd 0.140**, ranging 0.54 to 1.45 -- it is a 14 % noisy estimate of
+a quantity whose true value is 1.000 +/- 0.003. Multiplying the whole
+field by it injects far more error than it removes. Higher up the
+denominator is quieter and the damage falls (80 m: +9.3 %), but it never
+becomes a gain.
+
+Why the analogy does not carry
+------------------------------
+
+WAsP works because of a division of labour: the mast supplies the
+absolute level, which a linearised flow model cannot know because it has
+no access to the regional wind climate, and the model supplies the ratio
+between locations, which is what it is good at. Both halves invert here:
+
+* the surrogate was trained on the same operator it predicts, so its
+  absolute level is already calibrated -- there is nothing for a mast to
+  contribute;
+* the error that remains IS the spatial pattern, which is precisely the
+  speed-up ratio that the transfer function asks the model to supply.
+
+So the method hands over the part already correct and leans on the part
+that is wrong. This is not a criticism of WAsP, whose failure mode is
+the opposite one; it is a statement that the two situations need
+different remedies.
+
+The salvageable version is a transfer function that VARIES IN SPACE
+rather than a scalar, and that is the per-column experiment in the
+previous section: -25 % above 5 m, and it needs a sensor in every
+column.
+
+Script: ``scratchpad/wrg_transfer.py``.
