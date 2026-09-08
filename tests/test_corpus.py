@@ -943,11 +943,11 @@ def test_a_measurement_site_must_be_far_from_TRAINING():
 
 @needs_manifest
 def test_the_measurement_guard_reports_every_fold_not_only_training():
-    """nrel_flatirons sits 11 km from marshall_fire, which is in the test
+    """nlr_flatirons sits 11 km from marshall_fire, which is in the test
     fold. That is allowed and it is also the single thing a reader of this
     result must not miss, so the guard has to surface it rather than
     quietly pass."""
-    by_fold = dict(corpus.assert_measurement_is_untrained())["nrel_flatirons"]
+    by_fold = dict(corpus.assert_measurement_is_untrained())["nlr_flatirons"]
     assert set(by_fold) >= set(corpus.FOLDS)
     assert by_fold["test"][0] < corpus.CLUSTER_RADIUS_KM, (
         "if this ever stops being true the caveat can be dropped")
@@ -974,7 +974,7 @@ def test_a_measurement_site_would_be_refused_if_it_sat_on_training_ground():
 @needs_manifest
 def test_the_gorge_demo_site_clears_the_strict_bar():
     """columbia_gorge is a demo site rather than a measurement site because
-    it clears the 50 km radius against EVERY fold, unlike nrel_flatirons.
+    it clears the 50 km radius against EVERY fold, unlike nlr_flatirons.
     If that ever stops being true it must be relabelled."""
     worst = {slug: km for km, slug, _, _ in corpus.assert_demo_is_unseen()}
     assert worst["columbia_gorge"] >= corpus.CLUSTER_RADIUS_KM
