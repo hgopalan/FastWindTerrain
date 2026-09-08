@@ -2399,10 +2399,11 @@ field RMS                    5.601     6.678
 
 The best single factor is 0.705 at 5 m against the log law's 0.741, so
 the log law is already close to the best uniform choice. The gap to the
-per-column oracle is large, but that quantity has a standard deviation
-of 0.119 and a correlation with terrain slope of **-0.011**. Same wall
-as the friction-velocity attempt and the surface-weighting attempt: the
-shape of the error is known and its amplitude is not.
+per-column oracle is large. That factor has a standard deviation of
+0.119 and correlates with the local terrain slope at **-0.011**, which
+I first read as "not obtainable from the terrain" -- see the correction
+in the next section, which is what a slope correlation of zero does and
+does not establish.
 
 **And all of the above assumes a perfect anchor.** With the network's own
 20 m value, which is what the arrangement would actually have, the
@@ -2429,3 +2430,131 @@ One correction worth recording: the first run of ``oneD_overset.py``
 labelled a column "5-20 m" when the stored 20 m level is 20.000...04 and
 fell outside a ``<= 20.0`` cut. The band is 5-10 m, which is the right
 set anyway, since those are the levels a column model would supply.
+
+Learning the factor instead: a correction, and a ceiling already reached
+------------------------------------------------------------------------
+
+The section above measured what a *closure* can supply below 20 m. The
+next question is whether the factor could be learned during training
+instead, to account for the 20 m error propagating downwards.
+
+**First, a correction to the section above.** A correlation of -0.011
+between the per-column factor and the local terrain slope is a
+correlation with *one local feature*. It does not establish that the
+factor is unobtainable from the terrain, and it is not. The network's
+own implied factor -- the ratio of the levels it already predicts --
+correlates with the true factor at **+0.56**. The factor is
+substantially obtainable from terrain. The earlier phrasing was too
+strong and is fixed above.
+
+**The premise turns out to be inverted.** Writing the horizontal wind as
+a complex number and ``c = (level below) / (20 m)``, the error splits
+exactly into the anchor error carried down and the factor error itself::
+
+    P_low - Y_low = c_p (P_20 - Y_20)  +  (c_p - c_t) Y_20
+
+=======  ==========  =============  =============
+level     total       anchor term    factor term
+=======  ==========  =============  =============
+5 m        0.934         0.491          0.780
+10 m       0.874         0.575          0.595
+=======  ==========  =============  =============
+
+At 5 m the factor term is the larger, so the low-level error is mostly a
+wrong ratio rather than propagation from above. A perfect factor with
+the network's own anchor would remove **47 % at 5 m** and 34 % at 10 m.
+
+**But a change of parameterisation cannot collect it.** A least-squares
+predictor with correlation ``r`` against its target is at its best when
+its own standard deviation is ``r*sigma`` and it leaves ``sigma*sqrt(1 -
+r^2)``:
+
+=====================  ==========  =========================
+quantity                network     MSE optimum at r = 0.56
+=====================  ==========  =========================
+sd of the factor          0.064              0.067
+residual rms              0.098              0.098
+=====================  ==========  =========================
+
+The network sits on both. It is already extracting the factor as well as
+anything trained on the same loss with the same inputs can, and
+``u_5 = f * u_20`` is representable by predicting ``u_5`` directly, so
+the reparameterisation adds no information. Closing the gap needs the
+inputs to say more about the factor, not a different output form.
+
+**The vertical mode is worth something, but not during training.** The
+mode shape carries a correction from one level to the others. If the
+error at 5 m were known exactly and regressed onto the levels above:
+
+========  ============  =========
+level      r with 5 m    change
+========  ============  =========
+10 m          0.90        -56 %
+20 m          0.58        -19 %
+40 m          0.12         -1 %
+========  ============  =========
+
+That is a real gain and it is an assimilation result, not a training
+one: it needs one measured value per column, which a surrogate running
+on terrain alone does not have. It matters if this is ever coupled to a
+mast or a sensor network, and not before.
+
+Script: ``scratchpad/ratio_split.py``.
+
+Tracking the surface error: worth a great deal, and only per column
+--------------------------------------------------------------------
+
+The previous section ended by saying the vertical mode is worth
+something with a measurement rather than during training. Here is the
+measurement, done properly. Give the scheme the exact error at 5 m and
+correct every level above it with a complex least-squares coefficient
+per level, ``corrected(z) = P(z) - beta(z) * (P(5) - Y(5))``, so beta
+carries both a magnitude and a turning of the wind.
+
+Horizontal RMSE over unseen terrain, m/s:
+
+========  ===============  ==============  ===============
+level      no correction    beta fitted     beta from the
+                            on this data    validation fold
+========  ===============  ==============  ===============
+5 m            0.9340          0.0000           0.0000
+10 m           0.8735          0.4173           0.4381
+20 m           0.6871          0.5672           0.5944
+40 m           0.4457          0.4403           0.4408
+80 m           0.2613          0.2612           0.2613
+160 m          0.1985          0.1983           0.1983
+all            0.5324          0.3222           0.3307
+========  ===============  ==============  ===============
+
+**Two things stand out.** The gain is large -- 39.5 % over all levels,
+or **25.4 % excluding the 5 m level itself**, which is given rather than
+corrected and would otherwise flatter the result. And the coefficient
+transfers: fitted on the corpus validation fold and applied unchanged to
+unseen sites it gives 37.9 % against the oracle's 39.5 %, so beta is a
+property of the operator and not of the terrain it was fitted on.
+
+**And then the catch.** All of that assumes the 5 m error is known in
+every column. Replace it by one number per case -- which is what a mast
+actually gives -- and the whole thing collapses:
+
+===========================================  ==========  ==========
+correction                                     before      after
+===========================================  ==========  ==========
+5 m error known in every column                 0.5324      0.3222
+5 m error known once per case (one mast)        0.5324      0.5308
+===========================================  ==========  ==========
+
+**-0.3 %.** This is the friction-velocity wall again, arriving from a
+completely different direction: the surface error is spatial structure
+within each case, not a per-case offset, and a single scalar cannot
+touch it however exactly it is known. The u* experiment measured that
+share as 1.3 % of squared error; this measures the same thing with a
+perfect instrument instead of a proxy and gets the same answer.
+
+So: dense near-surface observation would be worth a quarter of the error
+above 5 m, and one mast is worth nothing. That is a statement about
+instrument density, and it is the useful form of the result -- it says
+what a campaign would have to look like before assimilation is worth
+building.
+
+Script: ``scratchpad/track_surface.py``.
