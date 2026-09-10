@@ -1965,3 +1965,100 @@ That is one reference solve per site plus a blending routine, and it is
 the smallest honest test of whether 50 km is a wrapper or a research
 problem. Until it is run, nothing here should be quoted as a capability.
 
+
+The lowest levels were partly the mesh, and the fix is one input plane
+======================================================================
+
+The largest single reduction in the project, and it came from a
+diagnosis rather than from a model change.
+
+Every remedy aimed at the near-surface error failed -- the log law, the
+column overset, the learned profile factor, masts at every count from one
+to a hundred, the slab flux budget, the CALMET kernels. All of them are
+smooth in the horizontal, and the residual they were aimed at is not:
+it decorrelates in one grid cell. That was recorded as the unifying
+explanation and it was correct as far as it went, but it did not say
+where a horizontally white residual comes from when the terrain that
+generates it is almost perfectly smooth.
+
+WHERE IT COMES FROM. The terrain cuts through a stack of cells, so the
+lowest cell whose centre is in the air sits at a height above the ground
+which depends on where the surface falls between two faces. Call that
+height as a fraction of the local spacing ``phi``. It is a property of
+the discretisation: move the ground a few centimetres and ``phi``
+changes while the wind does not. Extracting the 5 m level means
+transferring the value from that cell through the log law over a distance
+which varies with ``phi``, and the transfer is exact only if the profile
+is exactly logarithmic there, which the column study already showed it is
+not.
+
+Measured over 400 000 columns, on the solver's own field with no model
+involved:
+
+============================  ==========  ==========
+quantity                          at 5 m    at 160 m
+============================  ==========  ==========
+speed anomaly across ``phi``      1.609       0.003
+the same, narrow slope band       1.973       0.002
+correlation with ``phi``          +0.578      +0.002
+============================  ==========  ==========
+
+It strengthens inside a narrow slope band, so terrain steepness is not
+the explanation. At 160 m, far above the anchor, it is flat to three
+decimals.
+
+WHY IT LOOKS LIKE NOISE. ``phi`` has a spatial correlation of 0.098 at
+one cell where the terrain it is computed from has 0.987. A field which
+is white at the grid scale cannot be inferred from a smooth one, and no
+smooth correction can touch it. That is the same signature the residual
+study measured, and it is the same quantity.
+
+WHAT THE TRANSFER ALREADY DOES. The raw first-fluid-cell speed varies by
+4.859 m/s across ``phi``, because that cell genuinely sits at different
+heights -- which is physics, not artefact. ``extract_levels`` removes
+about 70 % of it and leaves 1.500 m/s. The log law itself is sound; the
+residue is the profile mismatch amplified by a variable extrapolation
+length.
+
+THE FIX. The anchor height follows from the terrain and the grid, both
+known before any solve, so it is deployable in the way ``--drag`` is and
+``--ustar`` is not. ``training.anchor_height`` returns it in units of
+``dz0``, clipped at four cells, and ``--anchor`` adds it as one input
+plane. Retrained with every other setting held:
+
+============  ==========  ==========  ==========
+level          baseline      anchor      change
+============  ==========  ==========  ==========
+5 m               1.014       0.497      -51.0 %
+10 m              0.977       0.518      -47.0 %
+20 m              0.786       0.529      -32.7 %
+40 m              0.530       0.465      -12.3 %
+80 m              0.344       0.323       -6.1 %
+160 m             0.284       0.254      -10.4 %
+band              0.7166      0.4435     -38.1 %
+============  ==========  ==========  ==========
+
+Unseen sites; the corpus test fold gives -35.7 % on the same measure.
+``e_lev`` over all nine levels falls from 0.582 to 0.374 and ``e_3D``
+from 0.347 to 0.311 -- the volume metric moves far less, because the
+repair is in the bottom 20 m of a 2 km column and the reconstruction
+floor, unchanged at 0.164, now dominates it.
+
+WHY IT IS THE DIAGNOSIS AND NOT A BETTER FEATURE. Three things.
+The gain decays with height exactly as the artefact does. The residual
+dependence on ``phi`` falls from 0.671 to 0.075 m/s, so the specific
+quantity identified is what left. And two seeds agree to 0.16 %, against
+an effect of 36 %.
+
+WHAT IT COSTS. The prediction is now conditional on the vertical grid it
+was given. Predicting for a different grid means recomputing the anchor
+for that grid, which is correct but is a contract the earlier runs did
+not have. ``predict_maps.dataset_kwargs`` exists so that every consumer
+derives the flags from the checkpoint rather than each one repeating the
+list; before it, ``input_channels`` silently omitted ``--drag`` and
+``--ustar`` as well.
+
+Scripts: ``scratchpad/subcell_phase.py`` (the phase dependence and the
+spatial correlation), ``scratchpad/phase_mechanism.py`` (raw cell against
+extracted level), ``scratchpad/grid_sensitivity.py`` (lid against
+spacing) and ``scratchpad/anchor_compare.py`` (the two seeds).

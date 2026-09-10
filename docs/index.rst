@@ -27,6 +27,7 @@ on this layout.
    corpus
    surrogate
    surrogate_negative
+   extent
    output
    debugging
    parmparse_reference

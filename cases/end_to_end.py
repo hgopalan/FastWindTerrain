@@ -50,7 +50,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import corpus                                               # noqa: E402
-from predict_maps import load_run                           # noqa: E402
+from predict_maps import load_run, dataset_kwargs           # noqa: E402
 
 
 def main(argv=None):
@@ -112,8 +112,7 @@ def main(argv=None):
 
         ds = T.LevelDataset([(info, a)], u_ref=u_ref,
                             window_m=corpus.WINDOW_M, scales=scales,
-                            spectral=bool(ck["args"].get("spectral")),
-                                slope=not bool(ck["args"].get("no_slope")))
+                            **dataset_kwargs(ck))
         x, y = ds[0]
         with torch.no_grad():
             pred = model(x[None].to(device)).cpu().numpy()[0]

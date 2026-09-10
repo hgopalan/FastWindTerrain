@@ -212,6 +212,17 @@ def main(argv=None):
                         "DEPLOYABLE version of --ustar: computed from "
                         "terrain and direction alone, so no solve is "
                         "needed at inference.")
+    p.add_argument("--anchor", action="store_true",
+                   help="supply the first fluid cell's height above "
+                        "ground as an input plane. DEPLOYABLE, like "
+                        "--drag: it comes from the terrain and the grid, "
+                        "both known before any solve. It exists because "
+                        "the 5 m target carries 1.6 m/s of systematic "
+                        "dependence on where the cell faces happen to "
+                        "fall relative to the ground, and that quantity "
+                        "decorrelates in one grid cell -- so the network "
+                        "cannot infer it from terrain, however hard it "
+                        "looks. Cannot be combined with --augment-d4.")
     p.add_argument("--surface-weight", type=float, default=None,
                    metavar="W",
                    help="weight the lowest --surface-levels levels by W in "
@@ -270,12 +281,12 @@ def main(argv=None):
                            augment_d4=args.augment_d4,
                            spectral=args.spectral,
                            slope=not args.no_slope, ustar=args.ustar,
-                           drag=args.drag)
+                           drag=args.drag, anchor=args.anchor)
     ds_va = T.LevelDataset(val_raw, u_ref=u_ref, window_m=corpus.WINDOW_M,
                            derive_reverses=True, scales=scales,
                            spectral=args.spectral,
                            slope=not args.no_slope, ustar=args.ustar,
-                           drag=args.drag)
+                           drag=args.drag, anchor=args.anchor)
     print(f"loaded {len(ds_tr)} train and {len(ds_va)} val samples "
           f"in {time.time()-t0:.1f} s "
           f"({len(train_raw)} + {len(val_raw)} solved, the rest derived)")
