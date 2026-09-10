@@ -613,3 +613,69 @@ vertical grid matters more than the horizontal extent, so two solves
 whose grids were derived independently should not be differenced without
 saying so. And nothing here is limited by compute: the 10 km solve is a
 quarter of an hour and inference is under a second.
+
+
+Re-measured with the anchor channel
+====================================
+
+Everything above used the baseline model, and two of its numbers carried
+a caveat: the 10 km reference has 60 cells over a 2001 m column while the
+training windows had much shorter ones, and that difference in vertical
+spacing was afterwards measured to be worth about 1 m/s. The anchor
+channel (see :doc:`surrogate`) is a fix for exactly that confound -- it
+tells the network the grid it is predicting on -- so the question is
+asked again here with a model that can see the thing which was
+contaminating it.
+
+Both variants take their anchor from the 10 km grid, since that is the
+field being predicted; the tiled variant gets the corresponding crop of
+the same plane, so the two differ only in horizontal treatment. The grid
+reconstruction was checked against the corpus's own stored ``z_cc`` and
+``k_first`` first: agreement to 1.4e-12 m and zero mismatches.
+
+============================  ==========  ==========
+scored against                  baseline      anchor
+============================  ==========  ==========
+its own 5 km solve                1.0351      0.4515
+the 10 km solve, tiled            1.1123      0.7652
+the 10 km solve, full-domain      0.9862      0.6100
+============================  ==========  ==========
+
+Three things change and one does not.
+
+**The anchor model is much better at 10 km**, by 38.1 % full-domain. The
+fix carries across domain sizes rather than being confined to the size it
+was trained at.
+
+**Full-domain's margin over tiling grows**, from 11.3 % to 20.3 %. The
+recommendation in the previous section is strengthened, not weakened.
+
+**The cost of extension is now visible.** Going from the 5 km target to
+the 10 km one cost the baseline -4.7 % full-domain, which looked like
+extension being free. It was not: the baseline's 5 km error was inflated
+by the phase artefact, and that inflation was masking the extent penalty.
+With the artefact removed the same step costs +35.1 % full-domain and
++69.5 % tiled. The truncation error measured on the solver alone -- 0.5654
+m/s, no model involved -- has not moved; it has simply stopped being
+hidden. In quadrature with the anchor model's own 0.4515 it predicts
+0.723 against the 0.765 measured for tiling, so the two errors are now
+close to independent and additive.
+
+What does not change is the ranking, which is what the earlier section
+claimed was safe.
+
+Blending improves too, and for a reason worth stating. The tile errors
+now correlate at 0.625-0.787 rather than 0.765-0.864, because the part of
+the error that was the same network making the same mistake has been
+removed and what is left is truncation, which differs between boxes. The
+limit rises to 11-21 % and four tiles deliver -15.2 %. It is still
+dominated: one full-domain pass beats tiling by 20.3 %, which is what
+infinitely many blended tiles would achieve.
+
+**The binding constraint has moved.** Before, the network's own error
+dominated at 10 km. Now the 5 km truncation of the training data does. If
+prediction over larger terrain is the goal, the next thing to change is
+the window the corpus is built from, not the architecture and not the
+tiling scheme.
+
+Script: ``scratchpad/extent_anchor.py``.

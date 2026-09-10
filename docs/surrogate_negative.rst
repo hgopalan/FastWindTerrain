@@ -1049,3 +1049,34 @@ is to avoid harm, not to obtain a gain.
 
 Script: ``scratchpad/mast_kernel.py``.
 
+
+A postscript: what the failures were actually fighting
+======================================================
+
+Eight remedies for the near-surface error are recorded above and all of
+them failed. The explanation given each time was that the residual is
+coherent in the vertical but WHITE in the horizontal, so no smooth
+correction can reach it. That still stands.
+
+What it did not say is where a horizontally white residual comes from,
+when the terrain that generates it is smooth to a correlation of 0.987 at
+one grid cell. It has since been traced: the height of the first fluid
+cell above ground varies with where the terrain falls between two cell
+faces, the 5 m level is read out by a log-law transfer over that varying
+distance, and the leftover carries 1.6 m/s of dependence on a quantity
+which is a property of the mesh and not of the flow. That quantity has a
+spatial correlation of 0.098 at one cell -- it IS the whiteness.
+
+So the failures were real and their stated reason was right, but the
+thing they were fighting was in the read-out rather than in the physics.
+Supplying the anchor height as an input plane removes about half the
+error at 5 m; see "The lowest levels were partly the mesh" in
+:doc:`surrogate`.
+
+Two of the entries above deserve re-reading in that light. The column
+model could not repair the band because the reference is not logarithmic
+there -- which is exactly the reason the log-law transfer leaves a
+residue. And the mast studies found that the correction had to be
+supplied in EVERY column to be worth anything, which is what a per-column
+mesh property would require. Neither conclusion changes; both now have a
+mechanism.

@@ -304,13 +304,52 @@ def frontal_area_index(terrain, direction_deg, dx, dy):
     return lam_f, lam_p
 
 
+#: Metres. The surface-adjacent cell height, which casegen fixes for every
+#: case, so it is the natural unit for an anchor height.
+DZ0_M = 4.0
+
+#: Anchor heights are clipped here, in units of DZ0_M. Almost every column
+#: has its first fluid centre within a cell or two of the ground; a handful
+#: on near-vertical faces sit tens of metres up, and letting those set the
+#: scale would compress everything else into nothing.
+ANCHOR_CLIP = 4.0
+
+
+def anchor_height(arrays, clip=ANCHOR_CLIP):
+    """Height of the first fluid cell centre above ground, per column.
+
+    In units of ``DZ0_M``. This is the height ``extract_levels`` anchors
+    its log law at, and it varies from nearly zero to a full cell
+    depending on where the terrain happens to fall between two faces --
+    a property of the MESH, not of the ground.
+
+    WHY IT IS A LEGITIMATE INPUT. It is computed from the terrain and the
+    grid, both of which are known before any solve, so a deployment can
+    supply it. That is what separates it from the friction velocity,
+    which is an OUTPUT of the solve and was only ever a diagnostic.
+    """
+    zt = np.asarray(arrays["terrain"], dtype=np.float64)
+    kf = np.asarray(arrays["k_first"]).astype(np.int64)
+    zcc = np.asarray(arrays["z_cc"], dtype=np.float64)
+    d = zcc[np.clip(kf, 0, zcc.size - 1)] - zt
+    return np.clip(d / DZ0_M, 0.0, clip).astype(np.float32)
+
+
 def make_input(arrays, direction_deg, dx, dy, scale=TERRAIN_SCALE_M,
-               spectral=False, slope=True, ustar=None, drag=False):
+               spectral=False, slope=True, ustar=None, drag=False,
+               anchor=False):
     """``(4, ny, nx)`` float32, channels in :data:`INPUT_CHANNELS` order.
 
     With ``spectral``, six more constant planes from
     :func:`spectral_descriptors` are appended -- global context a
     convolutional receptive field cannot reach.
+
+    With ``anchor``, one more plane from :func:`anchor_height`. Unlike
+    every other extra this is a FIELD and not a constant, so it would
+    have to rotate with the geometry under a D4 transform. It is appended
+    last, where the transform in ``LevelDataset.__getitem__`` treats
+    channels as invariant, and the dataset therefore refuses to combine
+    the two rather than silently rotating the sample without it.
     """
     ter, slp = terrain_channels(arrays["terrain"], dx, dy, scale)
     sx, cy = direction_channels(direction_deg, ter.shape)
@@ -338,6 +377,8 @@ def make_input(arrays, direction_deg, dx, dy, scale=TERRAIN_SCALE_M,
         # information is what is missing; no gain rules that out.
         chans.append(np.full(ter.shape, np.float32(ustar) /
                              np.float32(USTAR_SCALE), dtype=np.float32))
+    if anchor:
+        chans.append(anchor_height(arrays))
     return np.stack(chans)
 
 
@@ -405,7 +446,8 @@ class LevelDataset:
     def __init__(self, samples, u_ref=10.0, window_m=5000.0,
                  scale=TERRAIN_SCALE_M, derive_reverses=False,
                  as_tensor=True, scales=None, augment_d4=False,
-                 spectral=False, slope=True, ustar=False, drag=False):
+                 spectral=False, slope=True, ustar=False, drag=False,
+                 anchor=False):
         self.u_ref = float(u_ref)
         self.scales = (None if scales is None
                        else np.asarray(scales, dtype=np.float32))
@@ -421,6 +463,18 @@ class LevelDataset:
         self.slope = bool(slope)
         self.ustar = bool(ustar)
         self.drag = bool(drag)
+        self.anchor = bool(anchor)
+        if self.anchor and self.augment_d4:
+            # The anchor plane is a field and would have to rotate with
+            # the terrain, but it is appended where __getitem__ passes
+            # channels through untransformed. Refusing is the only honest
+            # option: the alternative is a sample whose geometry and
+            # whose anchor disagree, which trains perfectly happily.
+            raise ValueError(
+                "anchor and augment_d4 cannot be combined: the anchor "
+                "plane is a geometric field appended among the invariant "
+                "channels, so a D4 transform would rotate the terrain "
+                "and leave the anchor behind")
         ops = D4_OPS if self.augment_d4 else ((0, False),)
 
         items = list(samples)
@@ -489,7 +543,7 @@ class LevelDataset:
             us = float((info.get("surface") or {}).get("max_ustar", 0.0))
         x = make_input(arrays, direction, dx, dy, self.scale,
                        spectral=self.spectral, slope=self.slope, ustar=us,
-                       drag=self.drag)
+                       drag=self.drag, anchor=self.anchor)
         # Only the velocity is negated. The terrain and slope channels are
         # geometry and are IDENTICAL between a solve and its reverse; the
         # direction channels flip because make_input was handed the

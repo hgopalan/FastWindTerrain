@@ -48,12 +48,41 @@ def input_channels(ck):
     """
     from fastwindterrain import training as T
 
+    a = ck.get("args", {})
     n = len(T.INPUT_CHANNELS)
-    if ck.get("args", {}).get("no_slope"):
+    if a.get("no_slope"):
         n -= 1
-    if ck.get("args", {}).get("spectral"):
+    if a.get("spectral"):
         n += len(T.SPECTRAL_CHANNELS)
+    # Every optional plane make_input can append has to be counted here,
+    # in the same order it builds them. --drag adds two, --ustar and
+    # --anchor one each. Missing one shows up as a shape mismatch at
+    # load_state_dict, which is loud but only after the run has finished.
+    if a.get("drag"):
+        n += 2
+    if a.get("ustar"):
+        n += 1
+    if a.get("anchor"):
+        n += 1
     return n
+
+
+def dataset_kwargs(ck):
+    """The ``LevelDataset`` input flags a checkpoint was trained with.
+
+    Every consumer that rebuilds a dataset from a run has to pass exactly
+    the flags the run used, and each one that forgets a flag fails in its
+    own way: a changed channel COUNT stops at load_state_dict with a
+    shape mismatch, which is loud, but a flag that only changes what a
+    plane CONTAINS is silently wrong and scores a model against inputs it
+    never saw. Derived once here so a new channel is added in one place.
+    """
+    a = ck.get("args", {})
+    return {"spectral": bool(a.get("spectral")),
+            "slope": not bool(a.get("no_slope")),
+            "drag": bool(a.get("drag")),
+            "ustar": bool(a.get("ustar")),
+            "anchor": bool(a.get("anchor"))}
 
 
 def load_run(run_dir, device):
